@@ -1,0 +1,10 @@
+{
+  "name": "virtual-camera-bender",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render": "node src/cli.js render",
+    "serve": "node src/dev-server.js 8787"
+  }
+}

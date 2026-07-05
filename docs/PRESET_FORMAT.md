@@ -1,8 +1,8 @@
-# Preset Format Draft
+# Preset Format
 
-Presets should be human-readable JSON and stable enough to share between the web app, future video mode, and a possible command-line tool.
+Presets are human-readable JSON, shared between the web app and the command-line renderer (`node src/cli.js render --preset <file>`), and intended to also drive a future video mode.
 
-This is a first draft, not a locked schema.
+The schema below matches the current implementation (`src/presets.js`). It is stable but not locked: presets missing newer fields load fine — `normalizePreset` fills in defaults — so files saved by older versions keep working.
 
 ```json
 {
@@ -33,28 +33,76 @@ This is a first draft, not a locked schema.
     "cheapCamera": {
       "enabled": true,
       "internalScale": 0.75,
+      "blur": 0.0,
       "bitDepth": 6,
+      "dither": 0.4,
       "sharpen": 0.42
+    },
+    "colorBend": {
+      "enabled": false,
+      "hueRotate": 0,
+      "hueStrength": 1.0,
+      "channelMode": "none",
+      "channelStrength": 1.0,
+      "invert": "none",
+      "invertStrength": 1.0,
+      "solarize": 0.0
+    },
+    "chromaShift": {
+      "enabled": false,
+      "amount": 0.0,
+      "angle": 0,
+      "wobble": 0.2
     },
     "exposureFault": {
       "enabled": true,
       "gain": 1.24,
       "blackCrush": 0.28,
       "highlightClip": 0.71,
+      "contourBands": 0.45,
       "clipColorBias": [1.0, 0.22, 0.88]
+    },
+    "contourRings": {
+      "enabled": true,
+      "strength": 0.42,
+      "scale": 0.54,
+      "bandSharpness": 0.62,
+      "tonalBias": 0.58,
+      "colorBleed": 0.5
     },
     "falseColor": {
       "enabled": true,
       "mode": "solarized-ccd",
+      "strength": 0.82,
       "posterizeLevels": 7,
+      "smoothness": 0.0,
       "channelSwap": 0.32,
       "hueWarp": 0.64,
       "saturation": 1.85
     },
+    "gradientWash": {
+      "enabled": false,
+      "mode": "rainbow",
+      "strength": 0.0,
+      "angle": 35,
+      "scale": 0.7,
+      "keepLuma": 0.75,
+      "wobble": 0.3
+    },
+    "pixelSort": {
+      "enabled": false,
+      "strength": 0.0,
+      "threshold": 0.6,
+      "window": 0.35,
+      "direction": "down",
+      "mode": "bright",
+      "maxRun": 0.6
+    },
     "edgeBurn": {
       "enabled": true,
       "strength": 0.52,
-      "radius": 1.5,
+      "threshold": 0.12,
+      "darkOutline": 0.45,
       "palette": ["cyan", "magenta", "green", "black"]
     },
     "verticalSmear": {
@@ -62,7 +110,14 @@ This is a first draft, not a locked schema.
       "strength": 0.63,
       "threshold": 0.58,
       "decay": 0.91,
+      "length": 0.7,
+      "spread": 0.24,
+      "contrast": 0.66,
+      "curtainStrength": 0.36,
+      "curtainDensity": 0.34,
+      "curtainDrop": 0.46,
       "jitter": 0.18,
+      "edgeBias": 0.6,
       "direction": "down"
     },
     "sensorNoise": {
@@ -70,10 +125,13 @@ This is a first draft, not a locked schema.
       "amount": 0.31,
       "colorAmount": 0.82,
       "shadowBias": 0.67,
+      "striping": 0.25,
+      "hotPixels": 0.12,
       "speckleSize": 1
     },
     "memoryFault": {
       "enabled": false,
+      "interlace": 0.0,
       "blockShift": 0.0,
       "rowRepeat": 0.0,
       "scanlineDropout": 0.0
@@ -87,10 +145,22 @@ This is a first draft, not a locked schema.
 }
 ```
 
+## Module Reference
+
+- `colorBend`: whole-image color surgery — luminance-preserving `hueRotate` (degrees), hard channel reordering (`channelMode`: `gbr`, `brg`, `grb`, `bgr`, `rbg`), per-channel or full inversion (`invert`: `red`/`green`/`blue`/`all`), and `solarize` tone folding.
+- `chromaShift`: spatial RGB mis-registration; red and blue planes shift in opposite directions along `angle`, with optional per-row `wobble`.
+- `gradientWash`: position-driven color field (rainbow sky wash). `keepLuma` re-applies the source luminance so silhouettes survive; `wobble` warps the bands with noise.
+- `pixelSort`: threshold-triggered column sorting (classic glitch drips). `window` is the luma band that triggers a run, `maxRun` caps run length as a fraction of image height.
+- `falseColor.smoothness`: `0` = hard posterized bands, `1` = continuous gradient map.
+- `cheapCamera.blur`: pre-effect box blur (melted plastic lens). `dither`: ordered Bayer dither strength applied during final bit-depth crunch.
+- `memoryFault.interlace`: odd-row displacement in noise-gated bands with per-channel offsets (VHS/readout tearing).
+
+Palettes for `falseColor.mode` and `gradientWash.mode`: `solarized-ccd`, `thermal-bleach`, `pink-blue`, `toxic-green`, `rainbow`, `acid-sunset`, `infrared`, `candy-shop`, `poison-dart`.
+
 ## Notes
 
-- Numeric controls should generally use `0.0` to `1.0` ranges unless a physical unit or count is clearer.
-- Presets should store macro controls and expanded module controls.
-- Macro controls may be recalculated from module values later, but the first version can simply store both.
-- Seeds should be included when available, but exact pixel reproduction is not a hard promise.
-- Thumbnails can start as embedded data URLs for easy sharing. If preset files become too large, thumbnails can move to separate files later.
+- Numeric controls generally use `0.0` to `1.0` ranges unless a physical unit or count is clearer (`hueRotate` and `angle` in degrees, `bitDepth` in bits, `posterizeLevels` as a count).
+- Presets store both macro controls and expanded module controls. Macros are generators: moving a macro dial in the app recomputes the module parameters underneath it, while identity-type parameters (palette choice, hue angle, channel/sort modes) are left to the preset.
+- Seeds are stored and steer every random pattern in the render (noise, drips, block glitches). Same settings + same seed = same image within one engine version, but exact pixel reproduction across future engine versions is not a hard promise.
+- Thumbnails are embedded as WebP data URLs (written by the app on save). If preset files become too large, thumbnails can move to separate files later.
+- The CLI can override any field at render time with `--set pipeline.<module>.<param>=<value>` and `--macro <name>=<value>`.

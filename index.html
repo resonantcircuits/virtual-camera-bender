@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Virtual Camera Bender</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%2311110f'/%3E%3Crect x='2' y='4' width='12' height='9' rx='1' fill='%238dff7a'/%3E%3Ccircle cx='8' cy='8.5' r='3' fill='%2311110f'/%3E%3Ccircle cx='8' cy='8.5' r='1.4' fill='%23ff4fd8'/%3E%3Crect x='5' y='2' width='4' height='2' fill='%238dff7a'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="./styles.css">
+    <script type="module" src="./src/app.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <span class="brand-kicker">VCB-01</span>
+          <h1>Virtual Camera Bender</h1>
+        </div>
+        <div class="topbar-actions">
+          <button id="loadImageButton" class="command-button is-primary" type="button">Load Image</button>
+          <button id="loadPresetButton" class="command-button" type="button">Load Preset</button>
+          <button id="savePresetButton" class="command-button" type="button">Save Preset</button>
+          <button id="undoButton" class="command-button" type="button" title="Undo (Cmd/Ctrl+Z)" disabled>Undo</button>
+          <button id="redoButton" class="command-button" type="button" title="Redo (Shift+Cmd/Ctrl+Z)" disabled>Redo</button>
+          <label class="format-select">
+            <span>Format</span>
+            <select id="exportFormat">
+              <option value="png">PNG</option>
+              <option value="webp">WebP</option>
+              <option value="jpg">JPEG</option>
+            </select>
+          </label>
+          <button id="exportButton" class="command-button is-primary" type="button">Export</button>
+          <button id="helpButton" class="command-button" type="button" title="How this thing works (?)">?</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="panel panel-presets">
+          <section class="panel-section">
+            <h2>Camera</h2>
+            <label class="text-field">
+              <span>Name</span>
+              <input id="presetName" type="text" autocomplete="off">
+            </label>
+            <label class="text-field">
+              <span>Notes</span>
+              <textarea id="presetDescription" rows="3"></textarea>
+            </label>
+          </section>
+
+          <section class="panel-section preset-gallery-section">
+            <h2>Effects</h2>
+            <div id="presetList" class="preset-list"></div>
+          </section>
+
+          <section class="panel-section randomizer-section">
+            <h2>Randomize</h2>
+            <p class="hint">Bends the current camera — it never resets to a preset. Mode sets intensity; family buttons re-roll one damage domain.</p>
+            <label class="format-select is-wide">
+              <span>Mode</span>
+              <select id="randomMode"></select>
+            </label>
+            <div id="randomFamilyList" class="random-grid"></div>
+          </section>
+        </aside>
+
+        <section id="dropTarget" class="viewer">
+          <canvas id="previewCanvas"></canvas>
+          <div class="viewer-toolbar">
+            <button id="splitButton" class="command-button" type="button" title="A/B split compare — drag on the image (or press S)">Split A/B</button>
+            <button id="compareButton" class="command-button" type="button" title="Hold to view the original image (or hold C)">Hold · Original</button>
+          </div>
+          <div id="emptyState" class="empty-state">
+            <strong>NO SIGNAL</strong>
+            <span>LOAD IMAGE · DROP FILE</span>
+          </div>
+        </section>
+
+        <aside class="panel">
+          <section class="panel-section">
+            <h2>Circuit Seed</h2>
+            <div class="seed-row">
+              <input id="seedInput" type="text" inputmode="numeric" autocomplete="off">
+              <button id="rerollButton" class="command-button" type="button" title="New seed, same settings">Reroll</button>
+            </div>
+          </section>
+
+          <section class="panel-section">
+            <h2>Macro</h2>
+            <div id="macroControls" class="control-stack"></div>
+          </section>
+
+          <section class="panel-section">
+            <details>
+              <summary>Advanced Circuit</summary>
+              <div id="advancedControls" class="advanced-stack"></div>
+            </details>
+          </section>
+        </aside>
+      </main>
+
+      <footer class="statusbar">
+        <span id="statusText">NO SIGNAL</span>
+        <span class="statusbar-hint">R RANDOMIZE · C ORIGINAL · S SPLIT · &#8984;Z UNDO · ? HELP</span>
+        <span id="dimensionsText">0 x 0</span>
+      </footer>
+    </div>
+
+    <input id="imageInput" type="file" accept="image/*" hidden>
+    <input id="presetInput" type="file" accept="application/json,.json,.vcb-preset" hidden>
+
+    <dialog id="helpDialog" class="help-dialog">
+      <div class="help-header">
+        <h2>How Virtual Camera Bender Works</h2>
+        <button id="helpClose" class="command-button" type="button">Close</button>
+      </div>
+      <div class="help-body">
+        <section>
+          <h3>The Signal Path</h3>
+          <p>Camera preset &rarr; Macro dials &rarr; Circuit modules &rarr; Image.</p>
+          <p><strong>Cameras are starting points, not limits.</strong> Clicking one copies its full settings into the editor. From there everything is yours: every slider, randomizer, and module works from the current state, no matter which camera you started with.</p>
+        </section>
+        <section>
+          <h3>Macros vs Advanced Circuit</h3>
+          <p><strong>Macro dials</strong> are the big knobs. Moving one re-tunes the module parameters underneath it — so they overwrite fine tweaks in that area. Use them to rough in a look.</p>
+          <p><strong>Advanced Circuit</strong> is the per-module truth: every parameter of every effect. Use it to fine-tune after the macros get you close. Each module header has three buttons: <strong>R</strong> re-rolls just that module (keeps the seed, so everything else renders identically), <strong>S</strong> solos it so you see only its effect, and the <strong>lamp</strong> switches it on or off.</p>
+        </section>
+        <section>
+          <h3>Randomize</h3>
+          <p>Randomize always bends the <em>current</em> settings — it never resets to a preset.</p>
+          <p><strong>Mode</strong> sets how hard it hits: <strong>Bent</strong> is gentle, <strong>Damaged</strong> is clearly broken, <strong>Shorted</strong> is violent, <strong>Explore</strong> draws from the full range. The per-module R dice use this mode too.</p>
+          <p><strong>Global</strong> builds a whole new camera (new name, new seed, fresh macros, and a fresh pick of which modules are active). The <strong>family buttons</strong> (Color, Melt, Burn, Noise, Cheap, Memory) re-roll only that damage domain and leave the rest alone — good for keeping a look you like while re-rolling the part you don't.</p>
+        </section>
+        <section>
+          <h3>Seed</h3>
+          <p>The seed steers every random pattern in the render: noise grain, drip positions, block glitches. <strong>Reroll</strong> keeps all your settings but redraws the damage in new places. Same settings + same seed = same image.</p>
+        </section>
+        <section>
+          <h3>Comparing</h3>
+          <p><strong>Split A/B</strong> overlays the original left of a divider you drag across the image. <strong>Hold &middot; Original</strong> (or holding <kbd>C</kbd>) flashes the untouched photo. Export always renders at full source resolution.</p>
+        </section>
+        <section>
+          <h3>Shortcuts</h3>
+          <p>
+            <kbd>R</kbd> global randomize &middot;
+            <kbd>C</kbd> hold original &middot;
+            <kbd>S</kbd> split compare &middot;
+            <kbd>&#8984;Z</kbd> undo &middot;
+            <kbd>&#8679;&#8984;Z</kbd> redo &middot;
+            <kbd>?</kbd> this help
+          </p>
+        </section>
+      </div>
+    </dialog>
+  </body>
+</html>
