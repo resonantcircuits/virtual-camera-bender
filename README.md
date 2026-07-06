@@ -8,7 +8,7 @@ The project is inspired by early 2000s consumer digital cameras pushed into fail
 
 ## Current State
 
-The still-image editor is working: image upload (click or drag-and-drop), live preview, 14 built-in camera presets with live thumbnails, macro and per-module controls, family/global/per-module randomizers, undo/redo, A/B comparison, JSON preset save/load, original-resolution export (PNG/WebP/JPEG), and a headless CLI renderer that shares the same engine.
+The still-image editor is working: image upload (click or drag-and-drop), live preview, 17 built-in camera presets with live thumbnails, macro and per-module controls, family/global/per-module randomizers, undo/redo, A/B comparison, JSON preset save/load, original-resolution export (PNG/WebP/JPEG), and a headless CLI renderer that shares the same engine.
 
 Repository layout:
 
@@ -38,7 +38,7 @@ Then open `http://localhost:8787`.
 
 The still-image pipeline currently chains these modules (all preset-controlled):
 
-cheap camera (downscale, lens blur, bit crush + dither, sharpen) → chroma shift → exposure fault → color bend (hue rotate, channel swap/invert, solarize) → contour rings → false color (9 palettes, posterized or smooth gradient map) → gradient wash (positional rainbow fields) → edge burn → pixel sort → vertical smear → sensor noise → memory fault (interlace, block shift, row repeat, scanline dropout).
+cheap camera (downscale, lens blur, bit crush + dither, sharpen) → sync fault (frame-wrap tears, rolling-shutter wobble) → chroma shift → exposure fault → color bend (hue rotate, channel swap/invert, solarize) → contour rings → false color (9 palettes, posterized or smooth gradient map) → gradient wash (positional rainbow fields) → edge burn → pixel sort → vertical smear → sensor noise → memory fault (interlace, block shift, row repeat, scanline dropout) → DCT crunch (JPEG quantization, DC hue drift, AC scramble, block stutter, chroma subsampling) → OSD overlay (datestamp and HUD burn-in).
 
 ## Workflow Features
 
@@ -74,7 +74,7 @@ The first milestone (still-image web app with upload, preview, presets, randomiz
 - video mode: per-frame processing with stable seeds and temporal smoothing
 - preset gallery view with thumbnails and notes
 - batch image processing through the CLI
-- new effect families targeting the camera's digital brain (codec, firmware, and timing faults): JPEG/DCT corruption with DC drift and chroma subsampling, OSD/datestamp burn-in, sync tear + rolling-shutter wobble, Bayer/demosaic faults, stale-buffer ghosting, amp glow, dead columns, purple fringing, AWB/AE hunting bands, and generational recompression — full implementation notes in `docs/PROJECT_SPEC.md` under "Phase 5: New Effect Families"
+- more effect families targeting the camera's digital brain (the first three — JPEG/DCT corruption, OSD/datestamp burn-in, and sync tear + rolling-shutter wobble — are done): Bayer/demosaic faults, stale-buffer ghosting, amp glow, dead columns, purple fringing, AWB/AE hunting bands, and generational recompression — full implementation notes in `docs/PROJECT_SPEC.md` under "Phase 5: New Effect Families"
 
 ## Design Direction
 

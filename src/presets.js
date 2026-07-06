@@ -41,6 +41,18 @@ export const ADVANCED_DEFS = [
     ]
   },
   {
+    group: "Sync Fault",
+    key: "syncFault",
+    controls: [
+      ["pipeline.syncFault.enabled", "Enabled", "boolean"],
+      ["pipeline.syncFault.tearCount", "Tear Count", "range", 0, 1, 0.01],
+      ["pipeline.syncFault.tearShift", "Tear Shift", "range", 0, 1, 0.01],
+      ["pipeline.syncFault.wobbleAmount", "Wobble", "range", 0, 1, 0.01],
+      ["pipeline.syncFault.wobbleFrequency", "Wobble Freq", "range", 0, 1, 0.01],
+      ["pipeline.syncFault.drift", "Phase Drift", "range", 0, 1, 0.01]
+    ]
+  },
+  {
     group: "Color Bend",
     key: "colorBend",
     controls: [
@@ -177,6 +189,30 @@ export const ADVANCED_DEFS = [
       ["pipeline.memoryFault.rowRepeat", "Row Repeat", "range", 0, 1, 0.01],
       ["pipeline.memoryFault.scanlineDropout", "Scanline Dropout", "range", 0, 1, 0.01]
     ]
+  },
+  {
+    group: "DCT Crunch",
+    key: "dctCrunch",
+    controls: [
+      ["pipeline.dctCrunch.enabled", "Enabled", "boolean"],
+      ["pipeline.dctCrunch.quality", "Quality", "range", 0, 1, 0.01],
+      ["pipeline.dctCrunch.chromaSubsample", "Chroma Subsample", "range", 0, 1, 0.01],
+      ["pipeline.dctCrunch.dcDrift", "DC Drift", "range", 0, 1, 0.01],
+      ["pipeline.dctCrunch.acScramble", "AC Scramble", "range", 0, 1, 0.01],
+      ["pipeline.dctCrunch.blockRepeat", "Block Repeat", "range", 0, 1, 0.01]
+    ]
+  },
+  {
+    group: "OSD Overlay",
+    key: "osdOverlay",
+    controls: [
+      ["pipeline.osdOverlay.enabled", "Enabled", "boolean"],
+      ["pipeline.osdOverlay.datestamp", "Datestamp", "boolean"],
+      ["pipeline.osdOverlay.hudIcons", "HUD Icons", "boolean"],
+      ["pipeline.osdOverlay.glitchText", "Glitch Text", "range", 0, 1, 0.01],
+      ["pipeline.osdOverlay.scale", "Scale", "range", 0, 1, 0.01],
+      ["pipeline.osdOverlay.color", "Color", "select", ["orange", "green", "white"]]
+    ]
   }
 ];
 
@@ -201,6 +237,14 @@ function defaultPipeline() {
       bitDepth: 6,
       dither: 0.4,
       sharpen: 0.35
+    },
+    syncFault: {
+      enabled: false,
+      tearCount: 0.4,
+      tearShift: 0.4,
+      wobbleAmount: 0.25,
+      wobbleFrequency: 0.4,
+      drift: 0.35
     },
     colorBend: {
       enabled: false,
@@ -300,6 +344,22 @@ function defaultPipeline() {
       rowRepeat: 0,
       scanlineDropout: 0
     },
+    dctCrunch: {
+      enabled: false,
+      quality: 0.55,
+      chromaSubsample: 0.6,
+      dcDrift: 0,
+      acScramble: 0,
+      blockRepeat: 0
+    },
+    osdOverlay: {
+      enabled: false,
+      datestamp: true,
+      hudIcons: true,
+      glitchText: 0,
+      scale: 0.5,
+      color: "orange"
+    },
     output: {
       exportScale: 1,
       format: "png",
@@ -382,6 +442,12 @@ export function applyMacrosToPipeline(preset) {
   p.sensorNoise.striping = clamp(m.noise * 0.22 + m.melt * 0.22);
   p.sensorNoise.hotPixels = clamp(m.noise * 0.16 + chaos * 0.16);
 
+  p.dctCrunch.enabled = m.cheapness > 0.55;
+  p.dctCrunch.quality = clamp(1 - (m.cheapness - 0.3) * 1.05 - chaos * 0.08, 0.08, 0.95);
+  p.dctCrunch.chromaSubsample = clamp((m.cheapness - 0.3) * 1.8);
+  p.dctCrunch.acScramble = clamp((chaos - 0.55) * 0.5);
+  p.dctCrunch.blockRepeat = clamp((chaos - 0.6) * 0.4);
+
   p.memoryFault.enabled = chaos > 0.45;
   p.memoryFault.interlace = clamp((chaos - 0.38) * 0.85);
   p.memoryFault.blockShift = clamp((chaos - 0.45) * 0.62);
@@ -392,6 +458,11 @@ export function applyMacrosToPipeline(preset) {
   if (chaos > 0.6) {
     p.chromaShift.amount = Math.max(p.chromaShift.amount, clamp((chaos - 0.55) * 0.5));
   }
+
+  p.syncFault.enabled = chaos > 0.62;
+  p.syncFault.tearCount = clamp((chaos - 0.55) * 1.6);
+  p.syncFault.tearShift = clamp(0.2 + chaos * 0.45);
+  p.syncFault.wobbleAmount = clamp((chaos - 0.62) * 0.9 + m.melt * 0.06);
 
   return preset;
 }
@@ -802,6 +873,111 @@ export const BUILT_IN_PRESETS = [
       contourRings: { enabled: false },
       pixelSort: { strength: 0.4, threshold: 0.5 },
       sensorNoise: { amount: 0.32, colorAmount: 0.9 }
+    }
+  }),
+  createPreset({
+    name: "Codec Rot",
+    description: "Corrupted JPEG decode: block hue drift, scrambled macroblocks, chunky chroma.",
+    tags: ["jpeg", "dct", "codec"],
+    seed: 622377,
+    macros: {
+      bend: 0.32,
+      colorFault: 0.24,
+      melt: 0.02,
+      burn: 0.3,
+      noise: 0.22,
+      cheapness: 0.62,
+      chaos: 0.5
+    },
+    pipeline: {
+      dctCrunch: {
+        enabled: true,
+        quality: 0.42,
+        chromaSubsample: 0.8,
+        dcDrift: 0.58,
+        acScramble: 0.55,
+        blockRepeat: 0.25
+      },
+      cheapCamera: { internalScale: 0.88, blur: 0, bitDepth: 7, dither: 0.25, sharpen: 0.2 },
+      falseColor: { enabled: false },
+      contourRings: { enabled: false },
+      verticalSmear: { enabled: false },
+      pixelSort: { enabled: false },
+      edgeBurn: { enabled: false },
+      memoryFault: { enabled: false },
+      sensorNoise: { amount: 0.12, striping: 0.04, hotPixels: 0.03 }
+    }
+  }),
+  createPreset({
+    name: "Hold Vertical",
+    description: "Lost sync: frame-wrap tears, wavy rolling shutter, interlace fringes.",
+    tags: ["sync", "tear", "wobble"],
+    seed: 274199,
+    macros: {
+      bend: 0.4,
+      colorFault: 0.3,
+      melt: 0.08,
+      burn: 0.3,
+      noise: 0.36,
+      cheapness: 0.36,
+      chaos: 0.72
+    },
+    pipeline: {
+      syncFault: {
+        enabled: true,
+        tearCount: 0.7,
+        tearShift: 0.55,
+        wobbleAmount: 0.32,
+        wobbleFrequency: 0.45,
+        drift: 0.55
+      },
+      chromaShift: { enabled: true, amount: 0.22, angle: 0, wobble: 0.35 },
+      memoryFault: { enabled: true, interlace: 0.28, blockShift: 0.14, rowRepeat: 0.1, scanlineDropout: 0.06 },
+      falseColor: { strength: 0.28, smoothness: 0.55, saturation: 1.4 },
+      contourRings: { enabled: false },
+      verticalSmear: { enabled: false },
+      pixelSort: { enabled: false },
+      dctCrunch: { enabled: false },
+      sensorNoise: { amount: 0.2, striping: 0.12 }
+    }
+  }),
+  createPreset({
+    name: "Tourist Compact '03",
+    description: "Overcompressed vacation snap with orange datestamp and HUD burn-in.",
+    tags: ["osd", "datestamp", "jpeg"],
+    seed: 190803,
+    macros: {
+      bend: 0.28,
+      colorFault: 0.3,
+      melt: 0.03,
+      burn: 0.38,
+      noise: 0.3,
+      cheapness: 0.66,
+      chaos: 0.14
+    },
+    pipeline: {
+      osdOverlay: {
+        enabled: true,
+        datestamp: true,
+        hudIcons: true,
+        glitchText: 0.12,
+        scale: 0.5,
+        color: "orange"
+      },
+      dctCrunch: {
+        enabled: true,
+        quality: 0.48,
+        chromaSubsample: 0.85,
+        dcDrift: 0,
+        acScramble: 0.08,
+        blockRepeat: 0
+      },
+      falseColor: { strength: 0.22, smoothness: 0.6, saturation: 1.45 },
+      contourRings: { enabled: false },
+      verticalSmear: { enabled: false },
+      pixelSort: { enabled: false },
+      edgeBurn: { strength: 0.16 },
+      sensorNoise: { amount: 0.2, colorAmount: 0.6, striping: 0.06 }
     }
   }),
   createPreset({

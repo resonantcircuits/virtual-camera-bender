@@ -14,8 +14,8 @@ export const RANDOM_FAMILIES = [
   ["melt", "Melt", "Re-roll smear and pixel-sort drips — keeps the rest"],
   ["burn", "Burn", "Re-roll exposure clipping, contour rings, and edge fringes — keeps the rest"],
   ["noise", "Noise", "Re-roll sensor noise and speckle — keeps the rest"],
-  ["cheap", "Cheap", "Re-roll resolution, bit depth, blur, and dither — keeps the rest"],
-  ["memory", "Memory", "Re-roll interlace, block shifts, and scanline faults — keeps the rest"]
+  ["cheap", "Cheap", "Re-roll resolution, bit depth, blur, dither, and JPEG crunch — keeps the rest"],
+  ["memory", "Memory", "Re-roll interlace, block shifts, sync tears, and scanline faults — keeps the rest"]
 ];
 
 export const RANDOM_MODES = [
@@ -176,6 +176,33 @@ export const MODULE_RANDOMIZERS = {
     memory.blockShift = clamp(randomRange(0.1, mode.max, rng));
     memory.rowRepeat = clamp(randomRange(0.06, mode.max * 0.82, rng));
     memory.scanlineDropout = clamp(randomRange(0.04, mode.max * 0.68, rng));
+  },
+  dctCrunch(preset, mode, rng) {
+    const dct = preset.pipeline.dctCrunch;
+    dct.enabled = true;
+    dct.quality = clamp(1 - intensity(mode, rng, 0.2, 0.95), 0.05, 0.9);
+    dct.chromaSubsample = rng() > 0.3 ? randomRange(0.3, 1, rng) : 0;
+    dct.dcDrift = rng() > 0.5 ? intensity(mode, rng, 0.1, 0.85) : 0;
+    dct.acScramble = rng() > 0.45 ? intensity(mode, rng, 0.05, 0.7) : 0;
+    dct.blockRepeat = rng() > 0.6 ? intensity(mode, rng, 0.05, 0.5) : 0;
+  },
+  syncFault(preset, mode, rng) {
+    const sync = preset.pipeline.syncFault;
+    sync.enabled = true;
+    sync.tearCount = intensity(mode, rng, 0.2, 1);
+    sync.tearShift = randomRange(0.15, 0.85, rng);
+    sync.wobbleAmount = rng() > 0.35 ? intensity(mode, rng, 0.08, 0.7) : 0;
+    sync.wobbleFrequency = randomRange(0.15, 0.85, rng);
+    sync.drift = randomRange(0.1, 0.8, rng);
+  },
+  osdOverlay(preset, mode, rng) {
+    const osd = preset.pipeline.osdOverlay;
+    osd.enabled = true;
+    osd.datestamp = rng() > 0.12;
+    osd.hudIcons = rng() > 0.45;
+    osd.glitchText = rng() > 0.4 ? intensity(mode, rng, 0.05, 0.8) : 0;
+    osd.scale = randomRange(0.3, 0.7, rng);
+    osd.color = ["orange", "orange", "green", "white"][randomInt(0, 3, rng)];
   }
 };
 
@@ -260,12 +287,15 @@ function randomizeGlobal(preset, mode, rng) {
     "pixelSort",
     "verticalSmear",
     "sensorNoise",
-    "memoryFault"
+    "memoryFault",
+    "dctCrunch",
+    "syncFault"
   ].forEach((key) => {
     if (pipeline[key].enabled) MODULE_RANDOMIZERS[key](preset, mode, rng);
   });
 
   // Character modules are rare guests, not permanent residents.
+  // osdOverlay is deliberately untouched: it only turns on by hand.
   pipeline.colorBend.enabled = false;
   pipeline.gradientWash.enabled = false;
   if (rng() < 0.35) MODULE_RANDOMIZERS.colorBend(preset, mode, rng);
@@ -313,6 +343,8 @@ function randomizeCheap(preset, mode, rng) {
   preset.macros.cheapness = value(mode, rng, 0.04);
   applyMacrosToPipeline(preset);
   MODULE_RANDOMIZERS.cheapCamera(preset, mode, rng);
+  if (rng() < 0.55) MODULE_RANDOMIZERS.dctCrunch(preset, mode, rng);
+  else preset.pipeline.dctCrunch.enabled = false;
 }
 
 function randomizeMemory(preset, mode, rng) {
@@ -321,6 +353,8 @@ function randomizeMemory(preset, mode, rng) {
   MODULE_RANDOMIZERS.memoryFault(preset, mode, rng);
   if (rng() < 0.5) MODULE_RANDOMIZERS.chromaShift(preset, mode, rng);
   else preset.pipeline.chromaShift.enabled = false;
+  if (rng() < 0.45) MODULE_RANDOMIZERS.syncFault(preset, mode, rng);
+  else preset.pipeline.syncFault.enabled = false;
 }
 
 function randomCameraName(rng) {

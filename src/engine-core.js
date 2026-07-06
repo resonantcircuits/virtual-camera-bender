@@ -103,6 +103,7 @@ export function processCircuitBendImageData(image, preset) {
   const pipeline = preset.pipeline;
   applyCheapScale(image, pipeline.cheapCamera);
   applySoftFocus(image, pipeline.cheapCamera);
+  applySyncFault(image, pipeline.syncFault, seed);
   applyChromaShift(image, pipeline.chromaShift, seed);
   applyExposureFault(image, pipeline.exposureFault, seed);
   applyColorBend(image, pipeline.colorBend);
@@ -114,7 +115,9 @@ export function processCircuitBendImageData(image, preset) {
   applyVerticalSmear(image, pipeline.verticalSmear, seed);
   applySensorNoise(image, pipeline.sensorNoise, seed);
   applyMemoryFault(image, pipeline.memoryFault, seed);
+  applyDctCrunch(image, pipeline.dctCrunch, seed);
   applyFinalCrunch(image, pipeline);
+  applyOsdOverlay(image, pipeline.osdOverlay, seed);
   return image;
 }
 
@@ -187,6 +190,77 @@ function boxBlurPass(data, width, height, radius, horizontal) {
       data[index] = buffer[i * 3];
       data[index + 1] = buffer[i * 3 + 1];
       data[index + 2] = buffer[i * 3 + 2];
+    }
+  }
+}
+
+function applySyncFault(image, config, seed) {
+  if (!config?.enabled) return;
+  const tearCount = clamp(config.tearCount ?? 0);
+  const tearShift = clamp(config.tearShift ?? 0.4);
+  const wobbleAmount = clamp(config.wobbleAmount ?? 0);
+  const wobbleFrequency = clamp(config.wobbleFrequency ?? 0.4);
+  const drift = clamp(config.drift ?? 0.3);
+  const tears = Math.round(tearCount * 3);
+  if (tears === 0 && wobbleAmount <= 0.005) return;
+
+  const { width, height, data } = image;
+  const source = new Uint8ClampedArray(data);
+  const offsets = new Float32Array(height);
+  const bandRows = new Set();
+
+  // Frame wrap: below each tear row the whole frame shifts sideways and wraps,
+  // with a short band of corrupted rows at the transition.
+  for (let tear = 0; tear < tears; tear += 1) {
+    const row =
+      Math.floor(height * 0.05) +
+      Math.floor(hashUnit(tear, 1, seed + 4001) * height * 0.9);
+    const shift = hashSigned(tear, 2, seed + 4003) * tearShift * width * 0.5;
+    const band = 2 + Math.floor(hashUnit(tear, 3, seed + 4005) * 5);
+    for (let y = row; y < height; y += 1) offsets[y] += shift;
+    for (let b = 0; b < band && row + b < height; b += 1) bandRows.add(row + b);
+  }
+
+  // Rolling wobble: per-row sine with progressive phase (jello) plus
+  // low-frequency phase drift so verticals wander instead of ringing evenly.
+  if (wobbleAmount > 0.005) {
+    const amp = wobbleAmount * width * 0.045;
+    const cycles = 1 + wobbleFrequency * 7;
+    const freq = (cycles * Math.PI * 2) / height;
+    for (let y = 0; y < height; y += 1) {
+      const slow = (fbmNoise(0.3, y / (height * 0.24), seed + 4011) - 0.5) * drift * Math.PI * 3;
+      const envelope = 0.55 + 0.45 * Math.sin(y * freq * 0.37 + slow);
+      offsets[y] += Math.sin(y * freq + slow) * amp * envelope;
+    }
+  }
+
+  for (let y = 0; y < height; y += 1) {
+    const offset = Math.round(offsets[y]);
+    const corrupt = bandRows.has(y);
+    if (offset === 0 && !corrupt) continue;
+    for (let x = 0; x < width; x += 1) {
+      const sx = (((x - offset) % width) + width) % width;
+      const to = pixelIndex(x, y, width);
+      if (corrupt) {
+        // Torn transition band: stuttered cells, split chroma, sparse specks.
+        const jitter = Math.floor(hashUnit(x >> 3, y, seed + 4021) * width * 0.18);
+        const rx = (sx + jitter) % width;
+        const gx = (sx + jitter * 2) % width;
+        data[to] = source[pixelIndex(rx, y, width)];
+        data[to + 1] = source[pixelIndex(gx, y, width) + 1];
+        data[to + 2] = source[pixelIndex(rx, y, width) + 2];
+        if (hashUnit(x, y, seed + 4031) < 0.1) {
+          const speck = hashUnit(x, y, seed + 4032) > 0.5 ? 255 : 0;
+          data[to] = speck;
+          data[to + 1] = speck;
+          data[to + 2] = speck;
+        }
+        continue;
+      }
+      const from = pixelIndex(sx, y, width);
+      data[to] = source[from];
+      data[to + 1] = source[from + 1];
+      data[to + 2] = source[from + 2];
     }
   }
 }
@@ -841,6 +915,223 @@ function applyMemoryFault(image, config, seed) {
   }
 }
 
+// Orthonormal 8x8 DCT basis: DCT_TABLE[u * 8 + x] = c(u) * cos((2x + 1) * u * PI / 16).
+const DCT_TABLE = (() => {
+  const table = new Float32Array(64);
+  for (let u = 0; u < 8; u += 1) {
+    const c = u === 0 ? Math.sqrt(1 / 8) : 0.5;
+    for (let x = 0; x < 8; x += 1) {
+      table[u * 8 + x] = c * Math.cos(((2 * x + 1) * u * Math.PI) / 16);
+    }
+  }
+  return table;
+})();
+
+function dct8Forward(src, dst, tmp) {
+  for (let y = 0; y < 8; y += 1) {
+    for (let u = 0; u < 8; u += 1) {
+      let sum = 0;
+      for (let x = 0; x < 8; x += 1) sum += src[y * 8 + x] * DCT_TABLE[u * 8 + x];
+      tmp[y * 8 + u] = sum;
+    }
+  }
+  for (let u = 0; u < 8; u += 1) {
+    for (let v = 0; v < 8; v += 1) {
+      let sum = 0;
+      for (let y = 0; y < 8; y += 1) sum += tmp[y * 8 + u] * DCT_TABLE[v * 8 + y];
+      dst[v * 8 + u] = sum;
+    }
+  }
+}
+
+function dct8Inverse(src, dst, tmp) {
+  for (let u = 0; u < 8; u += 1) {
+    for (let y = 0; y < 8; y += 1) {
+      let sum = 0;
+      for (let v = 0; v < 8; v += 1) sum += src[v * 8 + u] * DCT_TABLE[v * 8 + y];
+      tmp[y * 8 + u] = sum;
+    }
+  }
+  for (let y = 0; y < 8; y += 1) {
+    for (let x = 0; x < 8; x += 1) {
+      let sum = 0;
+      for (let u = 0; u < 8; u += 1) sum += tmp[y * 8 + u] * DCT_TABLE[u * 8 + x];
+      dst[y * 8 + x] = sum;
+    }
+  }
+}
+
+function subsampleChroma(plane, width, height, blend) {
+  for (let y = 0; y < height; y += 2) {
+    const y1 = Math.min(height - 1, y + 1);
+    for (let x = 0; x < width; x += 2) {
+      const x1 = Math.min(width - 1, x + 1);
+      const a = plane[y * width + x];
+      const b = plane[y * width + x1];
+      const c = plane[y1 * width + x];
+      const d = plane[y1 * width + x1];
+      const mean = (a + b + c + d) * 0.25;
+      plane[y * width + x] = lerp(a, mean, blend);
+      plane[y * width + x1] = lerp(b, mean, blend);
+      plane[y1 * width + x] = lerp(c, mean, blend);
+      plane[y1 * width + x1] = lerp(d, mean, blend);
+    }
+  }
+}
+
+function applyDctCrunch(image, config, seed) {
+  if (!config?.enabled) return;
+  const quality = clamp(config.quality ?? 0.5);
+  const dcDrift = clamp(config.dcDrift ?? 0);
+  const acScramble = clamp(config.acScramble ?? 0);
+  const blockRepeat = clamp(config.blockRepeat ?? 0);
+  const chromaSubsample = clamp(config.chromaSubsample ?? 0);
+  const wantsDct =
+    quality < 0.985 || dcDrift > 0.005 || acScramble > 0.005 || blockRepeat > 0.005;
+  if (!wantsDct && chromaSubsample <= 0.005) return;
+
+  const { width, height, data } = image;
+  const size = width * height;
+  const planes = [new Float32Array(size), new Float32Array(size), new Float32Array(size)];
+  const [Y, Cb, Cr] = planes;
+
+  for (let i = 0, p = 0; p < size; i += 4, p += 1) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    Y[p] = r * 0.299 + g * 0.587 + b * 0.114;
+    Cb[p] = r * -0.168736 + g * -0.331264 + b * 0.5 + 128;
+    Cr[p] = r * 0.5 + g * -0.418688 + b * -0.081312 + 128;
+  }
+
+  if (chromaSubsample > 0.005) {
+    subsampleChroma(Cb, width, height, chromaSubsample);
+    subsampleChroma(Cr, width, height, chromaSubsample);
+  }
+
+  if (wantsDct) {
+    const blocksX = Math.ceil(width / 8);
+    const blocksY = Math.ceil(height / 8);
+    const pixels = new Float32Array(64);
+    const coeffs = new Float32Array(64);
+    const scratch = new Float32Array(64);
+    const decoded = [new Float32Array(64), new Float32Array(64), new Float32Array(64)];
+    const held = [new Float32Array(64), new Float32Array(64), new Float32Array(64)];
+    // Quantizer step in pixel units; higher frequencies get coarser steps like JPEG.
+    const qBase = quality >= 0.985 ? 0 : 1 + Math.pow(1 - quality, 1.5) * 56;
+    // DC drift is a random walk along block-scan order; chroma wanders further
+    // than luma so color slides into wrong hues before brightness collapses.
+    // The walk rate scales with total block count so the drift spans the whole
+    // frame at any resolution, and hard jumps stay rare (a few per frame).
+    const totalBlocks = blocksX * blocksY;
+    const walkScale = 1.6 / Math.sqrt(totalBlocks);
+    const jumpChance = (dcDrift * 5) / totalBlocks;
+    const driftCaps = [dcDrift * 70, dcDrift * 150, dcDrift * 150];
+    const driftRates = driftCaps.map((cap) => cap * walkScale);
+    const drift = [0, 0, 0];
+    let holdCount = 0;
+
+    for (let by = 0; by < blocksY; by += 1) {
+      for (let bx = 0; bx < blocksX; bx += 1) {
+        // Corrupt macroblocks arrive in patches, not uniform sprinkle.
+        const patch = fbmNoise(bx / 14, by / 14, seed + 2101);
+        const scrambleBlock = acScramble > 0.005 && patch < acScramble * 0.72;
+
+        for (let plane = 0; plane < 3; plane += 1) {
+          const source = planes[plane];
+          for (let y = 0; y < 8; y += 1) {
+            const sy = Math.min(height - 1, by * 8 + y);
+            for (let x = 0; x < 8; x += 1) {
+              const sx = Math.min(width - 1, bx * 8 + x);
+              pixels[y * 8 + x] = source[sy * width + sx];
+            }
+          }
+
+          dct8Forward(pixels, coeffs, scratch);
+
+          if (qBase > 0) {
+            for (let i = 1; i < 64; i += 1) {
+              const u = i & 7;
+              const v = i >> 3;
+              const step = qBase * (1 + (u + v) * 0.8);
+              coeffs[i] = Math.round(coeffs[i] / step) * step;
+            }
+            coeffs[0] = Math.round(coeffs[0] / qBase) * qBase;
+          }
+
+          if (scrambleBlock) {
+            for (let i = 1; i < 64; i += 1) {
+              const roll = hashUnit(bx * 64 + i, by * 3 + plane, seed + 2113);
+              if (roll < 0.32) {
+                coeffs[i] = 0;
+              } else if (roll < 0.48) {
+                const from = 1 + Math.floor(hashUnit(bx * 64 + i, by, seed + 2117) * 63);
+                coeffs[i] = coeffs[from] * 1.6;
+              } else if (roll < 0.56) {
+                // Inject garbage energy so corruption reads even in flat blocks.
+                coeffs[i] = hashSigned(bx * 64 + i, by + 5, seed + 2119) * 85;
+              } else if (roll < 0.64) {
+                coeffs[i] *= -1.8;
+              }
+            }
+          }
+
+          if (dcDrift > 0.005) {
+            if (plane === 0) {
+              // One walk step per block, shared timing across planes.
+              for (let p = 0; p < 3; p += 1) {
+                drift[p] += hashSigned(bx, by, seed + 2131 + p) * driftRates[p];
+                if (hashUnit(bx, by, seed + 2141 + p) < jumpChance) {
+                  drift[p] += hashSigned(bx + 7, by + 7, seed + 2151 + p) * driftCaps[p];
+                }
+                drift[p] = clamp(drift[p], -driftCaps[p], driftCaps[p]);
+              }
+            }
+            coeffs[0] += drift[plane] * 8;
+          }
+
+          dct8Inverse(coeffs, decoded[plane], scratch);
+        }
+
+        if (blockRepeat > 0.005) {
+          if (holdCount > 0) {
+            holdCount -= 1;
+            for (let plane = 0; plane < 3; plane += 1) decoded[plane].set(held[plane]);
+          } else if (
+            // Stutters cluster in bursts (patch-gated), not uniform sprinkle.
+            fbmNoise(bx / 11, by / 11, seed + 2167) < blockRepeat * 0.6 &&
+            hashUnit(bx, by, seed + 2161) < 0.14 + blockRepeat * 0.2
+          ) {
+            holdCount = 1 + Math.floor(hashUnit(bx, by, seed + 2163) * (1 + blockRepeat * 10));
+            for (let plane = 0; plane < 3; plane += 1) held[plane].set(decoded[plane]);
+          }
+        }
+
+        const maxY = Math.min(8, height - by * 8);
+        const maxX = Math.min(8, width - bx * 8);
+        for (let plane = 0; plane < 3; plane += 1) {
+          const target = planes[plane];
+          for (let y = 0; y < maxY; y += 1) {
+            const row = (by * 8 + y) * width + bx * 8;
+            for (let x = 0; x < maxX; x += 1) {
+              target[row + x] = decoded[plane][y * 8 + x];
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (let i = 0, p = 0; p < size; i += 4, p += 1) {
+    const luminance = Y[p];
+    const cb = Cb[p] - 128;
+    const cr = Cr[p] - 128;
+    data[i] = clampByte(luminance + 1.402 * cr);
+    data[i + 1] = clampByte(luminance - 0.344136 * cb - 0.714136 * cr);
+    data[i + 2] = clampByte(luminance + 1.772 * cb);
+  }
+}
+
 const BAYER_4X4 = [
   [0, 8, 2, 10],
   [12, 4, 14, 6],
@@ -889,6 +1180,183 @@ function applyFinalCrunch(image, pipeline) {
           4;
         data[index + channel] = clampByte(center + (center - neighbor) * amount * 2.5);
       }
+    }
+  }
+}
+
+// 5x7 bitmap font for the on-screen display, one int per row, MSB = left pixel.
+const OSD_FONT = {
+  "0": [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+  "1": [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+  "2": [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+  "3": [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
+  "4": [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+  "5": [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+  "6": [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+  "7": [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+  "8": [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+  "9": [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+  A: [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+  B: [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+  C: [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+  D: [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+  E: [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+  F: [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+  G: [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
+  I: [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+  M: [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+  N: [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+  O: [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+  P: [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+  R: [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+  S: [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+  T: [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+  U: [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+  V: [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+  W: [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+  "'": [0b00100, 0b00100, 0b01000, 0b00000, 0b00000, 0b00000, 0b00000],
+  ":": [0b00000, 0b00100, 0b00000, 0b00000, 0b00100, 0b00000, 0b00000],
+  ".": [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100],
+  "/": [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
+  "-": [0b00000, 0b00000, 0b00000, 0b01110, 0b00000, 0b00000, 0b00000],
+  " ": [0, 0, 0, 0, 0, 0, 0]
+};
+
+const OSD_GLYPH_KEYS = Object.keys(OSD_FONT).filter((key) => key !== " ");
+
+const OSD_COLORS = {
+  orange: [255, 158, 42],
+  green: [96, 255, 128],
+  white: [242, 248, 242]
+};
+
+function osdFillRect(image, x, y, w, h, color, alpha) {
+  const { width, height, data } = image;
+  const x0 = Math.max(0, Math.round(x));
+  const y0 = Math.max(0, Math.round(y));
+  const x1 = Math.min(width, Math.round(x + w));
+  const y1 = Math.min(height, Math.round(y + h));
+  for (let py = y0; py < y1; py += 1) {
+    for (let px = x0; px < x1; px += 1) {
+      const index = pixelIndex(px, py, width);
+      data[index] = clampByte(lerp(data[index], color[0], alpha));
+      data[index + 1] = clampByte(lerp(data[index + 1], color[1], alpha));
+      data[index + 2] = clampByte(lerp(data[index + 2], color[2], alpha));
+    }
+  }
+}
+
+function osdDrawGlyph(image, glyph, x0, y0, px, color, alpha) {
+  for (let row = 0; row < 7; row += 1) {
+    const bits = glyph[row];
+    if (!bits) continue;
+    for (let col = 0; col < 5; col += 1) {
+      if (bits & (1 << (4 - col))) {
+        osdFillRect(image, x0 + col * px, y0 + row * px, px, px, color, alpha);
+      }
+    }
+  }
+}
+
+function osdDrawText(image, text, x0, y0, px, color, glitch, seed, alpha = 0.92) {
+  const doubled = glitch > 0.01 && hashUnit(1, 9, seed) < glitch * 0.5;
+  const shadow = Math.max(1, Math.round(px * 0.4));
+  for (let i = 0; i < text.length; i += 1) {
+    let key = text[i];
+    let dy = 0;
+    if (glitch > 0.01 && key !== " ") {
+      if (hashUnit(i, 1, seed) < glitch * 0.55) {
+        key = OSD_GLYPH_KEYS[Math.floor(hashUnit(i, 2, seed) * OSD_GLYPH_KEYS.length)];
+      }
+      if (hashUnit(i, 3, seed) < glitch * 0.35) {
+        dy = Math.round(hashSigned(i, 4, seed) * px * 2);
+      }
+    }
+    const glyph = OSD_FONT[key] || OSD_FONT[" "];
+    const x = x0 + i * px * 6;
+    osdDrawGlyph(image, glyph, x + shadow, y0 + dy + shadow, px, [10, 10, 10], alpha * 0.45);
+    osdDrawGlyph(image, glyph, x, y0 + dy, px, color, alpha);
+    if (doubled) {
+      osdDrawGlyph(image, glyph, x + px * 2, y0 + dy - px, px, color, alpha * 0.4);
+    }
+  }
+}
+
+function osdTextWidth(text, px) {
+  return text.length * px * 6 - px;
+}
+
+function applyOsdOverlay(image, config, seed) {
+  if (!config?.enabled) return;
+  const showDate = config.datestamp !== false;
+  const showHud = !!config.hudIcons;
+  if (!showDate && !showHud) return;
+  const glitch = clamp(config.glitchText ?? 0);
+  const scale = clamp(config.scale ?? 0.5);
+  const color = OSD_COLORS[config.color] || OSD_COLORS.orange;
+  const { width, height } = image;
+  const px = Math.max(1, Math.round((Math.min(width, height) / 230) * (0.55 + scale * 1.5)));
+  const margin = px * 5;
+
+  if (showDate) {
+    const yy = Math.floor(hashUnit(3, 1, seed + 3001) * 8);
+    const mm = 1 + Math.floor(hashUnit(3, 2, seed + 3002) * 12);
+    const dd = 1 + Math.floor(hashUnit(3, 3, seed + 3003) * 28);
+    const text = `'0${yy} ${mm} ${dd}`;
+    osdDrawText(
+      image,
+      text,
+      width - margin - osdTextWidth(text, px),
+      height - margin - px * 7,
+      px,
+      color,
+      glitch,
+      seed + 11
+    );
+  }
+
+  if (showHud) {
+    const isoValues = [64, 80, 100, 200, 400];
+    const iso = isoValues[Math.floor(hashUnit(5, 1, seed + 3011) * isoValues.length)];
+    osdDrawText(image, `ISO ${iso}`, margin, height - margin - px * 7, px, color, glitch, seed + 13);
+    osdDrawText(image, "REC", margin + px * 6, margin, px, color, glitch, seed + 17);
+    // Round-ish record dot to the left of REC.
+    const dot = [0b0110, 0b1111, 0b1111, 0b0110];
+    for (let row = 0; row < 4; row += 1) {
+      for (let col = 0; col < 4; col += 1) {
+        if (dot[row] & (1 << (3 - col))) {
+          osdFillRect(image, margin + col * px, margin + px + row * px, px, px, [255, 46, 46], 0.92);
+        }
+      }
+    }
+
+    // Battery: outline body, charge bars, terminal nub.
+    const batteryX = width - margin - px * 12;
+    const batteryLevel = 1 + Math.floor(hashUnit(7, 1, seed + 3021) * 3);
+    osdFillRect(image, batteryX, margin, px * 11, px, color, 0.92);
+    osdFillRect(image, batteryX, margin + px * 4, px * 11, px, color, 0.92);
+    osdFillRect(image, batteryX, margin, px, px * 5, color, 0.92);
+    osdFillRect(image, batteryX + px * 10, margin, px, px * 5, color, 0.92);
+    osdFillRect(image, batteryX + px * 11, margin + px, px, px * 3, color, 0.92);
+    for (let bar = 0; bar < batteryLevel; bar += 1) {
+      osdFillRect(image, batteryX + px * (2 + bar * 3), margin + px * 1.5, px * 2, px * 2, color, 0.92);
+    }
+
+    // Center focus brackets.
+    const arm = px * 5;
+    const left = Math.round(width * 0.34);
+    const right = Math.round(width * 0.66);
+    const top = Math.round(height * 0.36);
+    const bottom = Math.round(height * 0.64);
+    const corners = [
+      [left, top, 1, 1],
+      [right, top, -1, 1],
+      [left, bottom, 1, -1],
+      [right, bottom, -1, -1]
+    ];
+    for (const [cx, cy, sx, sy] of corners) {
+      osdFillRect(image, sx > 0 ? cx : cx - arm, cy - (sy > 0 ? 0 : px), arm, px, color, 0.8);
+      osdFillRect(image, cx - (sx > 0 ? 0 : px), sy > 0 ? cy : cy - arm, px, arm, color, 0.8);
     }
   }
 }

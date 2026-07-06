@@ -117,6 +117,7 @@ The engine (`src/engine-core.js`) runs a fixed camera-circuit pipeline:
 ```text
 Input image
 -> cheap-camera downscale + lens blur
+-> sync fault (frame-wrap tears + rolling-shutter wobble)
 -> chroma shift
 -> exposure and clipping fault
 -> color bend (hue rotate / channel swap / invert / solarize)
@@ -128,7 +129,9 @@ Input image
 -> vertical smear
 -> sensor noise / hot pixels / striping
 -> memory and scanline faults (interlace, block shift, row repeat, dropout)
+-> DCT crunch (JPEG quantization, DC drift, AC scramble, block stutter, chroma subsampling)
 -> final bit crush + dither + sharpen
+-> OSD overlay (datestamp + HUD burn-in)
 -> export
 ```
 
@@ -174,7 +177,7 @@ Determinism is desirable but not absolute. Presets store seeds and reproduce the
 
 Presets are full-system configurations, not separate special effects. They act as starting points: loading one copies its settings into the editor, after which every control and randomizer works from the current state.
 
-The app ships with 14 built-in cameras. The original five:
+The app ships with 17 built-in cameras. The original five:
 
 - `Bent CCD-03`: strong magenta/cyan clipping, medium vertical melt
 - `Dead Flash Compact`: blown highlights, hard edge burn, noisy shadows
@@ -193,6 +196,12 @@ Nine more, each modeled on specific reference images:
 - `Night Stalker`: crushed blacks with toxic green speckle
 - `Poison Corridor`: melted lens blur posterized into green contour slime
 - `Negative Bloom`: full channel inversion with saturation push and solarize
+
+Three more added with the Phase 5 digital-brain modules (2026-07-06):
+
+- `Codec Rot`: corrupted JPEG decode — block hue drift, scrambled macroblocks, chunky chroma
+- `Hold Vertical`: lost sync — frame-wrap tears, wavy rolling shutter, interlace fringes
+- `Tourist Compact '03`: overcompressed vacation snap with orange datestamp and HUD burn-in
 
 ## Roadmap
 
@@ -235,20 +244,20 @@ Nine more, each modeled on specific reference images:
 - add temporal stability controls — open
 - support batch image processing — open
 
-### Phase 5: New Effect Families (backlog, ideated 2026-07-05)
+### Phase 5: New Effect Families (ideated 2026-07-05; items 1-3 done 2026-07-06)
 
 The current engine covers the analog signal path (sensor readout, exposure, color response, noise) well. The remaining gaps are the camera's digital brain: codec, firmware, and timing faults. Each entry below has enough implementation detail to start cold.
 
 Priority order by impact-per-effort: **1) DCT corruption, 2) OSD/datestamp, 3) sync tear + rolling wobble**, then the rest.
 
-**1. `dctCrunch` — JPEG/DCT corruption (highest priority)**
-The most recognizable missing digital-camera glitch; reference image 22 (mountain quadrants) is this family. Implement as a late-pipeline module (after memoryFault, before finalCrunch): split image into 8x8 (or 16x16) blocks, DCT each block (a simple separable 8x8 DCT in JS is fine), then damage coefficients: quantize harshly (quality param), randomly zero or scramble AC coefficients in seeded block regions, and apply "DC drift" — a slowly accumulating offset to DC terms along block-scan order so color slides block-by-block into wrong hues (the rainbow gradient-drift look). Also add standalone `chromaSubsample` param (force chroma to quarter res while luma stays sharp — cheap, instantly "2003 JPEG"). Params: `quality`, `dcDrift`, `acScramble`, `blockRepeat` (macroblock stutter), `chromaSubsample`.
+**1. `dctCrunch` — JPEG/DCT corruption — done**
+The most recognizable missing digital-camera glitch; reference image 23 (mountain quadrants; the original spec said 22 but the numbering was off by one) is this family. Implemented late-pipeline (after memoryFault, before finalCrunch): 8x8 blocks per YCbCr plane through a separable orthonormal DCT, then coefficient damage: JPEG-style quantization (`quality`, frequency-weighted steps), `acScramble` (zero/shuffle/inject AC coefficients in fbm-gated block patches), `dcDrift` (random-walk DC offset along block-scan order, walk rate scaled by total block count so the slide spans the frame at any resolution, chroma wandering further than luma, rare hard jumps for quadrant-style breaks), `blockRepeat` (held-macroblock stutter, patch-gated), `chromaSubsample` (2x2 chroma averaging while luma stays sharp). Macro coupling: cheapness drives enable/quality/chromaSubsample, chaos adds acScramble/blockRepeat; dcDrift stays preset-driven. Built-in preset: `Codec Rot`.
 
-**2. `osdOverlay` — camera UI burn-in (small effort, huge character)**
-Orange corner datestamp (`'06 7 5` style), battery icon, `ISO 80`, focus brackets, REC dot, optionally glitched: wrong glyphs, mojibake, doubled/torn overlay. Implement as the final pipeline stage drawing from a tiny embedded bitmap font (5x7 px, scaled by image size; draw into ImageData directly so it works in worker + CLI). Params: `datestamp` (bool + seeded date), `hudIcons`, `glitchText` (0-1 corruption of glyphs), `scale`, `color` (orange/green/white). Note: this is set dressing, keep it out of most default presets, off by default in macros.
+**2. `osdOverlay` — camera UI burn-in — done**
+Orange corner datestamp (seeded `'03 1 16` style), REC dot, ISO readout, battery icon, and focus brackets drawn as the final pipeline stage from an embedded 5x7 bitmap font, straight into ImageData (worker + CLI safe), with a drop shadow, size scaled by image dimension. `glitchText` swaps glyphs, tears baselines, and doubles the overlay. Params: `datestamp`, `hudIcons`, `glitchText`, `scale`, `color` (orange/green/white). No macro coupling and excluded from global randomize (set dressing — it only turns on by hand, via its module dice, or a preset). Built-in preset: `Tourist Compact '03`.
 
-**3. `syncFault` — sync tear + rolling-shutter wobble (small effort, new geometry)**
-Everything in the current pipeline except blockShift preserves vertical alignment; this adds coherent geometric damage. Two sub-effects in one module, applied early (right after cheapCamera): (a) frame wrap — below a seeded row N, shift all rows horizontally by a constant and wrap around, with a torn transition band of 2-6 corrupted rows; (b) rolling wobble — per-row horizontal sine displacement with progressive phase (jello), plus low-frequency row phase drift so verticals go wavy. Params: `tearCount`, `tearShift`, `wobbleAmount`, `wobbleFrequency`, `drift`.
+**3. `syncFault` — sync tear + rolling-shutter wobble — done**
+Applied right after cheapCamera. (a) frame wrap: below each seeded tear row the frame shifts sideways and wraps, with a 2-6 row corrupted transition band (stuttered cells, split chroma, specks); (b) rolling wobble: per-row sine displacement with progressive phase and fbm phase drift plus amplitude envelope so verticals wander. Params: `tearCount`, `tearShift`, `wobbleAmount`, `wobbleFrequency`, `drift`. Macro coupling: chaos > 0.62 enables tears/wobble. Built-in preset: `Hold Vertical`.
 
 **4. `bayerFault` — demosaic corruption (sleeper pick, unique texture)**
 Re-interpret the image as if the Bayer grid were misaligned: sample into an RGGB mosaic, then demosaic with the wrong phase offset → green/magenta pixel checkerboards, zipper edges, moiré rainbows on fine texture. Nothing else in the pipeline produces pixel-scale crosshatch. Early pipeline (before exposure). Params: `phaseError` (0-3 offset), `strength` (blend), `zipper` (edge aliasing boost).

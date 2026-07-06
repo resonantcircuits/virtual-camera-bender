@@ -38,6 +38,14 @@ The schema below matches the current implementation (`src/presets.js`). It is st
       "dither": 0.4,
       "sharpen": 0.42
     },
+    "syncFault": {
+      "enabled": false,
+      "tearCount": 0.4,
+      "tearShift": 0.4,
+      "wobbleAmount": 0.25,
+      "wobbleFrequency": 0.4,
+      "drift": 0.35
+    },
     "colorBend": {
       "enabled": false,
       "hueRotate": 0,
@@ -136,6 +144,22 @@ The schema below matches the current implementation (`src/presets.js`). It is st
       "rowRepeat": 0.0,
       "scanlineDropout": 0.0
     },
+    "dctCrunch": {
+      "enabled": false,
+      "quality": 0.55,
+      "chromaSubsample": 0.6,
+      "dcDrift": 0.0,
+      "acScramble": 0.0,
+      "blockRepeat": 0.0
+    },
+    "osdOverlay": {
+      "enabled": false,
+      "datestamp": true,
+      "hudIcons": true,
+      "glitchText": 0.0,
+      "scale": 0.5,
+      "color": "orange"
+    },
     "output": {
       "exportScale": 1.0,
       "format": "png",
@@ -154,6 +178,9 @@ The schema below matches the current implementation (`src/presets.js`). It is st
 - `falseColor.smoothness`: `0` = hard posterized bands, `1` = continuous gradient map.
 - `cheapCamera.blur`: pre-effect box blur (melted plastic lens). `dither`: ordered Bayer dither strength applied during final bit-depth crunch.
 - `memoryFault.interlace`: odd-row displacement in noise-gated bands with per-channel offsets (VHS/readout tearing).
+- `syncFault`: timing damage, applied early. `tearCount`/`tearShift`: frame-wrap tears — below each seeded row the frame shifts sideways and wraps, with a short corrupted transition band. `wobbleAmount`/`wobbleFrequency`: per-row rolling-shutter sine displacement; `drift` adds low-frequency phase wander so verticals go wavy instead of ringing evenly.
+- `dctCrunch`: JPEG/DCT corruption on 8x8 blocks in YCbCr, applied late. `quality`: 1 = clean, 0 = pure block mosaic. `chromaSubsample`: force chroma toward quarter resolution while luma stays sharp. `dcDrift`: accumulating DC offset along block-scan order — color slides block-by-block into wrong hues. `acScramble`: zero/shuffle/inject AC coefficients in seeded block patches. `blockRepeat`: macroblock stutter (held blocks repeat in scan order).
+- `osdOverlay`: camera UI burn-in drawn last from an embedded 5x7 bitmap font. `datestamp`: seeded orange corner date (`'03 1 16` style). `hudIcons`: REC dot, ISO readout, battery, focus brackets. `glitchText`: 0-1 glyph corruption (wrong glyphs, tears, doubling). `color`: `orange`, `green`, or `white`.
 
 Palettes for `falseColor.mode` and `gradientWash.mode`: `solarized-ccd`, `thermal-bleach`, `pink-blue`, `toxic-green`, `rainbow`, `acid-sunset`, `infrared`, `candy-shop`, `poison-dart`.
 
