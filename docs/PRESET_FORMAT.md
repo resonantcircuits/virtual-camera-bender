@@ -177,7 +177,7 @@ The schema below matches the current implementation (`src/presets.js`). It is st
     "output": {
       "exportScale": 1.0,
       "format": "png",
-      "preserveOriginalResolution": true
+      "preserveOriginalResolution": false
     }
   }
 }
