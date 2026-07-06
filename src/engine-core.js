@@ -8,7 +8,7 @@ const PALETTES = {
     [246, 30, 214],
     [255, 238, 72],
     [18, 224, 72],
-    [255, 255, 255]
+    [255, 255, 255],
   ],
   "thermal-bleach": [
     [0, 0, 0],
@@ -16,7 +16,7 @@ const PALETTES = {
     [0, 220, 255],
     [255, 110, 232],
     [255, 248, 190],
-    [255, 255, 255]
+    [255, 255, 255],
   ],
   "pink-blue": [
     [0, 0, 14],
@@ -24,7 +24,7 @@ const PALETTES = {
     [60, 192, 255],
     [224, 38, 212],
     [255, 132, 224],
-    [255, 255, 246]
+    [255, 255, 246],
   ],
   "toxic-green": [
     [0, 0, 0],
@@ -32,9 +32,9 @@ const PALETTES = {
     [26, 236, 86],
     [232, 18, 226],
     [255, 230, 44],
-    [238, 255, 255]
+    [238, 255, 255],
   ],
-  "rainbow": [
+  rainbow: [
     [110, 0, 190],
     [22, 24, 255],
     [0, 190, 255],
@@ -42,7 +42,7 @@ const PALETTES = {
     [250, 240, 0],
     [255, 128, 0],
     [255, 22, 60],
-    [255, 0, 210]
+    [255, 0, 210],
   ],
   "acid-sunset": [
     [46, 0, 66],
@@ -51,15 +51,15 @@ const PALETTES = {
     [255, 122, 0],
     [255, 64, 158],
     [255, 158, 224],
-    [255, 246, 236]
+    [255, 246, 236],
   ],
-  "infrared": [
+  infrared: [
     [8, 6, 58],
     [66, 22, 158],
     [188, 42, 202],
     [255, 108, 228],
     [255, 190, 244],
-    [255, 255, 255]
+    [255, 255, 255],
   ],
   "candy-shop": [
     [0, 146, 168],
@@ -67,7 +67,7 @@ const PALETTES = {
     [236, 246, 236],
     [255, 172, 222],
     [255, 92, 192],
-    [198, 38, 142]
+    [198, 38, 142],
   ],
   "poison-dart": [
     [4, 10, 4],
@@ -75,8 +75,8 @@ const PALETTES = {
     [92, 142, 40],
     [192, 222, 60],
     [242, 255, 122],
-    [250, 255, 232]
-  ]
+    [250, 255, 232],
+  ],
 };
 
 const CHANNEL_ORDERS = {
@@ -85,7 +85,7 @@ const CHANNEL_ORDERS = {
   brg: [2, 0, 1],
   grb: [1, 0, 2],
   bgr: [2, 1, 0],
-  rbg: [0, 2, 1]
+  rbg: [0, 2, 1],
 };
 
 const EDGE_COLORS = {
@@ -95,7 +95,7 @@ const EDGE_COLORS = {
   black: [0, 0, 0],
   white: [255, 255, 255],
   red: [255, 22, 22],
-  yellow: [255, 242, 42]
+  yellow: [255, 242, 42],
 };
 
 export function processCircuitBendImageData(image, preset, resources = {}) {
@@ -150,10 +150,7 @@ function applyCheapScale(image, config) {
 function applySoftFocus(image, config) {
   if (!config?.enabled || !(config.blur > 0.01)) return;
   const { width, height, data } = image;
-  const radius = Math.max(
-    1,
-    Math.round(config.blur * 5 * Math.max(1, Math.min(width, height) / 900))
-  );
+  const radius = Math.max(1, Math.round(config.blur * 5 * Math.max(1, Math.min(width, height) / 900)));
   boxBlurPass(data, width, height, radius, true);
   boxBlurPass(data, width, height, radius, false);
 }
@@ -214,9 +211,7 @@ function applySyncFault(image, config, seed) {
   // Frame wrap: below each tear row the whole frame shifts sideways and wraps,
   // with a short band of corrupted rows at the transition.
   for (let tear = 0; tear < tears; tear += 1) {
-    const row =
-      Math.floor(height * 0.05) +
-      Math.floor(hashUnit(tear, 1, seed + 4001) * height * 0.9);
+    const row = Math.floor(height * 0.05) + Math.floor(hashUnit(tear, 1, seed + 4001) * height * 0.9);
     const shift = hashSigned(tear, 2, seed + 4003) * tearShift * width * 0.5;
     const band = 2 + Math.floor(hashUnit(tear, 3, seed + 4005) * 5);
     for (let y = row; y < height; y += 1) offsets[y] += shift;
@@ -404,9 +399,7 @@ function applyBufferGhost(image, config, seed, ghost) {
       for (let channel = 0; channel < 3; channel += 1) {
         const top = lerp(ghostData[i00 + channel], ghostData[i10 + channel], tx);
         const bottom = lerp(ghostData[i01 + channel], ghostData[i11 + channel], tx);
-        data[index + channel] = clampByte(
-          lerp(data[index + channel], lerp(top, bottom, ty), weight)
-        );
+        data[index + channel] = clampByte(lerp(data[index + channel], lerp(top, bottom, ty), weight));
       }
     }
   }
@@ -465,7 +458,7 @@ function applyColorBend(image, config) {
     0.072 - cosA * 0.072 - sinA * 0.283,
     0.213 - cosA * 0.213 - sinA * 0.787,
     0.715 - cosA * 0.715 + sinA * 0.715,
-    0.072 + cosA * 0.928 + sinA * 0.072
+    0.072 + cosA * 0.928 + sinA * 0.072,
   ];
   const foldPoint = 255 * (1 - solarize * 0.55);
 
@@ -525,9 +518,7 @@ function applyGradientWash(image, config, seed) {
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const index = pixelIndex(x, y, width);
-      const drift = wobble > 0
-        ? (fbmNoise(x / noiseScale, y / noiseScale, seed + 577) - 0.5) * wobble * 0.9
-        : 0;
+      const drift = wobble > 0 ? (fbmNoise(x / noiseScale, y / noiseScale, seed + 577) - 0.5) * wobble * 0.9 : 0;
       const t = clamp(fract((x * cosA + y * sinA) / span + drift + 0.001), 0, 0.999);
       const color = samplePalette(palette, t);
       const lum = pixelLuma(data, index) / 255;
@@ -573,18 +564,11 @@ function applyPixelSort(image, config, seed) {
         continue;
       }
       let runEnd = y;
-      while (
-        runEnd < height &&
-        runEnd - y < maxRun &&
-        lumaCache[runEnd] >= low &&
-        lumaCache[runEnd] <= high
-      ) {
+      while (runEnd < height && runEnd - y < maxRun && lumaCache[runEnd] >= low && lumaCache[runEnd] <= high) {
         runEnd += 1;
       }
       // Extend the run past the band so bright pixels drip into darker rows.
-      const drip = Math.round(
-        (runEnd - y) * (0.6 + strength * 2.4) * (0.5 + hashUnit(x, y, seed + 1213))
-      );
+      const drip = Math.round((runEnd - y) * (0.6 + strength * 2.4) * (0.5 + hashUnit(x, y, seed + 1213)));
       runEnd = Math.min(height, Math.min(y + maxRun, runEnd + drip));
 
       if (runEnd - y > 3) {
@@ -680,27 +664,19 @@ function applyContourRings(image, config, seed) {
       const smoothResponse = 1 - smoothstep(0.035, 0.32, edge);
       const tonalResponse = lerp(1, smoothstep(0.16, 0.96, lum), tonalBias);
 
-      const field = fbmNoise(
-        x / Math.max(24, noiseScale),
-        y / Math.max(24, noiseScale * 0.72),
-        seed + 917
-      );
+      const field = fbmNoise(x / Math.max(24, noiseScale), y / Math.max(24, noiseScale * 0.72), seed + 917);
       const tonal = lum * contourLevels + field * (1.2 + scale * 2.4);
       const contourPhase = Math.abs(fract(tonal) - 0.5) * 2;
       const lineWidth = 0.34 - bandSharpness * 0.24;
       const ringLine = 1 - smoothstep(0.035, Math.max(0.055, lineWidth), contourPhase);
       const amount = clamp(
-        ringLine *
-          strength *
-          (0.28 + smoothResponse * 0.72) *
-          tonalResponse *
-          (0.62 + colorBleed * 0.52)
+        ringLine * strength * (0.28 + smoothResponse * 0.72) * tonalResponse * (0.62 + colorBleed * 0.52),
       );
       if (amount <= 0.003) continue;
 
       const color = samplePalette(
         PALETTES["solarized-ccd"],
-        fract(lum + field * 0.38 + hashUnit(Math.floor(x / 47), Math.floor(y / 47), seed + 921))
+        fract(lum + field * 0.38 + hashUnit(Math.floor(x / 47), Math.floor(y / 47), seed + 921)),
       );
       const lift = ringLine * strength * 34;
       data[index] = clampByte(lerp(data[index] + lift, color[0], amount * colorBleed));
@@ -823,9 +799,7 @@ function applyVerticalSmear(image, config, seed) {
         (Math.abs(pixelLuma(source, right) - pixelLuma(source, left)) +
           Math.abs(pixelLuma(source, down) - pixelLuma(source, up))) /
         255;
-      const trigger = clamp(
-        smoothstep(threshold, 1, lum) + smoothstep(0.06, 0.56, edge) * edgeBias
-      );
+      const trigger = clamp(smoothstep(threshold, 1, lum) + smoothstep(0.06, 0.56, edge) * edgeBias);
 
       if (trigger > 0.02) {
         const spark = hashUnit(x, y, seed + 29);
@@ -896,8 +870,7 @@ function applyVerticalSmear(image, config, seed) {
         for (let delta = -curtainRadius; delta <= curtainRadius; delta += 1) {
           const sx = clamp(carryX + delta, 0, width - 1) | 0;
           if (curtainLife[sx] <= 0 || curtainEnergy[sx] <= 0) continue;
-          const columnWeight =
-            curtainRadius === 0 ? 1 : 1 - Math.abs(delta) / (curtainRadius + 1);
+          const columnWeight = curtainRadius === 0 ? 1 : 1 - Math.abs(delta) / (curtainRadius + 1);
           const lifeFade = smoothstep(0, maxCurtainLife * 0.2, curtainLife[sx]);
           const columnEnergy = curtainEnergy[sx] * columnWeight * lifeFade;
           curtainSampleR += curtainR[sx] * columnEnergy;
@@ -908,25 +881,12 @@ function applyVerticalSmear(image, config, seed) {
 
         if (curtainSampleEnergy > 0.004) {
           const invEnergy = 1 / Math.max(curtainSampleEnergy, 0.0001);
-          const curtainAmount = clamp(
-            curtainSampleEnergy * (0.48 + curtainStrength * 0.82),
-            0,
-            0.96
-          );
+          const curtainAmount = clamp(curtainSampleEnergy * (0.48 + curtainStrength * 0.82), 0, 0.96);
           const stripeShade =
-            1 -
-            smoothstep(0.04, 0.8, curtainSampleEnergy) *
-              contrast *
-              (0.32 + hashUnit(carryX, 0, seed + 841) * 0.28);
-          data[index] = clampByte(
-            lerp(data[index], curtainSampleR * invEnergy, curtainAmount) * stripeShade
-          );
-          data[index + 1] = clampByte(
-            lerp(data[index + 1], curtainSampleG * invEnergy, curtainAmount) * stripeShade
-          );
-          data[index + 2] = clampByte(
-            lerp(data[index + 2], curtainSampleB * invEnergy, curtainAmount) * stripeShade
-          );
+            1 - smoothstep(0.04, 0.8, curtainSampleEnergy) * contrast * (0.32 + hashUnit(carryX, 0, seed + 841) * 0.28);
+          data[index] = clampByte(lerp(data[index], curtainSampleR * invEnergy, curtainAmount) * stripeShade);
+          data[index + 1] = clampByte(lerp(data[index + 1], curtainSampleG * invEnergy, curtainAmount) * stripeShade);
+          data[index + 2] = clampByte(lerp(data[index + 2], curtainSampleB * invEnergy, curtainAmount) * stripeShade);
         }
       }
     }
@@ -987,9 +947,7 @@ function applyMemoryFault(image, config, seed) {
       const band = Math.floor(y / bandSize);
       if (hashUnit(3, band, seed + 651) > amount * 0.85) continue;
       if (y % 2 === 0) continue;
-      const shift = Math.round(
-        hashSigned(4, band, seed + 652) * width * (0.015 + amount * 0.08)
-      );
+      const shift = Math.round(hashSigned(4, band, seed + 652) * width * (0.015 + amount * 0.08));
       const chromaSplit = Math.round(1 + amount * 5);
       for (let x = 0; x < width; x += 1) {
         const to = pixelIndex(x, y, width);
@@ -1133,8 +1091,7 @@ function applyDctCrunch(image, config, seed) {
   const acScramble = clamp(config.acScramble ?? 0);
   const blockRepeat = clamp(config.blockRepeat ?? 0);
   const chromaSubsample = clamp(config.chromaSubsample ?? 0);
-  const wantsDct =
-    quality < 0.985 || dcDrift > 0.005 || acScramble > 0.005 || blockRepeat > 0.005;
+  const wantsDct = quality < 0.985 || dcDrift > 0.005 || acScramble > 0.005 || blockRepeat > 0.005;
   if (!wantsDct && chromaSubsample <= 0.005) return;
 
   const { width, height, data } = image;
@@ -1283,7 +1240,7 @@ const BAYER_4X4 = [
   [0, 8, 2, 10],
   [12, 4, 14, 6],
   [3, 11, 1, 9],
-  [15, 7, 13, 5]
+  [15, 7, 13, 5],
 ];
 
 function applyFinalCrunch(image, pipeline) {
@@ -1320,11 +1277,7 @@ function applyFinalCrunch(image, pipeline) {
       for (let channel = 0; channel < 3; channel += 1) {
         const center = source[index + channel];
         const neighbor =
-          (source[left + channel] +
-            source[right + channel] +
-            source[up + channel] +
-            source[down + channel]) /
-          4;
+          (source[left + channel] + source[right + channel] + source[up + channel] + source[down + channel]) / 4;
         data[index + channel] = clampByte(center + (center - neighbor) * amount * 2.5);
       }
     }
@@ -1333,16 +1286,16 @@ function applyFinalCrunch(image, pipeline) {
 
 // 5x7 bitmap font for the on-screen display, one int per row, MSB = left pixel.
 const OSD_FONT = {
-  "0": [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-  "1": [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-  "2": [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
-  "3": [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
-  "4": [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-  "5": [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-  "6": [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-  "7": [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-  "8": [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-  "9": [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+  0: [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+  1: [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+  2: [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+  3: [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
+  4: [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+  5: [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+  6: [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+  7: [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+  8: [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+  9: [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
   A: [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
   B: [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
   C: [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
@@ -1366,7 +1319,7 @@ const OSD_FONT = {
   ".": [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100],
   "/": [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
   "-": [0b00000, 0b00000, 0b00000, 0b01110, 0b00000, 0b00000, 0b00000],
-  " ": [0, 0, 0, 0, 0, 0, 0]
+  " ": [0, 0, 0, 0, 0, 0, 0],
 };
 
 const OSD_GLYPH_KEYS = Object.keys(OSD_FONT).filter((key) => key !== " ");
@@ -1374,7 +1327,7 @@ const OSD_GLYPH_KEYS = Object.keys(OSD_FONT).filter((key) => key !== " ");
 const OSD_COLORS = {
   orange: [255, 158, 42],
   green: [96, 255, 128],
-  white: [242, 248, 242]
+  white: [242, 248, 242],
 };
 
 function osdFillRect(image, x, y, w, h, color, alpha) {
@@ -1440,7 +1393,7 @@ function applyOsdOverlay(image, config, seed) {
   if (!showDate && !showHud) return;
   const glitch = clamp(config.glitchText ?? 0);
   const scale = clamp(config.scale ?? 0.5);
-  const color = OSD_COLORS[config.color] || OSD_COLORS.orange;
+  const color = OSD_COLORS[config.color] || OSD_COLORS.white;
   const { width, height } = image;
   const px = Math.max(1, Math.round((Math.min(width, height) / 230) * (0.55 + scale * 1.5)));
   const margin = px * 5;
@@ -1458,7 +1411,7 @@ function applyOsdOverlay(image, config, seed) {
       px,
       color,
       glitch,
-      seed + 11
+      seed + 11,
     );
   }
 
@@ -1499,7 +1452,7 @@ function applyOsdOverlay(image, config, seed) {
       [left, top, 1, 1],
       [right, top, -1, 1],
       [left, bottom, 1, -1],
-      [right, bottom, -1, -1]
+      [right, bottom, -1, -1],
     ];
     for (const [cx, cy, sx, sy] of corners) {
       osdFillRect(image, sx > 0 ? cx : cx - arm, cy - (sy > 0 ? 0 : px), arm, px, color, 0.8);
@@ -1516,7 +1469,7 @@ function samplePalette(palette, t) {
   return [
     lerp(palette[index][0], palette[next][0], amount),
     lerp(palette[index][1], palette[next][1], amount),
-    lerp(palette[index][2], palette[next][2], amount)
+    lerp(palette[index][2], palette[next][2], amount),
   ];
 }
 

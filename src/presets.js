@@ -395,7 +395,7 @@ function defaultPipeline() {
       hudIcons: true,
       glitchText: 0,
       scale: 0.5,
-      color: "orange"
+      color: "white"
     },
     output: {
       exportScale: 1,
