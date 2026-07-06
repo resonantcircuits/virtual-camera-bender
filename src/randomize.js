@@ -186,6 +186,13 @@ export const MODULE_RANDOMIZERS = {
     dct.acScramble = rng() > 0.45 ? intensity(mode, rng, 0.05, 0.7) : 0;
     dct.blockRepeat = rng() > 0.6 ? intensity(mode, rng, 0.05, 0.5) : 0;
   },
+  bayerFault(preset, mode, rng) {
+    const bayer = preset.pipeline.bayerFault;
+    bayer.enabled = true;
+    bayer.phaseError = randomInt(1, 3, rng);
+    bayer.strength = intensity(mode, rng, 0.3, 1);
+    bayer.zipper = randomRange(0.1, 0.8, rng);
+  },
   syncFault(preset, mode, rng) {
     const sync = preset.pipeline.syncFault;
     sync.enabled = true;
@@ -298,8 +305,10 @@ function randomizeGlobal(preset, mode, rng) {
   // osdOverlay is deliberately untouched: it only turns on by hand.
   pipeline.colorBend.enabled = false;
   pipeline.gradientWash.enabled = false;
+  pipeline.bayerFault.enabled = false;
   if (rng() < 0.35) MODULE_RANDOMIZERS.colorBend(preset, mode, rng);
   if (rng() < 0.22) MODULE_RANDOMIZERS.gradientWash(preset, mode, rng);
+  if (rng() < 0.15) MODULE_RANDOMIZERS.bayerFault(preset, mode, rng);
   if (rng() < 0.18 + mode.chaos * 0.2) MODULE_RANDOMIZERS.chromaShift(preset, mode, rng);
   else pipeline.chromaShift.enabled = false;
 }
@@ -345,6 +354,8 @@ function randomizeCheap(preset, mode, rng) {
   MODULE_RANDOMIZERS.cheapCamera(preset, mode, rng);
   if (rng() < 0.55) MODULE_RANDOMIZERS.dctCrunch(preset, mode, rng);
   else preset.pipeline.dctCrunch.enabled = false;
+  if (rng() < 0.35) MODULE_RANDOMIZERS.bayerFault(preset, mode, rng);
+  else preset.pipeline.bayerFault.enabled = false;
 }
 
 function randomizeMemory(preset, mode, rng) {

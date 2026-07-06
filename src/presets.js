@@ -53,6 +53,16 @@ export const ADVANCED_DEFS = [
     ]
   },
   {
+    group: "Bayer Fault",
+    key: "bayerFault",
+    controls: [
+      ["pipeline.bayerFault.enabled", "Enabled", "boolean"],
+      ["pipeline.bayerFault.phaseError", "Phase Error", "range", 0, 3, 1],
+      ["pipeline.bayerFault.strength", "Strength", "range", 0, 1, 0.01],
+      ["pipeline.bayerFault.zipper", "Zipper Edges", "range", 0, 1, 0.01]
+    ]
+  },
+  {
     group: "Color Bend",
     key: "colorBend",
     controls: [
@@ -245,6 +255,12 @@ function defaultPipeline() {
       wobbleAmount: 0.25,
       wobbleFrequency: 0.4,
       drift: 0.35
+    },
+    bayerFault: {
+      enabled: false,
+      phaseError: 1,
+      strength: 0.7,
+      zipper: 0.3
     },
     colorBend: {
       enabled: false,
@@ -978,6 +994,32 @@ export const BUILT_IN_PRESETS = [
       pixelSort: { enabled: false },
       edgeBurn: { strength: 0.16 },
       sensorNoise: { amount: 0.2, colorAmount: 0.6, striping: 0.06 }
+    }
+  }),
+  createPreset({
+    name: "Zipper Mosaic",
+    description: "Misaligned demosaic: green-magenta checkerboards and zipper edges.",
+    tags: ["bayer", "demosaic", "checkerboard"],
+    seed: 815242,
+    macros: {
+      bend: 0.35,
+      colorFault: 0.2,
+      melt: 0.02,
+      burn: 0.3,
+      noise: 0.28,
+      cheapness: 0.4,
+      chaos: 0.15
+    },
+    pipeline: {
+      bayerFault: { enabled: true, phaseError: 3, strength: 0.85, zipper: 0.6 },
+      cheapCamera: { internalScale: 0.85, bitDepth: 7, dither: 0.3, sharpen: 0.55 },
+      falseColor: { enabled: false },
+      contourRings: { enabled: false },
+      verticalSmear: { enabled: false },
+      pixelSort: { enabled: false },
+      edgeBurn: { enabled: false },
+      exposureFault: { gain: 1.15, blackCrush: 0.15, highlightClip: 0.35 },
+      sensorNoise: { amount: 0.14, colorAmount: 0.7, striping: 0.05 }
     }
   }),
   createPreset({

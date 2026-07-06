@@ -104,6 +104,7 @@ export function processCircuitBendImageData(image, preset) {
   applyCheapScale(image, pipeline.cheapCamera);
   applySoftFocus(image, pipeline.cheapCamera);
   applySyncFault(image, pipeline.syncFault, seed);
+  applyBayerFault(image, pipeline.bayerFault);
   applyChromaShift(image, pipeline.chromaShift, seed);
   applyExposureFault(image, pipeline.exposureFault, seed);
   applyColorBend(image, pipeline.colorBend);
@@ -261,6 +262,86 @@ function applySyncFault(image, config, seed) {
       data[to] = source[from];
       data[to + 1] = source[from + 1];
       data[to + 2] = source[from + 2];
+    }
+  }
+}
+
+// RGGB quad, indexed by ((y & 1) << 1) | (x & 1).
+const BAYER_CHANNEL = [0, 1, 1, 2];
+
+function applyBayerFault(image, config) {
+  if (!config?.enabled || !(config.strength > 0.005)) return;
+  const { width, height, data } = image;
+  const strength = clamp(config.strength);
+  const phase = Math.round(clamp(config.phaseError ?? 1, 0, 3));
+  const zipper = clamp(config.zipper ?? 0);
+  const ox = phase & 1;
+  const oy = phase >> 1;
+
+  // Sample the image into an RGGB mosaic at the true grid phase, then
+  // demosaic assuming a shifted phase so every channel reconstructs from
+  // the wrong sensor wells: green/magenta checkerboards and zipper edges.
+  const source = new Uint8ClampedArray(data);
+  const mosaic = new Float32Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const channel = BAYER_CHANNEL[((y & 1) << 1) | (x & 1)];
+      mosaic[y * width + x] = source[pixelIndex(x, y, width) + channel];
+    }
+  }
+
+  const sample = (x, y) => {
+    const cx = x < 0 ? 0 : x >= width ? width - 1 : x;
+    const cy = y < 0 ? 0 : y >= height ? height - 1 : y;
+    return mosaic[cy * width + cx];
+  };
+
+  for (let y = 0; y < height; y += 1) {
+    const redRow = ((y + oy) & 1) === 0;
+    for (let x = 0; x < width; x += 1) {
+      const redCol = ((x + ox) & 1) === 0;
+      let r;
+      let g;
+      let b;
+
+      if (redRow && redCol) {
+        r = sample(x, y);
+        g = (sample(x - 1, y) + sample(x + 1, y) + sample(x, y - 1) + sample(x, y + 1)) / 4;
+        b = (sample(x - 1, y - 1) + sample(x + 1, y - 1) + sample(x - 1, y + 1) + sample(x + 1, y + 1)) / 4;
+      } else if (!redRow && !redCol) {
+        b = sample(x, y);
+        g = (sample(x - 1, y) + sample(x + 1, y) + sample(x, y - 1) + sample(x, y + 1)) / 4;
+        r = (sample(x - 1, y - 1) + sample(x + 1, y - 1) + sample(x - 1, y + 1) + sample(x + 1, y + 1)) / 4;
+      } else {
+        g = sample(x, y);
+        if (redRow) {
+          r = (sample(x - 1, y) + sample(x + 1, y)) / 2;
+          b = (sample(x, y - 1) + sample(x, y + 1)) / 2;
+        } else {
+          r = (sample(x, y - 1) + sample(x, y + 1)) / 2;
+          b = (sample(x - 1, y) + sample(x + 1, y)) / 2;
+        }
+      }
+
+      const index = pixelIndex(x, y, width);
+      if (zipper > 0.005) {
+        const left = pixelIndex(Math.max(0, x - 1), y, width);
+        const right = pixelIndex(Math.min(width - 1, x + 1), y, width);
+        const up = pixelIndex(x, Math.max(0, y - 1), width);
+        const down = pixelIndex(x, Math.min(height - 1, y + 1), width);
+        const edge =
+          (Math.abs(pixelLuma(source, right) - pixelLuma(source, left)) +
+            Math.abs(pixelLuma(source, down) - pixelLuma(source, up))) /
+          255;
+        const shimmer = smoothstep(0.04, 0.4, edge) * zipper * ((x ^ y) & 1 ? 1 : -1);
+        g += shimmer * 46;
+        r -= shimmer * 18;
+        b -= shimmer * 18;
+      }
+
+      data[index] = clampByte(lerp(source[index], r, strength));
+      data[index + 1] = clampByte(lerp(source[index + 1], g, strength));
+      data[index + 2] = clampByte(lerp(source[index + 2], b, strength));
     }
   }
 }

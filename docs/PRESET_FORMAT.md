@@ -46,6 +46,12 @@ The schema below matches the current implementation (`src/presets.js`). It is st
       "wobbleFrequency": 0.4,
       "drift": 0.35
     },
+    "bayerFault": {
+      "enabled": false,
+      "phaseError": 1,
+      "strength": 0.7,
+      "zipper": 0.3
+    },
     "colorBend": {
       "enabled": false,
       "hueRotate": 0,
@@ -179,6 +185,7 @@ The schema below matches the current implementation (`src/presets.js`). It is st
 - `cheapCamera.blur`: pre-effect box blur (melted plastic lens). `dither`: ordered Bayer dither strength applied during final bit-depth crunch.
 - `memoryFault.interlace`: odd-row displacement in noise-gated bands with per-channel offsets (VHS/readout tearing).
 - `syncFault`: timing damage, applied early. `tearCount`/`tearShift`: frame-wrap tears — below each seeded row the frame shifts sideways and wraps, with a short corrupted transition band. `wobbleAmount`/`wobbleFrequency`: per-row rolling-shutter sine displacement; `drift` adds low-frequency phase wander so verticals go wavy instead of ringing evenly.
+- `bayerFault`: demosaic corruption, applied early. The image is resampled into an RGGB mosaic and demosaiced assuming the wrong grid phase (`phaseError` 0-3: 0 = correct phase, just cheap-demosaic softening; 1/2/3 = horizontal/vertical/diagonal misalignment → green/magenta checkerboards and channel swaps). `zipper` adds alternating-pixel shimmer along edges; `strength` blends with the source.
 - `dctCrunch`: JPEG/DCT corruption on 8x8 blocks in YCbCr, applied late. `quality`: 1 = clean, 0 = pure block mosaic. `chromaSubsample`: force chroma toward quarter resolution while luma stays sharp. `dcDrift`: accumulating DC offset along block-scan order — color slides block-by-block into wrong hues. `acScramble`: zero/shuffle/inject AC coefficients in seeded block patches. `blockRepeat`: macroblock stutter (held blocks repeat in scan order).
 - `osdOverlay`: camera UI burn-in drawn last from an embedded 5x7 bitmap font. `datestamp`: seeded orange corner date (`'03 1 16` style). `hudIcons`: REC dot, ISO readout, battery, focus brackets. `glitchText`: 0-1 glyph corruption (wrong glyphs, tears, doubling). `color`: `orange`, `green`, or `white`.
 

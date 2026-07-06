@@ -118,6 +118,7 @@ The engine (`src/engine-core.js`) runs a fixed camera-circuit pipeline:
 Input image
 -> cheap-camera downscale + lens blur
 -> sync fault (frame-wrap tears + rolling-shutter wobble)
+-> bayer fault (wrong-phase demosaic checkerboards + zipper edges)
 -> chroma shift
 -> exposure and clipping fault
 -> color bend (hue rotate / channel swap / invert / solarize)
@@ -177,7 +178,7 @@ Determinism is desirable but not absolute. Presets store seeds and reproduce the
 
 Presets are full-system configurations, not separate special effects. They act as starting points: loading one copies its settings into the editor, after which every control and randomizer works from the current state.
 
-The app ships with 17 built-in cameras. The original five:
+The app ships with 18 built-in cameras. The original five:
 
 - `Bent CCD-03`: strong magenta/cyan clipping, medium vertical melt
 - `Dead Flash Compact`: blown highlights, hard edge burn, noisy shadows
@@ -197,11 +198,12 @@ Nine more, each modeled on specific reference images:
 - `Poison Corridor`: melted lens blur posterized into green contour slime
 - `Negative Bloom`: full channel inversion with saturation push and solarize
 
-Three more added with the Phase 5 digital-brain modules (2026-07-06):
+Four more added with the Phase 5 digital-brain modules (2026-07-06):
 
 - `Codec Rot`: corrupted JPEG decode — block hue drift, scrambled macroblocks, chunky chroma
 - `Hold Vertical`: lost sync — frame-wrap tears, wavy rolling shutter, interlace fringes
 - `Tourist Compact '03`: overcompressed vacation snap with orange datestamp and HUD burn-in
+- `Zipper Mosaic`: misaligned demosaic — green-magenta checkerboards and zipper edges
 
 ## Roadmap
 
@@ -244,7 +246,7 @@ Three more added with the Phase 5 digital-brain modules (2026-07-06):
 - add temporal stability controls — open
 - support batch image processing — open
 
-### Phase 5: New Effect Families (ideated 2026-07-05; items 1-3 done 2026-07-06)
+### Phase 5: New Effect Families (ideated 2026-07-05; items 1-4 done 2026-07-06)
 
 The current engine covers the analog signal path (sensor readout, exposure, color response, noise) well. The remaining gaps are the camera's digital brain: codec, firmware, and timing faults. Each entry below has enough implementation detail to start cold.
 
@@ -259,8 +261,8 @@ Orange corner datestamp (seeded `'03 1 16` style), REC dot, ISO readout, battery
 **3. `syncFault` — sync tear + rolling-shutter wobble — done**
 Applied right after cheapCamera. (a) frame wrap: below each seeded tear row the frame shifts sideways and wraps, with a 2-6 row corrupted transition band (stuttered cells, split chroma, specks); (b) rolling wobble: per-row sine displacement with progressive phase and fbm phase drift plus amplitude envelope so verticals wander. Params: `tearCount`, `tearShift`, `wobbleAmount`, `wobbleFrequency`, `drift`. Macro coupling: chaos > 0.62 enables tears/wobble. Built-in preset: `Hold Vertical`.
 
-**4. `bayerFault` — demosaic corruption (sleeper pick, unique texture)**
-Re-interpret the image as if the Bayer grid were misaligned: sample into an RGGB mosaic, then demosaic with the wrong phase offset → green/magenta pixel checkerboards, zipper edges, moiré rainbows on fine texture. Nothing else in the pipeline produces pixel-scale crosshatch. Early pipeline (before exposure). Params: `phaseError` (0-3 offset), `strength` (blend), `zipper` (edge aliasing boost).
+**4. `bayerFault` — demosaic corruption — done**
+The image is resampled into an RGGB mosaic at the true grid phase, then bilinear-demosaiced assuming a shifted phase (`phaseError` 0-3: horizontal/vertical/diagonal misalignment) so channels reconstruct from the wrong sensor wells — green/magenta pixel checkerboards, wholesale channel swaps, zipper edges. Phase 0 is a correct-phase demosaic: just the cheap-camera softening. `zipper` adds alternating-pixel green/magenta shimmer along source edges; `strength` blends. Applied early (after syncFault, before chromaShift). Preset-driven (no macro coupling); rolled by the Cheap family (35%) and a rare guest in global randomize (15%). Built-in preset: `Zipper Mosaic`.
 
 **5. `bufferGhost` — stale-frame ghosting**
 Frame buffer not cleared: blocks/bands of a "different frame" bleed through. Fake the previous frame with a transformed copy of the same image (shifted/zoomed/earlier pipeline stage snapshot). Blend in seeded blocks or interlaced fields (odd/even rows from different transforms → comb tearing). Params: `amount`, `blockSize`, `ghostShift`, `ghostZoom`, `fieldMode` (bool).
