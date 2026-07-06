@@ -238,7 +238,7 @@ Three more added with the final Phase 5 analog-fault modules (2026-07-06):
 - fictional camera presets (14 built-in) — done
 - advanced controls per circuit module — done
 - live preset thumbnails rendered from the loaded image — done
-- dedicated preset gallery view — open
+- dedicated preset gallery view — done (full-screen overlay, `G` or the Gallery button: every camera rendered live on the loaded image at 300px, filter box, arrow-key navigation, click applies and closes; thumbnails regenerate lazily when the source or ghost changes)
 
 ### Phase 3: Quality Pass — mostly done
 
