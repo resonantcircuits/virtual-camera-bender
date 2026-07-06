@@ -108,6 +108,7 @@ export function processCircuitBendImageData(image, preset, resources = {}) {
   applyBufferGhost(image, pipeline.bufferGhost, seed, resources.ghost || null);
   applyChromaShift(image, pipeline.chromaShift, seed);
   applyExposureFault(image, pipeline.exposureFault, seed);
+  applyAwbSeizure(image, pipeline.awbSeizure, seed);
   applyColorBend(image, pipeline.colorBend);
   applyContourRings(image, pipeline.contourRings, seed);
   applyFalseColor(image, pipeline.falseColor, seed);
@@ -116,6 +117,7 @@ export function processCircuitBendImageData(image, preset, resources = {}) {
   applyPixelSort(image, pipeline.pixelSort, seed);
   applyVerticalSmear(image, pipeline.verticalSmear, seed);
   applySensorNoise(image, pipeline.sensorNoise, seed);
+  applyAmpGlow(image, pipeline.ampGlow, seed);
   applyMemoryFault(image, pipeline.memoryFault, seed);
   applyDctCrunch(image, pipeline.dctCrunch, seed);
   applyFinalCrunch(image, pipeline);
@@ -190,6 +192,30 @@ function boxBlurPass(data, width, height, radius, horizontal) {
       data[index + 1] = buffer[i * 3 + 1];
       data[index + 2] = buffer[i * 3 + 2];
     }
+  }
+}
+
+function blurPlane(plane, width, height, radius) {
+  const line = new Float32Array(Math.max(width, height));
+  const window = radius * 2 + 1;
+  for (let y = 0; y < height; y += 1) {
+    const base = y * width;
+    let sum = 0;
+    for (let i = -radius; i <= radius; i += 1) sum += plane[base + clamp(i, 0, width - 1)];
+    for (let x = 0; x < width; x += 1) {
+      line[x] = sum / window;
+      sum += plane[base + clamp(x + radius + 1, 0, width - 1)] - plane[base + clamp(x - radius, 0, width - 1)];
+    }
+    plane.set(line.subarray(0, width), base);
+  }
+  for (let x = 0; x < width; x += 1) {
+    let sum = 0;
+    for (let i = -radius; i <= radius; i += 1) sum += plane[clamp(i, 0, height - 1) * width + x];
+    for (let y = 0; y < height; y += 1) {
+      line[y] = sum / window;
+      sum += plane[clamp(y + radius + 1, 0, height - 1) * width + x] - plane[clamp(y - radius, 0, height - 1) * width + x];
+    }
+    for (let y = 0; y < height; y += 1) plane[y * width + x] = line[y];
   }
 }
 
@@ -593,7 +619,7 @@ function applyPixelSort(image, config, seed) {
 
 function applyExposureFault(image, config, seed) {
   if (!config?.enabled) return;
-  const data = image.data;
+  const { width, height, data } = image;
   const gain = config.gain ?? 1;
   const blackCrush = config.blackCrush ?? 0;
   const highlightClip = config.highlightClip ?? 0;
@@ -631,6 +657,69 @@ function applyExposureFault(image, config, seed) {
     data[index] = clampByte(r);
     data[index + 1] = clampByte(g);
     data[index + 2] = clampByte(b);
+  }
+
+  const fringing = clamp(config.fringing ?? 0);
+  if (fringing <= 0.01) return;
+
+  // CCD charge overflow: a soft violet rim just outside clipped highlights.
+  const size = width * height;
+  const mask = new Float32Array(size);
+  for (let index = 0, p = 0; p < size; index += 4, p += 1) {
+    mask[p] = smoothstep(0.86, 0.97, pixelLuma(data, index) / 255);
+  }
+  const halo = Float32Array.from(mask);
+  const radius = Math.max(1, Math.round((1 + fringing * 3) * Math.max(1, Math.min(width, height) / 700)));
+  blurPlane(halo, width, height, radius);
+  blurPlane(halo, width, height, radius);
+
+  for (let index = 0, p = 0; p < size; index += 4, p += 1) {
+    const rim = halo[p] * (1 - mask[p]) * fringing;
+    if (rim <= 0.012) continue;
+    const amount = Math.min(0.82, rim * 1.7);
+    data[index] = clampByte(lerp(data[index], 189, amount) + rim * 34);
+    data[index + 1] = clampByte(lerp(data[index + 1], 52, amount * 0.72));
+    data[index + 2] = clampByte(lerp(data[index + 2], 255, amount) + rim * 46);
+  }
+}
+
+function applyAwbSeizure(image, config, seed) {
+  if (!config?.enabled) return;
+  const wbSwing = clamp(config.wbSwing ?? 0);
+  const aeSwing = clamp(config.aeSwing ?? 0);
+  if (wbSwing <= 0.005 && aeSwing <= 0.005) return;
+
+  const { width, height, data } = image;
+  const bandPx = Math.max(2, Math.round(height * lerp(0.008, 0.085, clamp(config.bandHeight ?? 0.35))));
+  const bands = Math.ceil(height / bandPx);
+  const cycles = 1.5 + clamp(config.frequency ?? 0.45) * 8.5;
+  const step = (cycles * Math.PI * 2) / bands;
+  const phaseWb = hashUnit(1, 1, seed + 6001) * Math.PI * 2;
+  const phaseAe = hashUnit(1, 2, seed + 6002) * Math.PI * 2;
+
+  // Auto-WB and auto-exposure hunting mid-readout: each band of rows gets
+  // the gains the camera had settled on at that instant, so the frame pumps
+  // warm/cold and bright/dark from top to bottom.
+  for (let band = 0; band < bands; band += 1) {
+    let wb = (Math.sin(band * step + phaseWb) + hashSigned(band, 3, seed + 6003) * 0.55) * wbSwing * 0.24;
+    let ae = (Math.sin(band * step * 0.77 + phaseAe) + hashSigned(band, 4, seed + 6005) * 0.55) * aeSwing * 0.3;
+    // Rare overshoot bands where the loop panics before correcting.
+    if (hashUnit(band, 5, seed + 6007) < 0.045) {
+      wb *= 2.4;
+      ae *= 2.1;
+    }
+    const rGain = (1 + wb) * (1 + ae);
+    const gGain = (1 + wb * 0.12) * (1 + ae);
+    const bGain = (1 - wb) * (1 + ae);
+    const y1 = Math.min(height, (band + 1) * bandPx);
+    for (let y = band * bandPx; y < y1; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = pixelIndex(x, y, width);
+        data[index] = clampByte(data[index] * rGain);
+        data[index + 1] = clampByte(data[index + 1] * gGain);
+        data[index + 2] = clampByte(data[index + 2] * bGain);
+      }
+    }
   }
 }
 
@@ -933,6 +1022,98 @@ function applySensorNoise(image, config, seed) {
       }
     }
   }
+
+  // Stuck sensor defects: 1px columns and small rectangles locked to one
+  // color, distinct from the random speckle above.
+  const deadColumns = clamp(config.deadColumns ?? 0);
+  if (deadColumns > 0.005) {
+    const count = Math.max(1, Math.round(deadColumns * 16));
+    for (let i = 0; i < count; i += 1) {
+      const x = Math.floor(hashUnit(i, 1, seed + 7001) * width);
+      const startY = hashUnit(i, 2, seed + 7002) < 0.7 ? 0 : Math.floor(hashUnit(i, 3, seed + 7003) * height * 0.6);
+      const color = deadDefectColor(i, seed);
+      const opacity = 0.72 + hashUnit(i, 6, seed + 7006) * 0.28;
+      for (let y = startY; y < height; y += 1) {
+        const index = pixelIndex(x, y, width);
+        data[index] = clampByte(lerp(data[index], color[0], opacity));
+        data[index + 1] = clampByte(lerp(data[index + 1], color[1], opacity));
+        data[index + 2] = clampByte(lerp(data[index + 2], color[2], opacity));
+      }
+    }
+  }
+
+  const deadClusters = clamp(config.deadClusters ?? 0);
+  if (deadClusters > 0.005) {
+    const count = Math.max(1, Math.round(deadClusters * 12));
+    const cell = Math.max(2, Math.round(Math.min(width, height) / 480));
+    for (let i = 0; i < count; i += 1) {
+      const cx = Math.floor(hashUnit(i, 11, seed + 7101) * width);
+      const cy = Math.floor(hashUnit(i, 12, seed + 7102) * height);
+      const w = cell * (1 + Math.floor(hashUnit(i, 13, seed + 7103) * 3));
+      const h = cell * (1 + Math.floor(hashUnit(i, 14, seed + 7104) * 2));
+      const color = deadDefectColor(i + 500, seed);
+      for (let y = cy; y < Math.min(height, cy + h); y += 1) {
+        for (let x = cx; x < Math.min(width, cx + w); x += 1) {
+          const index = pixelIndex(x, y, width);
+          data[index] = color[0];
+          data[index + 1] = color[1];
+          data[index + 2] = color[2];
+        }
+      }
+    }
+  }
+}
+
+function deadDefectColor(i, seed) {
+  const roll = hashUnit(i, 4, seed + 7004);
+  if (roll < 0.42) return [236, 244, 255];
+  if (roll < 0.72) return [6, 6, 12];
+  return samplePalette(PALETTES["solarized-ccd"], hashUnit(i, 5, seed + 7005));
+}
+
+const AMP_GLOW_CORNERS = {
+  "top-left": [0, 0],
+  "top-right": [1, 0],
+  "bottom-left": [0, 1],
+  "bottom-right": [1, 1],
+};
+
+function applyAmpGlow(image, config, seed) {
+  if (!config?.enabled || !(config.strength > 0.005)) return;
+  const { width, height, data } = image;
+  const strength = clamp(config.strength);
+  const spread = clamp(config.spread ?? 0.5);
+  const hue = clamp(config.hue ?? 0.25);
+
+  let corner = config.corner;
+  if (!AMP_GLOW_CORNERS[corner]) {
+    const keys = Object.keys(AMP_GLOW_CORNERS);
+    corner = keys[Math.floor(hashUnit(2, 5, seed + 8001) * keys.length)];
+  }
+  const [cu, cv] = AMP_GLOW_CORNERS[corner];
+  const cx = cu * (width - 1);
+  const cy = cv * (height - 1);
+  const reach = Math.hypot(width, height) * lerp(0.26, 0.72, spread);
+
+  // Readout amplifier heat leaking into the sensor from one corner —
+  // the long-exposure "amp glow" defect. Purple at one end of the hue
+  // dial, hot orange at the other, and grainy like real thermal signal.
+  const tintR = lerp(168, 255, hue);
+  const tintG = lerp(64, 122, hue);
+  const tintB = lerp(255, 36, hue);
+
+  for (let y = 0; y < height; y += 1) {
+    const dy = y - cy;
+    for (let x = 0; x < width; x += 1) {
+      const falloff = 1 - Math.hypot(x - cx, dy) / reach;
+      if (falloff <= 0.004) continue;
+      const glow = falloff * falloff * strength * (0.72 + hashUnit(x, y, seed + 8011) * 0.56);
+      const index = pixelIndex(x, y, width);
+      data[index] = clampByte(data[index] + tintR * glow);
+      data[index + 1] = clampByte(data[index + 1] + tintG * glow);
+      data[index + 2] = clampByte(data[index + 2] + tintB * glow);
+    }
+  }
 }
 
 function applyMemoryFault(image, config, seed) {
@@ -1086,11 +1267,23 @@ function subsampleChroma(plane, width, height, blend) {
 
 function applyDctCrunch(image, config, seed) {
   if (!config?.enabled) return;
-  const quality = clamp(config.quality ?? 0.5);
-  const dcDrift = clamp(config.dcDrift ?? 0);
-  const acScramble = clamp(config.acScramble ?? 0);
-  const blockRepeat = clamp(config.blockRepeat ?? 0);
-  const chromaSubsample = clamp(config.chromaSubsample ?? 0);
+  // Generational recompression: each extra pass re-saves the image with a
+  // fresh seed and slightly drifted parameters, so damage compounds the way
+  // a JPEG saved and reopened N times does. Later passes fade so the first
+  // save dominates and re-saves add flavor instead of annihilation.
+  const generations = Math.max(1, Math.min(6, Math.round(config.generations ?? 1)));
+  for (let gen = 0; gen < generations; gen += 1) {
+    dctCrunchPass(image, config, seed + gen * 7919, gen);
+  }
+}
+
+function dctCrunchPass(image, config, seed, gen) {
+  const fade = Math.pow(0.62, gen);
+  const quality = clamp((config.quality ?? 0.5) * Math.pow(0.93, gen));
+  const dcDrift = clamp((config.dcDrift ?? 0) * fade);
+  const acScramble = clamp((config.acScramble ?? 0) * fade);
+  const blockRepeat = clamp((config.blockRepeat ?? 0) * fade);
+  const chromaSubsample = clamp((config.chromaSubsample ?? 0) * (gen === 0 ? 1 : 0.55));
   const wantsDct = quality < 0.985 || dcDrift > 0.005 || acScramble > 0.005 || blockRepeat > 0.005;
   if (!wantsDct && chromaSubsample <= 0.005) return;
 

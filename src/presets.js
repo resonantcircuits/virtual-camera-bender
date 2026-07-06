@@ -107,7 +107,19 @@ export const ADVANCED_DEFS = [
       ["pipeline.exposureFault.gain", "Gain", "range", 0.65, 2.2, 0.01],
       ["pipeline.exposureFault.blackCrush", "Black Crush", "range", 0, 1, 0.01],
       ["pipeline.exposureFault.highlightClip", "Highlight Clip", "range", 0, 1, 0.01],
-      ["pipeline.exposureFault.contourBands", "Contour Bands", "range", 0, 1, 0.01]
+      ["pipeline.exposureFault.contourBands", "Contour Bands", "range", 0, 1, 0.01],
+      ["pipeline.exposureFault.fringing", "Purple Fringing", "range", 0, 1, 0.01]
+    ]
+  },
+  {
+    group: "AWB Seizure",
+    key: "awbSeizure",
+    controls: [
+      ["pipeline.awbSeizure.enabled", "Enabled", "boolean"],
+      ["pipeline.awbSeizure.wbSwing", "WB Swing", "range", 0, 1, 0.01],
+      ["pipeline.awbSeizure.aeSwing", "AE Swing", "range", 0, 1, 0.01],
+      ["pipeline.awbSeizure.bandHeight", "Band Height", "range", 0, 1, 0.01],
+      ["pipeline.awbSeizure.frequency", "Frequency", "range", 0, 1, 0.01]
     ]
   },
   {
@@ -199,7 +211,20 @@ export const ADVANCED_DEFS = [
       ["pipeline.sensorNoise.colorAmount", "Color Amount", "range", 0, 1, 0.01],
       ["pipeline.sensorNoise.shadowBias", "Shadow Bias", "range", 0, 1, 0.01],
       ["pipeline.sensorNoise.striping", "Striping", "range", 0, 1, 0.01],
-      ["pipeline.sensorNoise.hotPixels", "Hot Pixels", "range", 0, 1, 0.01]
+      ["pipeline.sensorNoise.hotPixels", "Hot Pixels", "range", 0, 1, 0.01],
+      ["pipeline.sensorNoise.deadColumns", "Dead Columns", "range", 0, 1, 0.01],
+      ["pipeline.sensorNoise.deadClusters", "Dead Clusters", "range", 0, 1, 0.01]
+    ]
+  },
+  {
+    group: "Amp Glow",
+    key: "ampGlow",
+    controls: [
+      ["pipeline.ampGlow.enabled", "Enabled", "boolean"],
+      ["pipeline.ampGlow.strength", "Strength", "range", 0, 1, 0.01],
+      ["pipeline.ampGlow.corner", "Corner", "select", ["seeded", "top-left", "top-right", "bottom-left", "bottom-right"]],
+      ["pipeline.ampGlow.hue", "Hue", "range", 0, 1, 0.01],
+      ["pipeline.ampGlow.spread", "Spread", "range", 0, 1, 0.01]
     ]
   },
   {
@@ -222,7 +247,8 @@ export const ADVANCED_DEFS = [
       ["pipeline.dctCrunch.chromaSubsample", "Chroma Subsample", "range", 0, 1, 0.01],
       ["pipeline.dctCrunch.dcDrift", "DC Drift", "range", 0, 1, 0.01],
       ["pipeline.dctCrunch.acScramble", "AC Scramble", "range", 0, 1, 0.01],
-      ["pipeline.dctCrunch.blockRepeat", "Block Repeat", "range", 0, 1, 0.01]
+      ["pipeline.dctCrunch.blockRepeat", "Block Repeat", "range", 0, 1, 0.01],
+      ["pipeline.dctCrunch.generations", "Generations", "range", 1, 6, 1]
     ]
   },
   {
@@ -286,6 +312,13 @@ export const ADVANCED_CONTROL_HELP = {
   "pipeline.exposureFault.blackCrush": "Pushes shadows toward blocked-up black.",
   "pipeline.exposureFault.highlightClip": "Clips bright areas into blown-out digital regions.",
   "pipeline.exposureFault.contourBands": "Adds hard tone bands around clipped and high-contrast areas.",
+  "pipeline.exposureFault.fringing": "Adds a violet blooming rim around clipped highlights.",
+
+  "pipeline.awbSeizure.enabled": "Turns white-balance and exposure hunting bands on or off.",
+  "pipeline.awbSeizure.wbSwing": "Controls how far bands pump between warm and cold color.",
+  "pipeline.awbSeizure.aeSwing": "Controls how far bands pump between bright and dark.",
+  "pipeline.awbSeizure.bandHeight": "Sets the height of each hunting band.",
+  "pipeline.awbSeizure.frequency": "Controls how quickly the hunting oscillates down the frame.",
 
   "pipeline.contourRings.enabled": "Turns luminance contour rings on or off.",
   "pipeline.contourRings.strength": "Controls overall ring intensity.",
@@ -343,6 +376,14 @@ export const ADVANCED_CONTROL_HELP = {
   "pipeline.sensorNoise.shadowBias": "Pushes more noise into darker areas.",
   "pipeline.sensorNoise.striping": "Adds row and column fixed-pattern striping.",
   "pipeline.sensorNoise.hotPixels": "Adds isolated bright sensor defects.",
+  "pipeline.sensorNoise.deadColumns": "Adds 1px vertical columns stuck at a single color.",
+  "pipeline.sensorNoise.deadClusters": "Adds small rectangles of dead or stuck pixels.",
+
+  "pipeline.ampGlow.enabled": "Turns thermal amplifier glow on or off.",
+  "pipeline.ampGlow.strength": "Controls how bright the corner glow gets.",
+  "pipeline.ampGlow.corner": "Chooses which corner glows, or lets the seed decide.",
+  "pipeline.ampGlow.hue": "Blends the glow tint from purple toward hot orange.",
+  "pipeline.ampGlow.spread": "Controls how far the glow creeps into the frame.",
 
   "pipeline.memoryFault.enabled": "Turns memory-card style row and block corruption on or off.",
   "pipeline.memoryFault.interlace": "Mixes alternating rows for interlaced field damage.",
@@ -356,6 +397,7 @@ export const ADVANCED_CONTROL_HELP = {
   "pipeline.dctCrunch.dcDrift": "Drifts block-average color across the scan order.",
   "pipeline.dctCrunch.acScramble": "Scrambles detail coefficients inside selected blocks.",
   "pipeline.dctCrunch.blockRepeat": "Repeats macroblocks for stuttering codec damage.",
+  "pipeline.dctCrunch.generations": "Re-saves the image N times so compression damage compounds.",
 
   "pipeline.osdOverlay.enabled": "Turns the camera UI overlay on or off.",
   "pipeline.osdOverlay.datestamp": "Draws a seeded compact-camera date stamp.",
@@ -431,7 +473,15 @@ function defaultPipeline() {
       blackCrush: 0.25,
       highlightClip: 0.62,
       contourBands: 0.45,
+      fringing: 0,
       clipColorBias: [1, 0.18, 0.86]
+    },
+    awbSeizure: {
+      enabled: false,
+      wbSwing: 0.55,
+      aeSwing: 0.3,
+      bandHeight: 0.3,
+      frequency: 0.45
     },
     contourRings: {
       enabled: true,
@@ -498,7 +548,16 @@ function defaultPipeline() {
       shadowBias: 0.55,
       striping: 0.25,
       hotPixels: 0.12,
+      deadColumns: 0,
+      deadClusters: 0,
       speckleSize: 1
+    },
+    ampGlow: {
+      enabled: false,
+      strength: 0.55,
+      corner: "seeded",
+      hue: 0.25,
+      spread: 0.5
     },
     memoryFault: {
       enabled: false,
@@ -513,7 +572,8 @@ function defaultPipeline() {
       chromaSubsample: 0.6,
       dcDrift: 0,
       acScramble: 0,
-      blockRepeat: 0
+      blockRepeat: 0,
+      generations: 1
     },
     osdOverlay: {
       enabled: false,
@@ -1204,6 +1264,98 @@ export const BUILT_IN_PRESETS = [
       pixelSort: { enabled: false },
       dctCrunch: { enabled: false },
       sensorNoise: { amount: 0.18, striping: 0.08 }
+    }
+  }),
+  createPreset({
+    name: "Dark Frame Leak",
+    description: "Long-exposure amp glow creeping from a corner over stuck columns and hot speckle.",
+    tags: ["amp-glow", "long-exposure", "defects"],
+    seed: 941773,
+    macros: {
+      bend: 0.34,
+      colorFault: 0.3,
+      melt: 0.04,
+      burn: 0.46,
+      noise: 0.62,
+      cheapness: 0.3,
+      chaos: 0.16
+    },
+    pipeline: {
+      ampGlow: { enabled: true, strength: 0.72, corner: "seeded", hue: 0.18, spread: 0.6 },
+      exposureFault: { gain: 1.3, blackCrush: 0.55, highlightClip: 0.4, clipColorBias: [1, 0.5, 0.9] },
+      sensorNoise: {
+        amount: 0.42,
+        colorAmount: 0.9,
+        shadowBias: 0.85,
+        striping: 0.14,
+        hotPixels: 0.42,
+        deadColumns: 0.3,
+        deadClusters: 0.22
+      },
+      falseColor: { strength: 0.24, smoothness: 0.6, saturation: 1.5 },
+      contourRings: { enabled: false },
+      verticalSmear: { enabled: false },
+      pixelSort: { enabled: false },
+      edgeBurn: { enabled: false }
+    }
+  }),
+  createPreset({
+    name: "AWB Panic",
+    description: "White balance and exposure hunting mid-readout: warm/cold bands pumping down the frame.",
+    tags: ["awb", "bands", "hunting"],
+    seed: 517209,
+    macros: {
+      bend: 0.36,
+      colorFault: 0.34,
+      melt: 0.04,
+      burn: 0.32,
+      noise: 0.34,
+      cheapness: 0.38,
+      chaos: 0.2
+    },
+    pipeline: {
+      awbSeizure: { enabled: true, wbSwing: 0.82, aeSwing: 0.48, bandHeight: 0.38, frequency: 0.58 },
+      exposureFault: { gain: 1.18, blackCrush: 0.18, highlightClip: 0.4, fringing: 0.35 },
+      falseColor: { strength: 0.2, smoothness: 0.65, saturation: 1.45 },
+      contourRings: { enabled: false },
+      verticalSmear: { enabled: false },
+      pixelSort: { enabled: false },
+      edgeBurn: { strength: 0.14 },
+      sensorNoise: { amount: 0.22, colorAmount: 0.7, striping: 0.1 }
+    }
+  }),
+  createPreset({
+    name: "Copy Of A Copy",
+    description: "Saved and reopened until it rots: five generations of recompression with violet-fringed clipping.",
+    tags: ["jpeg", "generations", "recompression"],
+    seed: 662450,
+    macros: {
+      bend: 0.3,
+      colorFault: 0.26,
+      melt: 0.02,
+      burn: 0.36,
+      noise: 0.24,
+      cheapness: 0.6,
+      chaos: 0.24
+    },
+    pipeline: {
+      dctCrunch: {
+        enabled: true,
+        quality: 0.58,
+        chromaSubsample: 0.7,
+        dcDrift: 0.16,
+        acScramble: 0.14,
+        blockRepeat: 0.08,
+        generations: 5
+      },
+      cheapCamera: { internalScale: 0.9, bitDepth: 7, dither: 0.2, sharpen: 0.6 },
+      exposureFault: { gain: 1.2, blackCrush: 0.2, highlightClip: 0.45, fringing: 0.4 },
+      falseColor: { strength: 0.16, smoothness: 0.7, saturation: 1.35 },
+      contourRings: { enabled: false },
+      verticalSmear: { enabled: false },
+      pixelSort: { enabled: false },
+      edgeBurn: { enabled: false },
+      sensorNoise: { amount: 0.14, colorAmount: 0.55, striping: 0.05 }
     }
   }),
   createPreset({

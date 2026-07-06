@@ -82,7 +82,15 @@ The schema below matches the current implementation (`src/presets.js`). It is st
       "blackCrush": 0.28,
       "highlightClip": 0.71,
       "contourBands": 0.45,
+      "fringing": 0.0,
       "clipColorBias": [1.0, 0.22, 0.88]
+    },
+    "awbSeizure": {
+      "enabled": false,
+      "wbSwing": 0.55,
+      "aeSwing": 0.3,
+      "bandHeight": 0.3,
+      "frequency": 0.45
     },
     "contourRings": {
       "enabled": true,
@@ -149,7 +157,16 @@ The schema below matches the current implementation (`src/presets.js`). It is st
       "shadowBias": 0.67,
       "striping": 0.25,
       "hotPixels": 0.12,
+      "deadColumns": 0.0,
+      "deadClusters": 0.0,
       "speckleSize": 1
+    },
+    "ampGlow": {
+      "enabled": false,
+      "strength": 0.55,
+      "corner": "seeded",
+      "hue": 0.25,
+      "spread": 0.5
     },
     "memoryFault": {
       "enabled": false,
@@ -164,7 +181,8 @@ The schema below matches the current implementation (`src/presets.js`). It is st
       "chromaSubsample": 0.6,
       "dcDrift": 0.0,
       "acScramble": 0.0,
-      "blockRepeat": 0.0
+      "blockRepeat": 0.0,
+      "generations": 1
     },
     "osdOverlay": {
       "enabled": false,
@@ -195,7 +213,11 @@ The schema below matches the current implementation (`src/presets.js`). It is st
 - `syncFault`: timing damage, applied early. `tearCount`/`tearShift`: frame-wrap tears — below each seeded row the frame shifts sideways and wraps, with a short corrupted transition band. `wobbleAmount`/`wobbleFrequency`: per-row rolling-shutter sine displacement; `drift` adds low-frequency phase wander so verticals go wavy instead of ringing evenly.
 - `bayerFault`: demosaic corruption, applied early. The image is resampled into an RGGB mosaic and demosaiced assuming the wrong grid phase (`phaseError` 0-3: 0 = correct phase, just cheap-demosaic softening; 1/2/3 = horizontal/vertical/diagonal misalignment → green/magenta checkerboards and channel swaps). `zipper` adds alternating-pixel shimmer along edges; `strength` blends with the source.
 - `bufferGhost`: stale-frame ghosting, applied early. Blocks (or odd scan fields with `fieldMode`) show a "previous frame" — by default a shifted/zoomed snapshot of the image itself (`ghostShift`, `ghostZoom`, direction seeded). A different image can be supplied as the stale frame: the Ghost Source `LOAD` button in the app's Buffer Ghost panel, or `--ghost <image>` in the CLI. The ghost image is session state, not stored in the preset — presets stay portable and fall back to the self-frame.
-- `dctCrunch`: JPEG/DCT corruption on 8x8 blocks in YCbCr, applied late. `quality`: 1 = clean, 0 = pure block mosaic. `chromaSubsample`: force chroma toward quarter resolution while luma stays sharp. `dcDrift`: accumulating DC offset along block-scan order — color slides block-by-block into wrong hues. `acScramble`: zero/shuffle/inject AC coefficients in seeded block patches. `blockRepeat`: macroblock stutter (held blocks repeat in scan order).
+- `exposureFault.fringing`: CCD charge-overflow blooming — a soft violet rim just outside clipped highlights (dilated highlight mask, tinted).
+- `awbSeizure`: auto-WB/AE hunting mid-readout, applied after exposureFault. Horizontal bands of rows pump warm/cold (`wbSwing`) and bright/dark (`aeSwing`) down the frame — low-frequency sine plus seeded per-band jitter, with rare overshoot bands. `bandHeight` sets band size, `frequency` the oscillation rate.
+- `sensorNoise.deadColumns` / `sensorNoise.deadClusters`: stuck sensor defects — 1px vertical columns (some starting partway down) and small rectangles locked to one color (hot white, dead black, or a saturated palette color), distinct from random hot pixels.
+- `ampGlow`: thermal amplifier glow, applied after sensorNoise. A grainy radial glow creeping in from one corner (`corner`: `seeded` lets the seed pick, or `top-left`/`top-right`/`bottom-left`/`bottom-right`). `hue` blends the tint from purple (0) to hot orange (1); `spread` sets how far it reaches. Most visible on dark frames.
+- `dctCrunch`: JPEG/DCT corruption on 8x8 blocks in YCbCr, applied late. `quality`: 1 = clean, 0 = pure block mosaic. `chromaSubsample`: force chroma toward quarter resolution while luma stays sharp. `dcDrift`: accumulating DC offset along block-scan order — color slides block-by-block into wrong hues. `acScramble`: zero/shuffle/inject AC coefficients in seeded block patches. `blockRepeat`: macroblock stutter (held blocks repeat in scan order). `generations` (1-6): re-saves the frame N times with a fresh seed and drifting parameters per pass, so damage compounds like a JPEG opened and saved repeatedly.
 - `osdOverlay`: camera UI burn-in drawn last from an embedded 5x7 bitmap font. `datestamp`: seeded orange corner date (`'03 1 16` style). `hudIcons`: REC dot, ISO readout, battery, focus brackets. `glitchText`: 0-1 glyph corruption (wrong glyphs, tears, doubling). `color`: `orange`, `green`, or `white`.
 
 Palettes for `falseColor.mode` and `gradientWash.mode`: `solarized-ccd`, `thermal-bleach`, `pink-blue`, `toxic-green`, `rainbow`, `acid-sunset`, `infrared`, `candy-shop`, `poison-dart`.

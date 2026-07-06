@@ -121,7 +121,8 @@ Input image
 -> bayer fault (wrong-phase demosaic checkerboards + zipper edges)
 -> buffer ghost (stale-frame blocks / field interlace, self or loaded second image)
 -> chroma shift
--> exposure and clipping fault
+-> exposure and clipping fault (incl. violet highlight fringing)
+-> AWB/AE seizure (white-balance and exposure hunting bands)
 -> color bend (hue rotate / channel swap / invert / solarize)
 -> contour rings
 -> false color (posterized or smooth gradient map, 9 palettes)
@@ -129,9 +130,10 @@ Input image
 -> edge burn
 -> pixel sort
 -> vertical smear
--> sensor noise / hot pixels / striping
+-> sensor noise / hot pixels / striping / dead columns and clusters
+-> amp glow (thermal corner glow)
 -> memory and scanline faults (interlace, block shift, row repeat, dropout)
--> DCT crunch (JPEG quantization, DC drift, AC scramble, block stutter, chroma subsampling)
+-> DCT crunch (JPEG quantization, DC drift, AC scramble, block stutter, chroma subsampling, N-generation re-save)
 -> final bit crush + dither + sharpen
 -> OSD overlay (datestamp + HUD burn-in)
 -> export
@@ -179,7 +181,7 @@ Determinism is desirable but not absolute. Presets store seeds and reproduce the
 
 Presets are full-system configurations, not separate special effects. They act as starting points: loading one copies its settings into the editor, after which every control and randomizer works from the current state.
 
-The app ships with 19 built-in cameras. The original five:
+The app ships with 22 built-in cameras. The original five:
 
 - `Bent CCD-03`: strong magenta/cyan clipping, medium vertical melt
 - `Dead Flash Compact`: blown highlights, hard edge burn, noisy shadows
@@ -206,6 +208,12 @@ Five more added with the Phase 5 digital-brain modules (2026-07-06):
 - `Tourist Compact '03`: overcompressed vacation snap with orange datestamp and HUD burn-in
 - `Zipper Mosaic`: misaligned demosaic — green-magenta checkerboards and zipper edges
 - `Double Buffer`: uncleared frame buffer — a shifted stale frame bleeds through in blocks
+
+Three more added with the final Phase 5 analog-fault modules (2026-07-06):
+
+- `Dark Frame Leak`: long-exposure amp glow creeping from a corner over stuck columns and hot speckle
+- `AWB Panic`: white balance and exposure hunting mid-readout — warm/cold bands pumping down the frame
+- `Copy Of A Copy`: five generations of recompression with violet-fringed clipping
 
 ## Roadmap
 
@@ -248,11 +256,11 @@ Five more added with the Phase 5 digital-brain modules (2026-07-06):
 - add temporal stability controls — open
 - support batch image processing — open
 
-### Phase 5: New Effect Families (ideated 2026-07-05; items 1-5 done 2026-07-06)
+### Phase 5: New Effect Families (ideated 2026-07-05; all ten items done 2026-07-06)
 
-The current engine covers the analog signal path (sensor readout, exposure, color response, noise) well. The remaining gaps are the camera's digital brain: codec, firmware, and timing faults. Each entry below has enough implementation detail to start cold.
+The current engine covers the analog signal path (sensor readout, exposure, color response, noise) well. The remaining gaps were the camera's digital brain: codec, firmware, and timing faults.
 
-Priority order by impact-per-effort: **1) DCT corruption, 2) OSD/datestamp, 3) sync tear + rolling wobble**, then the rest.
+Priority order by impact-per-effort was: **1) DCT corruption, 2) OSD/datestamp, 3) sync tear + rolling wobble**, then the rest.
 
 **1. `dctCrunch` — JPEG/DCT corruption — done**
 The most recognizable missing digital-camera glitch; reference image 23 (mountain quadrants; the original spec said 22 but the numbering was off by one) is this family. Implemented late-pipeline (after memoryFault, before finalCrunch): 8x8 blocks per YCbCr plane through a separable orthonormal DCT, then coefficient damage: JPEG-style quantization (`quality`, frequency-weighted steps), `acScramble` (zero/shuffle/inject AC coefficients in fbm-gated block patches), `dcDrift` (random-walk DC offset along block-scan order, walk rate scaled by total block count so the slide spans the frame at any resolution, chroma wandering further than luma, rare hard jumps for quadrant-style breaks), `blockRepeat` (held-macroblock stutter, patch-gated), `chromaSubsample` (2x2 chroma averaging while luma stays sharp). Macro coupling: cheapness drives enable/quality/chromaSubsample, chaos adds acScramble/blockRepeat; dcDrift stays preset-driven. Built-in preset: `Codec Rot`.
@@ -269,20 +277,20 @@ The image is resampled into an RGGB mosaic at the true grid phase, then bilinear
 **5. `bufferGhost` — stale-frame ghosting — done**
 Frame buffer not cleared: fbm-gated blocks (or odd scan fields with `fieldMode` → comb tearing) show a stale frame, blended per-block. The stale frame is a shifted/zoomed snapshot of the image itself by default, or — extending the original idea — a second image loaded by the user (Ghost Source `LOAD` button in the Buffer Ghost panel; `--ghost <image>` in the CLI). The ghost travels as a render resource (`processCircuitBendImageData(image, preset, { ghost })`), sampled bilinearly in normalized coordinates so any resolution works; it is session state, never serialized into preset JSON. Params: `amount`, `blockSize`, `ghostShift`, `ghostZoom`, `fieldMode`. Macro coupling: chaos > 0.7 enables it. Built-in preset: `Double Buffer`.
 
-**6. `ampGlow` — thermal corner glow**
-Long-exposure sensor amplifier heat: purple/orange glow creeping from one seeded corner/edge, palette-tinted. Cheap radial gradient added late. Params: `strength`, `corner` (seeded), `hue`, `spread`.
+**6. `ampGlow` — thermal corner glow — done**
+Long-exposure sensor amplifier heat: a grainy radial glow creeping in from one corner, applied after sensorNoise (so memory/codec faults corrupt it too). `corner` is `seeded` by default (the seed picks one of four corners) or fixed; `hue` blends the tint from purple to hot orange; `spread` sets reach; per-pixel hash grain keeps it noisy like real thermal signal. Preset-driven (no macro coupling); rolled by the Noise family (30%) and a rare guest in global randomize (16%). Built-in preset: `Dark Frame Leak`.
 
-**7. Dead columns / pixel clusters (extend `sensorNoise`)**
-Single-color vertical hairlines (1px columns stuck at a color) and small dead rectangles — most common real CCD defect, distinct from random hot pixels. Add `deadColumns` (0-1 count control) and `deadClusters` params to sensorNoise.
+**7. Dead columns / pixel clusters (extend `sensorNoise`) — done**
+`deadColumns` (0-1): up to ~16 seeded 1px vertical columns stuck at a color (hot white, dead black, or a saturated palette color), most running the full height, some starting partway down. `deadClusters` (0-1): small stuck rectangles, sized relative to resolution. Both roll with the sensorNoise module dice and the Noise family.
 
-**8. Purple fringing / blooming halos (extend `exposureFault` or `edgeBurn`)**
-Violet edges specifically around clipped highlights (CCD overflow): dilate the clipped-highlight mask a few px, tint the rim violet/magenta. Param: `fringing` on exposureFault.
+**8. Purple fringing / blooming halos — done**
+`fringing` param on exposureFault: the post-clip highlight mask is box-blurred into a halo, and the rim (halo minus core) is tinted violet — CCD charge overflow around blown highlights. Radius scales with fringing and resolution. Used by the `AWB Panic` and `Copy Of A Copy` presets.
 
-**9. `awbSeizure` — auto-WB/AE hunting bands**
-White balance or exposure oscillating during readout: horizontal bands that pump warm/cold or bright/dark down the frame (low-frequency sine + seeded noise per band). Params: `wbSwing`, `aeSwing`, `bandHeight`, `frequency`.
+**9. `awbSeizure` — auto-WB/AE hunting bands — done**
+Applied right after exposureFault. Bands of rows (`bandHeight`) get per-band gains from a low-frequency sine plus seeded jitter: `wbSwing` pumps red/blue against each other (warm/cold), `aeSwing` pumps overall gain (bright/dark), `frequency` sets the oscillation rate, and ~4% of bands overshoot hard before the loop corrects. Preset-driven; rolled by the Color family (25%) and a rare guest in global randomize (14%). Built-in preset: `AWB Panic`.
 
-**10. Generational recompression (meta-dial)**
-A "save count" control that runs the crunch stages (dctCrunch + cheapCamera) N times with slight parameter drift per pass — the "saved and reopened 50 times" look. Pairs with dctCrunch; also gives video mode its degradation-over-time story. Could be a `generations` param on dctCrunch rather than a separate module.
+**10. Generational recompression — done**
+Implemented as a `generations` param (1-6) on dctCrunch rather than a separate module: each pass re-runs the full DCT crunch with a fresh seed and drifted parameters (quality slides down ~7% per save; scramble/drift/repeat fade by 0.62^gen so the first save dominates and re-saves add flavor; chroma re-subsamples at reduced blend). Rolled occasionally by the dctCrunch dice (25% chance of 2-5 generations). Built-in preset: `Copy Of A Copy`.
 
 Integration checklist for any new module (this is the established pattern):
 - pure function in `src/engine-core.js`, called from `processCircuitBendImageData` (no browser APIs — shared by worker and CLI)

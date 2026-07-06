@@ -10,10 +10,10 @@ const MODES = {
 
 export const RANDOM_FAMILIES = [
   ["global", "Global", "Build a whole new camera: re-rolls all macros and modules, new name and seed"],
-  ["color", "Color", "Re-roll color only: palette, hue/channel bends, gradient wash — keeps the rest"],
+  ["color", "Color", "Re-roll color only: palette, hue/channel bends, gradient wash, WB hunting — keeps the rest"],
   ["melt", "Melt", "Re-roll smear and pixel-sort drips — keeps the rest"],
   ["burn", "Burn", "Re-roll exposure clipping, contour rings, and edge fringes — keeps the rest"],
-  ["noise", "Noise", "Re-roll sensor noise and speckle — keeps the rest"],
+  ["noise", "Noise", "Re-roll sensor noise, speckle, dead pixels, and amp glow — keeps the rest"],
   ["cheap", "Cheap", "Re-roll resolution, bit depth, blur, dither, and JPEG crunch — keeps the rest"],
   ["memory", "Memory", "Re-roll interlace, block shifts, sync tears, ghost frames, and scanline faults — keeps the rest"]
 ];
@@ -90,7 +90,16 @@ export const MODULE_RANDOMIZERS = {
     exposure.blackCrush = intensity(mode, rng, 0.05, 0.6);
     exposure.highlightClip = value(mode, rng, 0.1);
     exposure.contourBands = randomRange(0.18, 0.94, rng);
+    exposure.fringing = rng() > 0.6 ? intensity(mode, rng, 0.12, 0.8) : 0;
     exposure.clipColorBias = biases[randomInt(0, biases.length - 1, rng)];
+  },
+  awbSeizure(preset, mode, rng) {
+    const awb = preset.pipeline.awbSeizure;
+    awb.enabled = true;
+    awb.wbSwing = intensity(mode, rng, 0.25, 0.95);
+    awb.aeSwing = rng() > 0.35 ? intensity(mode, rng, 0.1, 0.7) : 0;
+    awb.bandHeight = randomRange(0.15, 0.7, rng);
+    awb.frequency = randomRange(0.2, 0.85, rng);
   },
   contourRings(preset, mode, rng) {
     const rings = preset.pipeline.contourRings;
@@ -168,6 +177,16 @@ export const MODULE_RANDOMIZERS = {
     noise.shadowBias = randomRange(0.2, 0.9, rng);
     noise.striping = intensity(mode, rng, 0.02, 0.72);
     noise.hotPixels = intensity(mode, rng, 0.02, 0.42);
+    noise.deadColumns = rng() > 0.68 ? intensity(mode, rng, 0.08, 0.6) : 0;
+    noise.deadClusters = rng() > 0.72 ? intensity(mode, rng, 0.08, 0.5) : 0;
+  },
+  ampGlow(preset, mode, rng) {
+    const glow = preset.pipeline.ampGlow;
+    glow.enabled = true;
+    glow.strength = intensity(mode, rng, 0.2, 0.9);
+    glow.corner = "seeded";
+    glow.hue = rng() > 0.5 ? randomRange(0, 0.35, rng) : randomRange(0.6, 1, rng);
+    glow.spread = randomRange(0.25, 0.85, rng);
   },
   memoryFault(preset, mode, rng) {
     const memory = preset.pipeline.memoryFault;
@@ -185,6 +204,7 @@ export const MODULE_RANDOMIZERS = {
     dct.dcDrift = rng() > 0.5 ? intensity(mode, rng, 0.1, 0.85) : 0;
     dct.acScramble = rng() > 0.45 ? intensity(mode, rng, 0.05, 0.7) : 0;
     dct.blockRepeat = rng() > 0.6 ? intensity(mode, rng, 0.05, 0.5) : 0;
+    dct.generations = rng() > 0.75 ? randomInt(2, 5, rng) : 1;
   },
   bayerFault(preset, mode, rng) {
     const bayer = preset.pipeline.bayerFault;
@@ -316,9 +336,13 @@ function randomizeGlobal(preset, mode, rng) {
   pipeline.colorBend.enabled = false;
   pipeline.gradientWash.enabled = false;
   pipeline.bayerFault.enabled = false;
+  pipeline.ampGlow.enabled = false;
+  pipeline.awbSeizure.enabled = false;
   if (rng() < 0.35) MODULE_RANDOMIZERS.colorBend(preset, mode, rng);
   if (rng() < 0.22) MODULE_RANDOMIZERS.gradientWash(preset, mode, rng);
   if (rng() < 0.15) MODULE_RANDOMIZERS.bayerFault(preset, mode, rng);
+  if (rng() < 0.16) MODULE_RANDOMIZERS.ampGlow(preset, mode, rng);
+  if (rng() < 0.14) MODULE_RANDOMIZERS.awbSeizure(preset, mode, rng);
   if (rng() < 0.18 + mode.chaos * 0.2) MODULE_RANDOMIZERS.chromaShift(preset, mode, rng);
   else pipeline.chromaShift.enabled = false;
 }
@@ -332,6 +356,8 @@ function randomizeColor(preset, mode, rng) {
   else preset.pipeline.colorBend.enabled = false;
   if (rng() < 0.4) MODULE_RANDOMIZERS.gradientWash(preset, mode, rng);
   else preset.pipeline.gradientWash.enabled = false;
+  if (rng() < 0.25) MODULE_RANDOMIZERS.awbSeizure(preset, mode, rng);
+  else preset.pipeline.awbSeizure.enabled = false;
 }
 
 function randomizeMelt(preset, mode, rng) {
@@ -356,6 +382,8 @@ function randomizeNoise(preset, mode, rng) {
   preset.macros.noise = value(mode, rng, 0.06);
   applyMacrosToPipeline(preset);
   MODULE_RANDOMIZERS.sensorNoise(preset, mode, rng);
+  if (rng() < 0.3) MODULE_RANDOMIZERS.ampGlow(preset, mode, rng);
+  else preset.pipeline.ampGlow.enabled = false;
 }
 
 function randomizeCheap(preset, mode, rng) {
