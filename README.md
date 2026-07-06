@@ -8,14 +8,15 @@ The project is inspired by early 2000s consumer digital cameras pushed into fail
 
 ## Current State
 
-The still-image editor is working: image upload (click or drag-and-drop), live preview, 19 built-in camera presets with live thumbnails, macro and per-module controls, family/global/per-module randomizers, undo/redo, A/B comparison, JSON preset save/load, original-resolution export (PNG/WebP/JPEG), and a headless CLI renderer that shares the same engine.
+The still-image editor is working: image upload (click or drag-and-drop), live preview, 35 built-in camera presets with live thumbnails, macro and per-module controls, family/global/per-module randomizers, undo/redo, A/B comparison, JSON preset save/load, original-resolution export (PNG/WebP/JPEG), and a headless CLI renderer that shares the same engine.
 
 Repository layout:
 
 - `index.html`, `styles.css`: static web app shell (no build step).
 - `src/engine-core.js`: the pure image-processing pipeline, shared by the web app, the render worker, and the CLI.
 - `src/render-worker.js`: Web Worker that runs the pipeline off the main thread.
-- `src/presets.js`: preset schema defaults, macro-to-pipeline mapping, built-in cameras, control definitions.
+- `src/presets.js`: preset schema defaults, macro-to-pipeline mapping, control definitions.
+- `src/built-in-presets.js`: the built-in camera preset collection.
 - `src/randomize.js`: random modes, family randomizers, and per-module randomizers.
 - `src/app.js`: UI wiring.
 - `src/cli.js`, `src/dev-server.js`: headless renderer (ffmpeg-backed) and static dev server.

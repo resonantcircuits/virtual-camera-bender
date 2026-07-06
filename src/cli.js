@@ -1,12 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import {
-  applyMacrosToPipeline,
-  BUILT_IN_PRESETS,
-  clonePreset,
-  normalizePreset
-} from "./presets.js";
+import { applyMacrosToPipeline, clonePreset, normalizePreset } from "./presets.js";
+import { BUILT_IN_PRESETS } from "./built-in-presets.js";
 import { processCircuitBendImageData } from "./engine-core.js";
 import { fitWithin, setAtPath } from "./utils.js";
 

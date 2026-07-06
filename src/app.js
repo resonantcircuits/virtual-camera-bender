@@ -3,11 +3,11 @@ import {
   ADVANCED_CONTROL_HELP,
   ADVANCED_DEFS,
   applyMacrosToPipeline,
-  BUILT_IN_PRESETS,
   clonePreset,
   MACRO_DEFS,
   normalizePreset
 } from "./presets.js";
+import { BUILT_IN_PRESETS } from "./built-in-presets.js";
 import { RANDOM_FAMILIES, RANDOM_MODES, randomizeModule, randomizePreset } from "./randomize.js";
 import {
   clone,
