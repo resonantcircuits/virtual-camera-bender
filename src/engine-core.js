@@ -333,10 +333,11 @@ function applyBayerFault(image, config) {
           (Math.abs(pixelLuma(source, right) - pixelLuma(source, left)) +
             Math.abs(pixelLuma(source, down) - pixelLuma(source, up))) /
           255;
-        const shimmer = smoothstep(0.04, 0.4, edge) * zipper * ((x ^ y) & 1 ? 1 : -1);
-        g += shimmer * 46;
-        r -= shimmer * 18;
-        b -= shimmer * 18;
+        // Alternating light/dark teeth along edges, with a green/magenta tinge.
+        const shimmer = smoothstep(0.02, 0.28, edge) * zipper * ((x ^ y) & 1 ? 1 : -1);
+        g += shimmer * 96;
+        r += shimmer * 48;
+        b += shimmer * 62;
       }
 
       data[index] = clampByte(lerp(source[index], r, strength));
