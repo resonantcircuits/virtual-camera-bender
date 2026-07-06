@@ -98,8 +98,11 @@ const EDGE_COLORS = {
   yellow: [255, 242, 42],
 };
 
-export function processCircuitBendImageData(image, preset, resources = {}) {
+export function processCircuitBendImageData(image, preset, resources = {}, options = {}) {
   const seed = Number.isFinite(preset.seed) ? preset.seed : 1;
+  // Video frames pass a per-frame liveSeed so noise textures shimmer even
+  // when the structural seed is held; stills leave it equal to the seed.
+  const liveSeed = Number.isFinite(options.liveSeed) ? options.liveSeed : seed;
   const pipeline = preset.pipeline;
   applyCheapScale(image, pipeline.cheapCamera);
   applySoftFocus(image, pipeline.cheapCamera);
@@ -116,8 +119,8 @@ export function processCircuitBendImageData(image, preset, resources = {}) {
   applyEdgeBurn(image, pipeline.edgeBurn, seed);
   applyPixelSort(image, pipeline.pixelSort, seed);
   applyVerticalSmear(image, pipeline.verticalSmear, seed);
-  applySensorNoise(image, pipeline.sensorNoise, seed);
-  applyAmpGlow(image, pipeline.ampGlow, seed);
+  applySensorNoise(image, pipeline.sensorNoise, seed, liveSeed);
+  applyAmpGlow(image, pipeline.ampGlow, seed, liveSeed);
   applyMemoryFault(image, pipeline.memoryFault, seed);
   applyDctCrunch(image, pipeline.dctCrunch, seed);
   applyFinalCrunch(image, pipeline);
@@ -991,7 +994,10 @@ function applyVerticalSmear(image, config, seed) {
   }
 }
 
-function applySensorNoise(image, config, seed) {
+// Grain, speckle, and hot pixels draw from liveSeed (shot noise — new every
+// video frame); striping is fixed-pattern noise and the dead columns and
+// clusters below are stuck hardware, so they stay on the structural seed.
+function applySensorNoise(image, config, seed, liveSeed = seed) {
   if (!config?.enabled || config.amount <= 0) return;
   const { width, height, data } = image;
   const amount = clamp(config.amount);
@@ -1007,15 +1013,15 @@ function applySensorNoise(image, config, seed) {
       const lum = pixelLuma(data, index) / 255;
       const weight = amount * (0.32 + shadowBias * (1 - lum));
       const stripe = hashSigned(x, 0, columnSeed) * striping * 28;
-      const nr = hashSigned(x, y, seed + 101) * 255 * weight;
-      const ng = hashSigned(x, y, seed + 102) * 255 * weight * colorAmount;
-      const nb = hashSigned(x, y, seed + 103) * 255 * weight * colorAmount;
+      const nr = hashSigned(x, y, liveSeed + 101) * 255 * weight;
+      const ng = hashSigned(x, y, liveSeed + 102) * 255 * weight * colorAmount;
+      const nb = hashSigned(x, y, liveSeed + 103) * 255 * weight * colorAmount;
       data[index] = clampByte(data[index] + nr + stripe);
       data[index + 1] = clampByte(data[index + 1] + ng + stripe * 0.35);
       data[index + 2] = clampByte(data[index + 2] + nb - stripe * 0.25);
 
-      if (hashUnit(x, y, seed + 313) < hotPixels * 0.0018) {
-        const color = samplePalette(PALETTES["solarized-ccd"], hashUnit(x, y, seed + 314));
+      if (hashUnit(x, y, liveSeed + 313) < hotPixels * 0.0018) {
+        const color = samplePalette(PALETTES["solarized-ccd"], hashUnit(x, y, liveSeed + 314));
         data[index] = color[0];
         data[index + 1] = color[1];
         data[index + 2] = color[2];
@@ -1078,7 +1084,9 @@ const AMP_GLOW_CORNERS = {
   "bottom-right": [1, 1],
 };
 
-function applyAmpGlow(image, config, seed) {
+// The glow corner and reach stay structural; the grain texture inside the
+// glow draws from liveSeed so it boils per video frame like thermal signal.
+function applyAmpGlow(image, config, seed, liveSeed = seed) {
   if (!config?.enabled || !(config.strength > 0.005)) return;
   const { width, height, data } = image;
   const strength = clamp(config.strength);
@@ -1107,7 +1115,7 @@ function applyAmpGlow(image, config, seed) {
     for (let x = 0; x < width; x += 1) {
       const falloff = 1 - Math.hypot(x - cx, dy) / reach;
       if (falloff <= 0.004) continue;
-      const glow = falloff * falloff * strength * (0.72 + hashUnit(x, y, seed + 8011) * 0.56);
+      const glow = falloff * falloff * strength * (0.72 + hashUnit(x, y, liveSeed + 8011) * 0.56);
       const index = pixelIndex(x, y, width);
       data[index] = clampByte(data[index] + tintR * glow);
       data[index + 1] = clampByte(data[index + 1] + tintG * glow);

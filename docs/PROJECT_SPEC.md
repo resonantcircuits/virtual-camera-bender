@@ -6,7 +6,7 @@ Build a web-based still-image editor that turns normal input images into convinc
 
 The output should usually remain somewhat recognizable, but can be fairly destructive. The tool should make it easy to discover, save, tweak, and export strong glitch looks.
 
-The long-term product can support video; the companion command-line tool already exists (`src/cli.js`) and shares the still-image engine.
+Video is supported image-first (Phase 4, shipped 2026-07-06): the app is the design surface — a loaded clip becomes a frame source with a contact sheet, no in-app playback or encoding — and the CLI (`src/cli.js render-video`) renders the clip with the shared engine, driven by the preset's `temporal` block.
 
 ## Creative Target
 
@@ -156,7 +156,13 @@ WebGL remains a possible future optimization if CPU passes become the bottleneck
 
 Original-resolution export is the default. The preview uses a lower internal resolution (max 1500 px) for responsiveness; export re-renders at full source resolution.
 
-Video support can later apply the same engine per frame. To avoid unusable flicker, video mode should eventually support stable seeds, temporal smoothing, or slowly evolving parameters.
+Video mode (implemented) applies the same engine per frame with temporal scheduling in `src/temporal.js`, shared verbatim by the app preview and the CLI:
+
+- **Two seed tiers.** The structural seed follows `temporal.mode` — `locked` (frozen damage), `hold` (re-rolls every ~`holdFrames` frames, hold lengths jittered ±40%), `flicker` (per frame). The live seed changes every frame regardless and drives only noise textures (sensor grain, speckle, hot pixels, amp-glow grain) via an optional `liveSeed` render option — so locked damage still shimmers like a live sensor instead of reading as a static overlay. Fixed-pattern striping and dead columns/clusters stay structural, like real stuck hardware.
+- **Parameter drift.** `driftAmount`/`driftSpeed` wander every enabled module's continuous params around their preset values on smooth seeded noise tracks (±30% of each control's range at full drift; integer-stepped params excluded to avoid pops). Drift runs off the base seed, so tracks stay continuous across hold-mode seed jumps.
+- **Frame ghosting.** `temporal.ghostFrame: N` feeds bufferGhost the input frame N back (ring buffer in the render loop) — genuine stale-buffer trails instead of the self-frame approximation.
+- **App as design surface.** Loading a video extracts 25 evenly spaced frames into a full-screen contact sheet (`V`), each rendered through the current camera at its true frame index (including its ghost companion frame when ghost lag is set). Clicking a frame makes it the working image carrying its frame index, so the whole still-image editor previews exactly what the CLI renders for that frame. A Temporal panel edits the block; Copy Render Command emits the CLI line. Frame indices in the app come from a measured fps estimate (requestVideoFrameCallback deltas, snapped to common rates); the CLI uses the container's true rate.
+- **CLI renderer.** `render-video` streams rawvideo through two ffmpeg pipes (no temp frame files), renders frames on a worker_threads pool (`--jobs`, default cores−1, output written in order — byte-identical results at any job count), preserves source fps and audio (stream copy), encodes H.264/yuv420p (`--crf`, default 18), and supports `--start`/`--duration` trims plus `--max-dimension` for cheap test renders.
 
 ## Randomization Model
 
@@ -249,11 +255,11 @@ Three more added with the final Phase 5 analog-fault modules (2026-07-06):
 - undo/redo, per-module solo/bypass/randomize, in-app help — done
 - automated regression tests wired into CI — open (engine and UI are currently exercised by ad-hoc scripts)
 
-### Phase 4: Video And CLI — partially done
+### Phase 4: Video And CLI — mostly done
 
 - reuse preset format in a CLI (`src/cli.js`, ffmpeg-backed) — done
-- process video frame-by-frame — open
-- add temporal stability controls — open
+- process video frame-by-frame — done (2026-07-06: `render-video` with streaming ffmpeg pipes and a worker-thread pool; see "Video mode" under Technical Direction)
+- add temporal stability controls — done (preset `temporal` block: locked/hold/flicker seed modes with a per-frame live tier for noise, parameter drift, frame ghosting; edited in the app's Temporal panel, previewed on the frames contact sheet)
 - support batch image processing — open
 
 ### Phase 5: New Effect Families (ideated 2026-07-05; all ten items done 2026-07-06)

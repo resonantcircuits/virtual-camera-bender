@@ -5,10 +5,12 @@ import {
   applyMacrosToPipeline,
   clonePreset,
   MACRO_DEFS,
-  normalizePreset
+  normalizePreset,
+  TEMPORAL_MODES
 } from "./presets.js";
 import { BUILT_IN_PRESETS } from "./built-in-presets.js";
 import { RANDOM_FAMILIES, RANDOM_MODES, randomizeModule, randomizePreset } from "./randomize.js";
+import { prepareTemporalFrame } from "./temporal.js";
 import {
   clamp,
   clone,
@@ -24,6 +26,8 @@ const PREVIEW_MAX_DIMENSION = 1500;
 const THUMB_MAX_DIMENSION = 110;
 const GALLERY_THUMB_MAX_DIMENSION = 300;
 const GHOST_EXPORT_MAX_DIMENSION = 3000;
+const VIDEO_SHEET_FRAMES = 25;
+const VIDEO_THUMB_MAX_DIMENSION = 300;
 const HISTORY_LIMIT = 60;
 const PREVIEW_MIN_ZOOM = 1;
 const PREVIEW_MAX_ZOOM = 8;
@@ -63,7 +67,15 @@ const state = {
   openGroups: new Set(),
   activePresetIndex: 0,
   pendingSnapshot: null,
-  thumbsPending: false
+  thumbsPending: false,
+  // Video mode: the loaded clip and which of its frames is the working image.
+  video: null,
+  frameIndex: null,
+  workingFrameTime: 0,
+  videoSheetSelection: -1,
+  videoSheetDirty: true,
+  videoGhostPreview: null,
+  videoGhostLag: 0
 };
 
 const history = { undo: [], redo: [] };
@@ -106,11 +118,20 @@ const dom = {
   galleryFilter: document.querySelector("#galleryFilter"),
   galleryCount: document.querySelector("#galleryCount"),
   galleryHint: document.querySelector("#galleryHint"),
-  galleryGrid: document.querySelector("#galleryGrid")
+  galleryGrid: document.querySelector("#galleryGrid"),
+  framesButton: document.querySelector("#framesButton"),
+  videoDialog: document.querySelector("#videoDialog"),
+  videoClose: document.querySelector("#videoClose"),
+  videoMeta: document.querySelector("#videoMeta"),
+  videoGrid: document.querySelector("#videoGrid"),
+  temporalSection: document.querySelector("#temporalSection"),
+  temporalControls: document.querySelector("#temporalControls"),
+  copyCommandButton: document.querySelector("#copyCommandButton")
 };
 
 const thumbCanvases = [];
 const galleryCanvases = [];
+const videoCanvases = [];
 // Gallery thumbnails are expensive (22 renders at 300px), so they are only
 // generated when the gallery is opened and the source has changed since.
 let galleryThumbsDirty = true;
@@ -167,8 +188,10 @@ function onWorkerMessage(event) {
   } else if (type === "export") {
     if (jobId !== exportJobId) return;
     completeExport(imageData, pendingExportRequest);
-  } else if (type === "thumb" || type === "gallery-thumb") {
-    const canvas = (type === "thumb" ? thumbCanvases : galleryCanvases)[index];
+  } else if (type === "thumb" || type === "gallery-thumb" || type === "video-thumb") {
+    const canvas = (
+      type === "thumb" ? thumbCanvases : type === "gallery-thumb" ? galleryCanvases : videoCanvases
+    )[index];
     if (!canvas) return;
     canvas.width = width;
     canvas.height = height;
@@ -197,7 +220,7 @@ function bindEvents() {
   dom.redoButton.addEventListener("click", redo);
   dom.imageInput.addEventListener("change", () => {
     const file = dom.imageInput.files?.[0];
-    if (file) loadImageFile(file);
+    if (file) loadMediaFile(file);
     dom.imageInput.value = "";
   });
   dom.presetInput.addEventListener("change", () => {
@@ -228,10 +251,10 @@ function bindEvents() {
   dom.dropTarget.addEventListener("drop", (event) => {
     event.preventDefault();
     dom.dropTarget.classList.remove("is-dragging");
-    const file = [...event.dataTransfer.files].find((item) =>
-      item.type.startsWith("image/")
+    const file = [...event.dataTransfer.files].find(
+      (item) => item.type.startsWith("image/") || isVideoFile(item)
     );
-    if (file) loadImageFile(file);
+    if (file) loadMediaFile(file);
   });
 
   dom.seedInput.addEventListener("change", () => {
@@ -258,6 +281,13 @@ function bindEvents() {
   dom.galleryDialog.addEventListener("click", (event) => {
     if (event.target === dom.galleryDialog) dom.galleryDialog.close();
   });
+  dom.framesButton.addEventListener("click", openVideoSheet);
+  dom.videoClose.addEventListener("click", () => dom.videoDialog.close());
+  dom.videoDialog.addEventListener("click", (event) => {
+    if (event.target === dom.videoDialog) dom.videoDialog.close();
+  });
+  dom.copyCommandButton.addEventListener("click", copyRenderCommand);
+
   dom.galleryFilter.addEventListener("input", applyGalleryFilter);
   dom.galleryFilter.addEventListener("keydown", (event) => {
     if (event.key === "ArrowDown" || event.key === "Enter") {
@@ -305,9 +335,15 @@ function bindEvents() {
       else if (!dom.helpDialog.open) openGallery();
       return;
     }
-    // While the gallery is up, only its own keys apply — the editor
-    // shortcuts below would act on the app hidden behind the modal.
-    if (dom.galleryDialog.open) return;
+    if ((event.key === "v" || event.key === "V") && state.video) {
+      event.preventDefault();
+      if (dom.videoDialog.open) dom.videoDialog.close();
+      else if (!dom.helpDialog.open && !dom.galleryDialog.open) openVideoSheet();
+      return;
+    }
+    // While the gallery or frames sheet is up, only its own keys apply —
+    // the editor shortcuts below would act on the app hidden behind the modal.
+    if (dom.galleryDialog.open || dom.videoDialog.open) return;
     if (event.key === "?") {
       if (dom.helpDialog.open) dom.helpDialog.close();
       else dom.helpDialog.showModal();
@@ -928,7 +964,76 @@ function renderControls() {
   dom.seedInput.value = String(state.preset.seed);
   refreshSeedLockButton();
   renderMacroControls();
+  renderTemporalControls();
   renderAdvancedControls();
+}
+
+const TEMPORAL_DEFS = [
+  ["temporal.mode", "Seed Mode", "select", TEMPORAL_MODES, null, null,
+    "How structural damage evolves across frames: locked = frozen in place, hold = re-rolls every ~N frames, flicker = re-rolls every frame. Sensor grain always shimmers regardless."],
+  ["temporal.holdFrames", "Hold Frames", "range", 2, 60, 1,
+    "Average frames between damage re-rolls in hold mode; each hold varies ±40% so the stutter is irregular."],
+  ["temporal.driftAmount", "Drift Amount", "range", 0, 1, 0.01,
+    "How far module parameters wander from their set values over the clip."],
+  ["temporal.driftSpeed", "Drift Speed", "range", 0, 1, 0.01,
+    "How fast the parameter wander evolves."],
+  ["temporal.ghostFrame", "Ghost Lag", "range", 0, 30, 1,
+    "Feeds the Buffer Ghost module the input frame N back (0 = off). Enable Buffer Ghost to see the trails."]
+];
+
+function renderTemporalControls() {
+  dom.temporalSection.hidden = !state.video;
+  if (!state.video) return;
+  dom.temporalControls.innerHTML = "";
+
+  TEMPORAL_DEFS.forEach(([path, label, type, min, max, step, tooltip]) => {
+    const value = getAtPath(state.preset, path);
+    const row = document.createElement("label");
+    row.title = tooltip;
+
+    if (type === "select") {
+      row.className = "control-row is-select";
+      row.innerHTML = `
+        <span>${label}</span>
+        <select>
+          ${min
+            .map(
+              (option) =>
+                `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`
+            )
+            .join("")}
+        </select>
+      `;
+      const select = row.querySelector("select");
+      select.title = tooltip;
+      select.addEventListener("change", () => {
+        pushHistory(snapshotPreset());
+        setAtPath(state.preset, path, select.value);
+        scheduleRender();
+      });
+    } else {
+      row.className = "control-row";
+      row.innerHTML = `
+        <span>${label}</span>
+        <input type="range" min="${min}" max="${max}" step="${step}" value="${value}">
+        <output>${formatControlValue(value)}</output>
+      `;
+      const input = row.querySelector("input");
+      const output = row.querySelector("output");
+      input.title = tooltip;
+      input.addEventListener("pointerdown", armSliderSnapshot);
+      input.addEventListener("keydown", armSliderSnapshot);
+      input.addEventListener("change", commitSliderSnapshot);
+      input.addEventListener("input", () => {
+        const numericValue = step >= 1 ? Math.round(Number(input.value)) : Number(input.value);
+        setAtPath(state.preset, path, numericValue);
+        output.textContent = formatControlValue(numericValue);
+        scheduleRender();
+      });
+    }
+
+    dom.temporalControls.append(row);
+  });
 }
 
 function renderMacroControls() {
@@ -1138,10 +1243,20 @@ function renderAdvancedControls() {
 
 // --- Image / preset IO ---
 
+function isVideoFile(file) {
+  return file.type.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(file.name);
+}
+
+function loadMediaFile(file) {
+  if (isVideoFile(file)) loadVideoFile(file);
+  else loadImageFile(file);
+}
+
 async function loadImageFile(file) {
   updateStatus("LOADING IMAGE");
   try {
     state.source = await fileToImageSource(file);
+    disposeVideo();
     state.sourceName = file.name;
     dom.dimensionsText.textContent = `${state.source.width} x ${state.source.height}`;
     dom.emptyState.hidden = true;
@@ -1149,10 +1264,381 @@ async function loadImageFile(file) {
     prepareThumbSource();
     state.thumbsPending = true;
     galleryThumbsDirty = true;
+    renderTemporalControls();
     scheduleRender();
   } catch (error) {
     console.error(error);
     updateStatus("IMAGE LOAD FAILED");
+  }
+}
+
+// --- Video mode ---
+// A loaded video is a frame source: the contact sheet shows evenly spaced
+// frames through the current camera, and clicking one makes it the working
+// image (carrying its frame index, so the preview matches what the CLI
+// renders for that frame). The app never encodes video — that's the CLI's
+// job via the Copy Render Command button.
+
+async function loadVideoFile(file) {
+  updateStatus("LOADING VIDEO");
+  try {
+    disposeVideo();
+    const url = URL.createObjectURL(file);
+    const element = document.createElement("video");
+    element.muted = true;
+    element.playsInline = true;
+    element.preload = "auto";
+    element.src = url;
+    await new Promise((resolve, reject) => {
+      element.onloadeddata = resolve;
+      element.onerror = () => reject(new Error(`Cannot decode video: ${file.name}`));
+    });
+    const fps = await estimateVideoFps(element);
+    const duration = element.duration;
+    if (!Number.isFinite(duration) || duration <= 0 || !element.videoWidth) {
+      throw new Error("Video has no readable duration or dimensions");
+    }
+
+    const keyframes = [];
+    for (let i = 0; i < VIDEO_SHEET_FRAMES; i += 1) {
+      const time = (duration * (i + 0.5)) / VIDEO_SHEET_FRAMES;
+      keyframes.push({
+        time,
+        index: Math.round(time * fps),
+        thumb: null,
+        ghostThumb: null,
+        ghostThumbLag: 0
+      });
+    }
+
+    state.video = {
+      element,
+      url,
+      name: file.name,
+      duration,
+      fps,
+      width: element.videoWidth,
+      height: element.videoHeight,
+      keyframes
+    };
+    state.videoSheetDirty = true;
+    dom.framesButton.hidden = false;
+    renderTemporalControls();
+    renderVideoGrid();
+    await selectVideoFrame(Math.floor(VIDEO_SHEET_FRAMES / 2));
+    openVideoSheet();
+  } catch (error) {
+    console.error(error);
+    updateStatus("VIDEO LOAD FAILED");
+  }
+}
+
+function disposeVideo() {
+  if (!state.video) return;
+  const { element, url } = state.video;
+  element.removeAttribute("src");
+  element.load();
+  URL.revokeObjectURL(url);
+  state.video = null;
+  state.frameIndex = null;
+  state.workingFrameTime = 0;
+  state.videoSheetSelection = -1;
+  state.videoGhostPreview = null;
+  state.videoGhostLag = 0;
+  dom.framesButton.hidden = true;
+  if (dom.videoDialog.open) dom.videoDialog.close();
+  videoCanvases.length = 0;
+  dom.videoGrid.innerHTML = "";
+}
+
+// HTMLVideoElement does not expose the frame rate, but temporal seeds are
+// scheduled in frames. Measure it from mediaTime deltas during a short muted
+// play; the CLI uses the container's true rate, so a wrong estimate here only
+// shifts which preview frames land on which hold segments.
+async function estimateVideoFps(element) {
+  if (!("requestVideoFrameCallback" in HTMLVideoElement.prototype)) return 30;
+  try {
+    const times = [];
+    await element.play();
+    await new Promise((resolve) => {
+      const stop = window.setTimeout(resolve, 1200);
+      const tick = (_now, meta) => {
+        times.push(meta.mediaTime);
+        if (times.length >= 12) {
+          window.clearTimeout(stop);
+          resolve();
+        } else {
+          element.requestVideoFrameCallback(tick);
+        }
+      };
+      element.requestVideoFrameCallback(tick);
+    });
+    element.pause();
+    const deltas = [];
+    for (let i = 1; i < times.length; i += 1) {
+      const delta = times[i] - times[i - 1];
+      if (delta > 0.0005) deltas.push(delta);
+    }
+    if (deltas.length < 4) return 30;
+    deltas.sort((a, b) => a - b);
+    const fps = 1 / deltas[Math.floor(deltas.length / 2)];
+    const common = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 120];
+    const snapped = common.reduce((best, rate) =>
+      Math.abs(rate - fps) < Math.abs(best - fps) ? rate : best
+    );
+    return Math.abs(snapped - fps) / fps < 0.05 ? snapped : Math.round(fps * 100) / 100;
+  } catch (error) {
+    console.warn("FPS estimation failed, assuming 30", error);
+    return 30;
+  }
+}
+
+// All seeks share one <video> element, so they must run one at a time.
+let videoSeekChain = Promise.resolve();
+
+function withVideoElement(task) {
+  const run = videoSeekChain.then(task, task);
+  videoSeekChain = run.then(
+    () => {},
+    () => {}
+  );
+  return run;
+}
+
+function seekVideoTo(element, time) {
+  const target = clamp(time, 0, Math.max(0, element.duration - 0.001));
+  if (Math.abs(element.currentTime - target) < 0.002 && element.readyState >= 2) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const onSeeked = () => {
+      element.removeEventListener("error", onError);
+      resolve();
+    };
+    const onError = () => {
+      element.removeEventListener("seeked", onSeeked);
+      reject(new Error("Video seek failed"));
+    };
+    element.addEventListener("seeked", onSeeked, { once: true });
+    element.addEventListener("error", onError, { once: true });
+    element.currentTime = target;
+  });
+}
+
+function grabVideoCanvas(time, maxDimension) {
+  return withVideoElement(async () => {
+    const element = state.video.element;
+    await seekVideoTo(element, time);
+    const fitted = fitWithin(element.videoWidth, element.videoHeight, maxDimension);
+    const canvas = document.createElement("canvas");
+    canvas.width = fitted.width;
+    canvas.height = fitted.height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    context.drawImage(element, 0, 0, fitted.width, fitted.height);
+    return canvas;
+  });
+}
+
+async function grabVideoImageData(time, maxDimension) {
+  const canvas = await grabVideoCanvas(time, maxDimension);
+  return canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height);
+}
+
+async function selectVideoFrame(sheetIndex) {
+  const video = state.video;
+  const keyframe = video.keyframes[sheetIndex];
+  updateStatus("GRABBING FRAME");
+  const canvas = await grabVideoCanvas(keyframe.time, null);
+  state.source = canvas;
+  state.sourceName = video.name;
+  state.frameIndex = keyframe.index;
+  state.workingFrameTime = keyframe.time;
+  state.videoSheetSelection = sheetIndex;
+  state.videoGhostLag = -1;
+  dom.dimensionsText.textContent = `${canvas.width} x ${canvas.height}`;
+  dom.emptyState.hidden = true;
+  resetPreviewView();
+  prepareThumbSource();
+  state.thumbsPending = true;
+  galleryThumbsDirty = true;
+  markVideoSelection();
+  scheduleRender();
+  updateStatus(`FRAME ${keyframe.index} · ${formatTimecode(keyframe.time)}`);
+}
+
+function presetGhostLag() {
+  return Math.max(0, Math.round(state.preset.temporal?.ghostFrame || 0));
+}
+
+function videoGhostActive() {
+  return Boolean(state.video) && state.frameIndex !== null && presetGhostLag() > 0;
+}
+
+// The preview's ghost companion (the input frame ghostFrame back) is grabbed
+// asynchronously; renders in between use the previous one and a re-render is
+// queued once the fresh grab lands.
+let videoGhostRefreshing = false;
+
+async function refreshVideoGhostPreview() {
+  const lag = videoGhostActive() ? presetGhostLag() : 0;
+  state.videoGhostLag = lag;
+  if (!lag) {
+    state.videoGhostPreview = null;
+    return;
+  }
+  const time = Math.max(0, state.workingFrameTime - lag / state.video.fps);
+  state.videoGhostPreview = await grabVideoImageData(time, PREVIEW_MAX_DIMENSION);
+}
+
+function ensureVideoGhostFresh() {
+  const lag = videoGhostActive() ? presetGhostLag() : 0;
+  if (lag === state.videoGhostLag || videoGhostRefreshing) return;
+  videoGhostRefreshing = true;
+  refreshVideoGhostPreview()
+    .catch((error) => console.error(error))
+    .finally(() => {
+      videoGhostRefreshing = false;
+      scheduleRender();
+    });
+}
+
+function formatTimecode(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds - minutes * 60;
+  return `${minutes}:${rest.toFixed(1).padStart(4, "0")}`;
+}
+
+function renderVideoGrid() {
+  dom.videoGrid.innerHTML = "";
+  videoCanvases.length = 0;
+  state.video.keyframes.forEach((keyframe, index) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "gallery-card video-card";
+    const thumb = document.createElement("canvas");
+    thumb.className = "gallery-thumb";
+    thumb.width = 4;
+    thumb.height = 3;
+    const label = document.createElement("span");
+    label.className = "video-card-label";
+    label.textContent = `${formatTimecode(keyframe.time)} · f${keyframe.index}`;
+    card.append(thumb, label);
+    card.addEventListener("click", () => {
+      selectVideoFrame(index);
+      dom.videoDialog.close();
+    });
+    videoCanvases.push(thumb);
+    dom.videoGrid.append(card);
+  });
+  markVideoSelection();
+}
+
+function markVideoSelection() {
+  dom.videoGrid.querySelectorAll(".video-card").forEach((card, index) => {
+    card.classList.toggle("is-active", index === state.videoSheetSelection);
+  });
+}
+
+function openVideoSheet() {
+  if (!state.video) return;
+  const video = state.video;
+  dom.videoMeta.textContent = `${video.name} · ${video.duration.toFixed(1)}s · ${video.fps} fps · ${video.width}x${video.height}`;
+  dom.videoDialog.showModal();
+  if (state.videoSheetDirty) {
+    state.videoSheetDirty = false;
+    refreshVideoSheet();
+  }
+}
+
+// Sheet renders are superseded, not queued: reopening after edits bumps the
+// token so stale extraction loops stop early.
+let videoSheetToken = 0;
+
+async function refreshVideoSheet() {
+  const video = state.video;
+  if (!video) return;
+  const token = ++videoSheetToken;
+  const basePreset = effectivePreset();
+  const lag = presetGhostLag();
+  updateStatus("RENDERING FRAMES");
+
+  try {
+    for (const keyframe of video.keyframes) {
+      if (token !== videoSheetToken || state.video !== video) return;
+      if (!keyframe.thumb) {
+        keyframe.thumb = await grabVideoImageData(keyframe.time, VIDEO_THUMB_MAX_DIMENSION);
+      }
+      if (lag > 0 && (!keyframe.ghostThumb || keyframe.ghostThumbLag !== lag)) {
+        keyframe.ghostThumb = await grabVideoImageData(
+          Math.max(0, keyframe.time - lag / video.fps),
+          VIDEO_THUMB_MAX_DIMENSION
+        );
+        keyframe.ghostThumbLag = lag;
+      }
+    }
+  } catch (error) {
+    console.error(error);
+    updateStatus("FRAME GRAB FAILED");
+    return;
+  }
+  if (token !== videoSheetToken || state.video !== video) return;
+
+  video.keyframes.forEach((keyframe, index) => {
+    const frameState = prepareTemporalFrame(basePreset, keyframe.index);
+    const ghost = lag > 0 ? keyframe.ghostThumb : state.ghostThumb;
+    if (worker) {
+      const copy = new Uint8ClampedArray(keyframe.thumb.data);
+      worker.postMessage(
+        {
+          type: "video-thumb",
+          index,
+          width: keyframe.thumb.width,
+          height: keyframe.thumb.height,
+          buffer: copy.buffer,
+          preset: frameState.preset,
+          liveSeed: frameState.liveSeed,
+          ghost: ghostPayload(ghost)
+        },
+        [copy.buffer]
+      );
+    } else {
+      const image = {
+        width: keyframe.thumb.width,
+        height: keyframe.thumb.height,
+        data: new Uint8ClampedArray(keyframe.thumb.data)
+      };
+      processCircuitBendImageData(image, frameState.preset, ghostResources(ghost), {
+        liveSeed: frameState.liveSeed
+      });
+      const canvas = videoCanvases[index];
+      if (!canvas) return;
+      canvas.width = image.width;
+      canvas.height = image.height;
+      canvas
+        .getContext("2d")
+        .putImageData(new ImageData(image.data, image.width, image.height), 0, 0);
+      canvas.classList.add("has-image");
+    }
+  });
+  updateStatus(`${state.preset.name.toUpperCase()} · FRAME SHEET`);
+}
+
+function buildCliCommand() {
+  const input = state.video?.name || "input.mp4";
+  const output = `${input.replace(/\.[^.]+$/, "")}-bent.mp4`;
+  const presetFile = `${safeFilename(state.preset.name)}.vcb-preset.json`;
+  return `node src/cli.js render-video "${input}" "${output}" --preset "${presetFile}"`;
+}
+
+async function copyRenderCommand() {
+  const command = buildCliCommand();
+  try {
+    await navigator.clipboard.writeText(command);
+    updateStatus("COMMAND COPIED · SAVE PRESET NEXT TO THE VIDEO");
+  } catch {
+    window.prompt("Render command", command);
   }
 }
 
@@ -1291,6 +1777,9 @@ function refreshOriginalCanvas(width, height) {
 
 function scheduleRender() {
   if (!state.source) return;
+  // Any change that re-renders the preview also stales the frame sheet;
+  // it regenerates lazily the next time the sheet is opened.
+  state.videoSheetDirty = true;
   if (state.isRendering) {
     state.renderQueued = true;
     return;
@@ -1312,7 +1801,10 @@ function renderPreview() {
     const fitted = fitWithin(size.width, size.height, PREVIEW_MAX_DIMENSION);
     const context = refreshOriginalCanvas(fitted.width, fitted.height);
     const imageData = context.getImageData(0, 0, fitted.width, fitted.height);
-    const preset = effectivePreset();
+    const frameState = prepareTemporalFrame(effectivePreset(), state.frameIndex ?? NaN);
+    const preset = frameState.preset;
+    ensureVideoGhostFresh();
+    const previewGhost = videoGhostActive() ? state.videoGhostPreview : state.ghostPreview;
 
     if (worker) {
       previewJobId += 1;
@@ -1324,13 +1816,16 @@ function renderPreview() {
           height: imageData.height,
           buffer: imageData.data.buffer,
           preset,
-          ghost: ghostPayload(state.ghostPreview)
+          liveSeed: frameState.liveSeed,
+          ghost: ghostPayload(previewGhost)
         },
         [imageData.data.buffer]
       );
     } else {
       const startedAt = performance.now();
-      processCircuitBendImageData(imageData, preset, ghostResources(state.ghostPreview));
+      processCircuitBendImageData(imageData, preset, ghostResources(previewGhost), {
+        liveSeed: frameState.liveSeed
+      });
       finishPreview(imageData, Math.round(performance.now() - startedAt));
     }
   } catch (error) {
@@ -1402,8 +1897,13 @@ async function exportImage() {
     const context = canvas.getContext("2d", { willReadFrequently: true });
     context.drawImage(state.source, 0, 0, size.width, size.height);
     const imageData = context.getImageData(0, 0, size.width, size.height);
-    const preset = effectivePreset();
-    const exportGhost = state.ghostSource ? rasterizeGhost(GHOST_EXPORT_MAX_DIMENSION) : null;
+    const frameState = prepareTemporalFrame(effectivePreset(), state.frameIndex ?? NaN);
+    const preset = frameState.preset;
+    let exportGhost = state.ghostSource ? rasterizeGhost(GHOST_EXPORT_MAX_DIMENSION) : null;
+    if (videoGhostActive()) {
+      const ghostTime = Math.max(0, state.workingFrameTime - presetGhostLag() / state.video.fps);
+      exportGhost = await grabVideoImageData(ghostTime, null);
+    }
 
     if (worker) {
       exportJobId += 1;
@@ -1416,12 +1916,15 @@ async function exportImage() {
           height: imageData.height,
           buffer: imageData.data.buffer,
           preset,
+          liveSeed: frameState.liveSeed,
           ghost: ghostPayload(exportGhost)
         },
         [imageData.data.buffer]
       );
     } else {
-      processCircuitBendImageData(imageData, preset, ghostResources(exportGhost));
+      processCircuitBendImageData(imageData, preset, ghostResources(exportGhost), {
+        liveSeed: frameState.liveSeed
+      });
       await completeExport(imageData, exportRequest);
     }
   } catch (error) {

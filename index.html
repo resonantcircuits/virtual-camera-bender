@@ -18,7 +18,7 @@
           <h1>Virtual Camera Bender</h1>
         </div>
         <div class="topbar-actions">
-          <button id="loadImageButton" class="command-button is-primary" type="button">Load Image</button>
+          <button id="loadImageButton" class="command-button is-primary" type="button">Load Media</button>
           <button id="loadPresetButton" class="command-button" type="button">Load Preset</button>
           <button id="savePresetButton" class="command-button" type="button">Save Preset</button>
           <button id="undoButton" class="command-button" type="button" title="Undo (Cmd/Ctrl+Z)" disabled>Undo</button>
@@ -79,13 +79,14 @@
         <section id="dropTarget" class="viewer">
           <canvas id="previewCanvas"></canvas>
           <div class="viewer-toolbar">
+            <button id="framesButton" class="command-button" type="button" title="Video frame contact sheet (V)" hidden>Frames</button>
             <button id="resetViewButton" class="command-button zoom-reset-button" type="button" title="Reset preview zoom (double-click image)">Fit</button>
             <button id="splitButton" class="command-button" type="button" title="A/B split compare — drag on the image (or press S)">Split A/B</button>
             <button id="compareButton" class="command-button" type="button" title="Hold to view the original image (or hold C)">Hold · Original</button>
           </div>
           <div id="emptyState" class="empty-state">
             <strong>NO SIGNAL</strong>
-            <span>LOAD IMAGE · DROP FILE</span>
+            <span>LOAD IMAGE OR VIDEO · DROP FILE</span>
           </div>
         </section>
 
@@ -104,6 +105,13 @@
             <div id="macroControls" class="control-stack"></div>
           </section>
 
+          <section class="panel-section" id="temporalSection" hidden>
+            <h2>Temporal · Video</h2>
+            <p class="hint">How the damage behaves across frames. Previewed live on the working frame and the Frames sheet; rendered by the CLI.</p>
+            <div id="temporalControls" class="control-stack"></div>
+            <button id="copyCommandButton" class="command-button is-block" type="button" title="Copy the CLI command that renders this video with the current camera">Copy Render Command</button>
+          </section>
+
           <section class="panel-section">
             <details>
               <summary>Advanced Circuit</summary>
@@ -115,12 +123,12 @@
 
       <footer class="statusbar">
         <span id="statusText">NO SIGNAL</span>
-        <span class="statusbar-hint">R RANDOMIZE · G GALLERY · C ORIGINAL · S SPLIT · &#8984;Z UNDO · ? HELP</span>
+        <span class="statusbar-hint">R RANDOMIZE · G GALLERY · V FRAMES · C ORIGINAL · S SPLIT · &#8984;Z UNDO · ? HELP</span>
         <span id="dimensionsText">0 x 0</span>
       </footer>
     </div>
 
-    <input id="imageInput" type="file" accept="image/*" hidden>
+    <input id="imageInput" type="file" accept="image/*,video/*" hidden>
     <input id="presetInput" type="file" accept="application/json,.json,.vcb-preset" hidden>
 
     <dialog id="helpDialog" class="help-dialog">
@@ -176,6 +184,12 @@
           <p>Supported browsers open a save dialog for filename and location. Others ask for a filename and then use the browser's normal download folder.</p>
         </section>
         <section>
+          <h3>Video</h3>
+          <p>Loading a video opens the <strong>Frames</strong> contact sheet (<kbd>V</kbd>): 25 evenly spaced frames rendered through the current camera. Click a frame to make it the working image — every editor tool then works on that frame exactly as it will render in the final video.</p>
+          <p>The <strong>Temporal</strong> panel controls behavior across frames. <strong>Seed Mode</strong>: <em>locked</em> keeps all damage frozen in place, <em>hold</em> re-rolls it every ~N frames (camcorder stutter), <em>flicker</em> re-rolls every frame. Sensor grain and speckle always shimmer per frame regardless — only the structural damage obeys the mode. <strong>Drift</strong> makes module parameters wander slowly so the look evolves. <strong>Ghost Lag</strong> feeds the Buffer Ghost module the frame N back — real stale-buffer trails (enable Buffer Ghost to see it).</p>
+          <p>The app never encodes video. <strong>Copy Render Command</strong> gives you the CLI line; save your preset next to the video and run it with ffmpeg installed: <code>node src/cli.js render-video in.mp4 out.mp4 --preset camera.json</code>.</p>
+        </section>
+        <section>
           <h3>Presets and Session State</h3>
           <p><strong>Save Preset</strong> writes camera settings, seed, macros, module parameters, output format, and export size. It does not save the source photo, ghost source image, module locks, seed lock, undo history, or split/solo view state.</p>
           <p><strong>Buffer Ghost</strong> can use a loaded second image as the stale frame. If no ghost image is loaded, it falls back to the current image.</p>
@@ -185,6 +199,7 @@
           <p>
             <kbd>R</kbd> global randomize &middot;
             <kbd>G</kbd> camera gallery &middot;
+            <kbd>V</kbd> video frames &middot;
             <kbd>C</kbd> hold original &middot;
             <kbd>S</kbd> split compare &middot;
             <kbd>&#8984;Z</kbd> undo &middot;
@@ -204,6 +219,16 @@
       </div>
       <p id="galleryHint" class="gallery-hint">NO SIGNAL &middot; load an image to preview every camera on your own photo. Cards show placeholder film until then.</p>
       <div id="galleryGrid" class="gallery-grid"></div>
+    </dialog>
+
+    <dialog id="videoDialog" class="gallery-dialog">
+      <div class="gallery-header">
+        <h2>Video Frames</h2>
+        <span id="videoMeta" class="video-meta"></span>
+        <button id="videoClose" class="command-button" type="button" title="Close (Esc)">Close</button>
+      </div>
+      <p class="gallery-hint">25 frames through the current camera, each with its own temporal seed and drift. Click one to make it the working image.</p>
+      <div id="videoGrid" class="gallery-grid video-grid"></div>
     </dialog>
   </body>
 </html>

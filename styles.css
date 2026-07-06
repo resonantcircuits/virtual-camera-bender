@@ -928,6 +928,41 @@ summary {
   overflow: hidden;
 }
 
+.video-meta {
+  color: var(--muted);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.video-card {
+  padding: 6px;
+  gap: 5px;
+}
+
+.video-card-label {
+  font-size: 0.66rem;
+  color: var(--amber);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-button.is-block {
+  width: 100%;
+}
+
+@media (max-width: 1080px) {
+  .video-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+}
+
 @media (max-width: 1080px) {
   .workspace {
     grid-template-columns: minmax(230px, 290px) minmax(320px, 1fr);

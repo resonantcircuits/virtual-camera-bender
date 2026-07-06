@@ -1,6 +1,6 @@
 # Preset Format
 
-Presets are human-readable JSON, shared between the web app and the command-line renderer (`node src/cli.js render --preset <file>`), and intended to also drive a future video mode.
+Presets are human-readable JSON, shared between the web app and the command-line renderer (`node src/cli.js render --preset <file>` for stills, `render-video` for clips).
 
 The schema below matches the current implementation (`src/presets.js`). It is stable but not locked: presets missing newer fields load fine — `normalizePreset` fills in defaults — so files saved by older versions keep working.
 
@@ -28,6 +28,13 @@ The schema below matches the current implementation (`src/presets.js`). It is st
     "noise": 0.42,
     "cheapness": 0.35,
     "chaos": 0.44
+  },
+  "temporal": {
+    "mode": "locked",
+    "holdFrames": 12,
+    "driftAmount": 0.0,
+    "driftSpeed": 0.3,
+    "ghostFrame": 0
   },
   "pipeline": {
     "cheapCamera": {
@@ -222,10 +229,22 @@ The schema below matches the current implementation (`src/presets.js`). It is st
 
 Palettes for `falseColor.mode` and `gradientWash.mode`: `solarized-ccd`, `thermal-bleach`, `pink-blue`, `toxic-green`, `rainbow`, `acid-sunset`, `infrared`, `candy-shop`, `poison-dart`.
 
+## Temporal Block (video)
+
+The `temporal` block controls how the camera behaves across video frames (`src/temporal.js`). Still rendering ignores it entirely; presets without it get the defaults shown above.
+
+- `mode`: how the *structural* seed evolves — `locked` (one seed for the whole clip: damage frozen in place), `hold` (seed jumps every ~`holdFrames` frames), `flicker` (fresh seed every frame). Noise textures (sensor grain, speckle, hot pixels, amp-glow grain) reroll every frame regardless of mode, so locked damage still shimmers like a live sensor; fixed-pattern striping, dead columns/clusters, and all geometric damage obey the mode.
+- `holdFrames`: average hold length in frames for `hold` mode. Each hold varies ±40% (seeded), so the stutter is irregular.
+- `driftAmount` (0-1): every enabled module's continuous parameters wander around their preset values on smooth seeded noise tracks — up to ±30% of each control's range at 1. Integer-stepped params (`bitDepth`, `phaseError`, `generations`, …) never drift. 0 disables drift and reproduces the preset exactly.
+- `driftSpeed` (0-1): how fast the wander evolves per frame.
+- `ghostFrame`: when > 0, the bufferGhost module receives the *input frame N back* as its stale frame — real inter-frame ghosting. Overrides `--ghost` and the app's loaded ghost image while active; bufferGhost must be enabled to have any effect.
+
+Frame indices count from the start of the (possibly `--start`-trimmed) render, so a given frame's result is deterministic and independent of `--jobs`. The app previews temporal behavior honestly: contact-sheet frames and the selected working frame use their true frame indices through the same scheduling code.
+
 ## Notes
 
 - Numeric controls generally use `0.0` to `1.0` ranges unless a physical unit or count is clearer (`hueRotate` and `angle` in degrees, `bitDepth` in bits, `posterizeLevels` as a count).
 - Presets store both macro controls and expanded module controls. Macros are generators: moving a macro dial in the app recomputes the module parameters underneath it, while identity-type parameters (palette choice, hue angle, channel/sort modes) are left to the preset.
 - Seeds are stored and steer every random pattern in the render (noise, drips, block glitches). Same settings + same seed = same image within one engine version, but exact pixel reproduction across future engine versions is not a hard promise.
 - Thumbnails are embedded as WebP data URLs (written by the app on save). If preset files become too large, thumbnails can move to separate files later.
-- The CLI can override any field at render time with `--set pipeline.<module>.<param>=<value>` and `--macro <name>=<value>`.
+- The CLI can override any field at render time with `--set pipeline.<module>.<param>=<value>` and `--macro <name>=<value>`; this includes the temporal block, e.g. `--set temporal.mode=hold --set temporal.ghostFrame=4`.

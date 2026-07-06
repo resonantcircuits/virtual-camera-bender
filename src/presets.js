@@ -27,6 +27,20 @@ export const FALSE_COLOR_MODES = [
 export const CHANNEL_MODES = ["none", "gbr", "brg", "grb", "bgr", "rbg"];
 export const INVERT_MODES = ["none", "red", "green", "blue", "all"];
 
+// Seed behavior across video frames. "locked" keeps one seed for the whole
+// clip, "hold" jumps every ~holdFrames frames, "flicker" rerolls every frame.
+export const TEMPORAL_MODES = ["locked", "hold", "flicker"];
+
+export function defaultTemporal() {
+  return {
+    mode: "locked",
+    holdFrames: 12,
+    driftAmount: 0,
+    driftSpeed: 0.3,
+    ghostFrame: 0
+  };
+}
+
 export const ADVANCED_DEFS = [
   {
     group: "Cheap Camera",
@@ -700,7 +714,8 @@ export function createPreset({
   tags = [],
   seed = 1,
   macros = defaultMacros(),
-  pipeline = {}
+  pipeline = {},
+  temporal = {}
 }) {
   const preset = {
     schemaVersion: 1,
@@ -714,6 +729,7 @@ export function createPreset({
     thumbnail: null,
     exampleOutputs: [],
     macros: { ...defaultMacros(), ...macros },
+    temporal: { ...defaultTemporal(), ...temporal },
     pipeline: defaultPipeline()
   };
   applyMacrosToPipeline(preset);
@@ -729,7 +745,8 @@ export function normalizePreset(input) {
     tags: Array.isArray(input?.tags) ? input.tags : [],
     seed: Number.isFinite(input?.seed) ? input.seed : Date.now(),
     macros: input?.macros || defaultMacros(),
-    pipeline: input?.pipeline || {}
+    pipeline: input?.pipeline || {},
+    temporal: input?.temporal || {}
   });
   preset.thumbnail = input?.thumbnail || null;
   preset.exampleOutputs = Array.isArray(input?.exampleOutputs)

@@ -2,13 +2,15 @@
 
 ![Virtual Camera Bender](docs/assets/banner.png)
 
-Virtual Camera Bender is a web-based still-image editor for creating circuit-bent compact digital camera aesthetics from input images.
+Virtual Camera Bender is a web-based still-image editor for creating circuit-bent compact digital camera aesthetics from input images, with a CLI companion that applies the same cameras to video.
 
 The project is inspired by early 2000s consumer digital cameras pushed into failure states: false color, clipped highlights, vertical readout smear, dense sensor noise, posterized contours, and occasional memory or scanline corruption. The goal is artistic plausibility, not physically exact simulation.
 
 ## Current State
 
 The still-image editor is working: image upload (click or drag-and-drop), live preview, 35 built-in camera presets with live thumbnails, macro and per-module controls, family/global/per-module randomizers, undo/redo, A/B comparison, JSON preset save/load, original-resolution export (PNG/WebP/JPEG), and a headless CLI renderer that shares the same engine.
+
+Video is supported image-first: load a clip in the app to design the look on a contact sheet of its frames (no in-app playback or encoding), tune temporal behavior (locked/hold/flicker seeds, parameter drift, frame ghosting), then render with the CLI (`render-video`, ffmpeg-backed, parallel workers).
 
 Repository layout:
 
@@ -19,7 +21,9 @@ Repository layout:
 - `src/built-in-presets.js`: the built-in camera preset collection.
 - `src/randomize.js`: random modes, family randomizers, and per-module randomizers.
 - `src/app.js`: UI wiring.
-- `src/cli.js`, `src/dev-server.js`: headless renderer (ffmpeg-backed) and static dev server.
+- `src/temporal.js`: video temporal scheduling — per-frame seed modes and parameter drift, shared by app and CLI.
+- `src/cli.js`, `src/dev-server.js`: headless still/video renderer (ffmpeg-backed) and static dev server.
+- `src/video-worker.js`: Node worker thread used by `render-video` for parallel frame rendering.
 - `docs/PROJECT_SPEC.md`: product, aesthetic, technical, and roadmap spec.
 - `docs/PRESET_FORMAT.md`: the preset JSON structure and module reference.
 
@@ -50,9 +54,14 @@ cheap camera (downscale, lens blur, bit crush + dither, sharpen) → sync fault 
 - **Live preset thumbnails** — the preset list previews every built-in camera on the currently loaded image.
 - **Ghost image** — the Buffer Ghost module blends a stale frame into blocks of the image: a shifted copy of the photo by default, or any second image via the `LOAD` button in its Advanced Circuit panel (`--ghost <image>` in the CLI).
 
+- **Video frames sheet** — loading a video opens a 25-frame contact sheet rendered through the current camera (`V` or the Frames button); clicking a frame makes it the working image, carrying its temporal seed so the preview matches the final render of that exact frame.
+- **Temporal panel** — visible when a video is loaded: seed mode (locked / hold / flicker), hold length, parameter drift amount/speed, and ghost lag (feeds Buffer Ghost the frame N back for real stale-buffer trails). Saved in the preset; the Copy Render Command button emits the matching CLI line.
+
 ## Shortcuts
 
 - `R` — global randomize
+- `G` — camera gallery
+- `V` — video frames sheet (when a video is loaded)
 - `C` (hold) — view original image
 - `S` — toggle A/B split compare
 - `Cmd/Ctrl+Z` / `Shift+Cmd/Ctrl+Z` — undo / redo
@@ -61,21 +70,23 @@ cheap camera (downscale, lens blur, bit crush + dither, sharpen) → sync fault 
 
 ## Command Line
 
-Stills can also be rendered headless (requires `ffmpeg` on PATH):
+Stills and video render headless (requires `ffmpeg` on PATH):
 
 ```sh
 node src/cli.js render input.jpg output.png --builtin "IR Bloom"
 node src/cli.js render input.jpg output.png --preset my-camera.vcb-preset.json --set pipeline.pixelSort.strength=0.9
 node src/cli.js render input.jpg output.png --builtin "Double Buffer" --ghost other-frame.jpg
+node src/cli.js render-video clip.mp4 bent.mp4 --preset my-camera.vcb-preset.json
+node src/cli.js render-video clip.mp4 test.mp4 --builtin "Codec Rot" --start 4 --duration 2 --max-dimension 960
 node src/cli.js list-presets
 ```
 
+`render-video` processes every frame through the engine in parallel worker threads (`--jobs`, default cores−1), preserves the source frame rate, stream-copies audio, and encodes H.264 (`--crf`, default 18). Temporal behavior comes from the preset's `temporal` block and can be overridden inline, e.g. `--set temporal.mode=hold --set temporal.driftAmount=0.4`. Frame indices are deterministic: the same input, preset, and options produce byte-identical output regardless of `--jobs`.
+
 ## Roadmap
 
-The first milestone (still-image web app with upload, preview, presets, randomizers, macro + advanced controls, JSON preset save/load, and original-resolution export) is complete, and the CLI renderer arrived early. Next up:
+The first milestone (still-image web app with upload, preview, presets, randomizers, macro + advanced controls, JSON preset save/load, and original-resolution export) is complete, the CLI renderer arrived early, and video mode (contact-sheet design in the app, `render-video` in the CLI with temporal seed modes, drift, and frame ghosting) shipped with Phase 4. Next up:
 
-- video mode: per-frame processing with stable seeds and temporal smoothing
-- preset gallery view with thumbnails and notes
 - batch image processing through the CLI
 - more effect families targeting the camera's digital brain (JPEG/DCT corruption, OSD/datestamp burn-in, sync tear + rolling-shutter wobble, Bayer/demosaic faults, and stale-buffer ghosting are done): amp glow, dead columns, purple fringing, AWB/AE hunting bands, and generational recompression — full implementation notes in `docs/PROJECT_SPEC.md` under "Phase 5: New Effect Families"
 
