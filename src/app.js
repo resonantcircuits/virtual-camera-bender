@@ -10,6 +10,7 @@ import {
 import { BUILT_IN_PRESETS } from "./built-in-presets.js";
 import { RANDOM_FAMILIES, RANDOM_MODES, randomizeModule, randomizePreset } from "./randomize.js";
 import {
+  clamp,
   clone,
   createBlobWriter,
   downloadBlob,
@@ -24,6 +25,9 @@ const THUMB_MAX_DIMENSION = 110;
 const GALLERY_THUMB_MAX_DIMENSION = 300;
 const GHOST_EXPORT_MAX_DIMENSION = 3000;
 const HISTORY_LIMIT = 60;
+const PREVIEW_MIN_ZOOM = 1;
+const PREVIEW_MAX_ZOOM = 8;
+const PREVIEW_WHEEL_ZOOM_STEP = 520;
 
 const MODULE_KEYS = ADVANCED_DEFS.map((group) => group.key);
 
@@ -42,6 +46,17 @@ const state = {
   comparing: false,
   splitMode: false,
   splitRatio: 0.5,
+  splitPointerId: null,
+  previewView: {
+    scale: 1,
+    panX: 0,
+    panY: 0,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    startPanX: 0,
+    startPanY: 0
+  },
   soloModule: null,
   frozenModules: new Set(),
   freezeSeed: false,
@@ -78,6 +93,7 @@ const dom = {
   dropTarget: document.querySelector("#dropTarget"),
   compareButton: document.querySelector("#compareButton"),
   splitButton: document.querySelector("#splitButton"),
+  resetViewButton: document.querySelector("#resetViewButton"),
   seedInput: document.querySelector("#seedInput"),
   rerollButton: document.querySelector("#rerollButton"),
   seedLockButton: document.querySelector("#seedLockButton"),
@@ -113,6 +129,7 @@ function init() {
   renderRandomControls();
   renderControls();
   bindEvents();
+  applyPreviewView();
   updateHistoryButtons();
   updateStatus("NO SIGNAL");
 }
@@ -257,15 +274,18 @@ function bindEvents() {
   dom.compareButton.addEventListener("pointerup", () => setComparing(false));
   dom.compareButton.addEventListener("pointerleave", () => setComparing(false));
   dom.splitButton.addEventListener("click", toggleSplitMode);
+  dom.resetViewButton.addEventListener("click", () => resetPreviewView(true));
 
-  dom.previewCanvas.addEventListener("pointerdown", (event) => {
-    if (!state.splitMode) return;
-    dom.previewCanvas.setPointerCapture(event.pointerId);
-    updateSplitFromPointer(event);
-  });
-  dom.previewCanvas.addEventListener("pointermove", (event) => {
-    if (!state.splitMode || event.buttons === 0) return;
-    updateSplitFromPointer(event);
+  dom.dropTarget.addEventListener("wheel", handlePreviewWheel, { passive: false });
+  dom.previewCanvas.addEventListener("dblclick", () => resetPreviewView(true));
+  dom.previewCanvas.addEventListener("pointerdown", handlePreviewPointerDown);
+  dom.previewCanvas.addEventListener("pointermove", handlePreviewPointerMove);
+  dom.previewCanvas.addEventListener("pointerup", endPreviewPointerInteraction);
+  dom.previewCanvas.addEventListener("pointercancel", endPreviewPointerInteraction);
+  dom.previewCanvas.addEventListener("lostpointercapture", endPreviewPointerInteraction);
+  window.addEventListener("resize", () => {
+    clampPreviewView();
+    applyPreviewView();
   });
 
   window.addEventListener("keydown", (event) => {
@@ -382,6 +402,7 @@ function setComparing(active) {
 function toggleSplitMode() {
   if (!state.source) return;
   state.splitMode = !state.splitMode;
+  state.splitPointerId = null;
   dom.splitButton.classList.toggle("is-active", state.splitMode);
   dom.dropTarget.classList.toggle("is-split", state.splitMode);
   drawComposite();
@@ -391,8 +412,220 @@ function toggleSplitMode() {
 function updateSplitFromPointer(event) {
   const rect = dom.previewCanvas.getBoundingClientRect();
   if (rect.width <= 0) return;
-  state.splitRatio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+  state.splitRatio = clamp((event.clientX - rect.left) / rect.width);
   drawComposite();
+}
+
+function handlePreviewWheel(event) {
+  if (!state.source || !state.lastRender) return;
+  if (event.target.closest?.(".viewer-toolbar")) return;
+  event.preventDefault();
+
+  const deltaScale =
+    event.deltaMode === 1
+      ? 16
+      : event.deltaMode === 2
+        ? Math.max(1, dom.dropTarget.clientHeight)
+        : 1;
+  const deltaY = event.deltaY * deltaScale;
+  if (!Number.isFinite(deltaY) || deltaY === 0) return;
+
+  const nextScale = clamp(
+    state.previewView.scale * 2 ** (-deltaY / PREVIEW_WHEEL_ZOOM_STEP),
+    PREVIEW_MIN_ZOOM,
+    PREVIEW_MAX_ZOOM
+  );
+  zoomPreviewAt(event.clientX, event.clientY, nextScale);
+}
+
+function handlePreviewPointerDown(event) {
+  if (!state.source || !state.lastRender || event.button !== 0) return;
+
+  if (state.splitMode) {
+    event.preventDefault();
+    state.splitPointerId = event.pointerId;
+    dom.previewCanvas.setPointerCapture(event.pointerId);
+    updateSplitFromPointer(event);
+    return;
+  }
+
+  if (state.previewView.scale <= PREVIEW_MIN_ZOOM + 0.001) return;
+  event.preventDefault();
+  const view = state.previewView;
+  view.pointerId = event.pointerId;
+  view.startX = event.clientX;
+  view.startY = event.clientY;
+  view.startPanX = view.panX;
+  view.startPanY = view.panY;
+  dom.previewCanvas.setPointerCapture(event.pointerId);
+  applyPreviewView();
+}
+
+function handlePreviewPointerMove(event) {
+  if (state.splitPointerId === event.pointerId) {
+    if (event.buttons === 0) {
+      endPreviewPointerInteraction(event);
+      return;
+    }
+    event.preventDefault();
+    updateSplitFromPointer(event);
+    return;
+  }
+
+  const view = state.previewView;
+  if (view.pointerId !== event.pointerId) return;
+  if (event.buttons === 0) {
+    endPreviewPointerInteraction(event);
+    return;
+  }
+  event.preventDefault();
+  view.panX = view.startPanX + event.clientX - view.startX;
+  view.panY = view.startPanY + event.clientY - view.startY;
+  clampPreviewView();
+  applyPreviewView();
+}
+
+function endPreviewPointerInteraction(event) {
+  if (state.splitPointerId === event.pointerId) state.splitPointerId = null;
+
+  if (state.previewView.pointerId === event.pointerId) {
+    state.previewView.pointerId = null;
+    applyPreviewView();
+  }
+
+  if (dom.previewCanvas.hasPointerCapture?.(event.pointerId)) {
+    dom.previewCanvas.releasePointerCapture(event.pointerId);
+  }
+}
+
+function zoomPreviewAt(clientX, clientY, nextScale) {
+  const view = state.previewView;
+  const previousScale = view.scale;
+  if (!Number.isFinite(nextScale) || Math.abs(nextScale - previousScale) < 0.001) return;
+
+  const baseRect = previewBaseRect();
+  if (baseRect.width <= 0 || baseRect.height <= 0) return;
+  const anchor = previewZoomAnchor(clientX, clientY);
+  const imageX = (anchor.x - baseRect.left - view.panX) / previousScale;
+  const imageY = (anchor.y - baseRect.top - view.panY) / previousScale;
+
+  view.scale = nextScale;
+  view.panX = anchor.x - baseRect.left - imageX * nextScale;
+  view.panY = anchor.y - baseRect.top - imageY * nextScale;
+  clampPreviewView();
+  applyPreviewView();
+  updateStatus(view.scale > PREVIEW_MIN_ZOOM + 0.001 ? `VIEW ${Math.round(view.scale * 100)}%` : "VIEW FIT");
+}
+
+function previewZoomAnchor(clientX, clientY) {
+  const canvasRect = dom.previewCanvas.getBoundingClientRect();
+  const isOverCanvas =
+    clientX >= canvasRect.left &&
+    clientX <= canvasRect.right &&
+    clientY >= canvasRect.top &&
+    clientY <= canvasRect.bottom;
+  if (isOverCanvas) return { x: clientX, y: clientY };
+
+  const viewerRect = dom.dropTarget.getBoundingClientRect();
+  return {
+    x: viewerRect.left + viewerRect.width / 2,
+    y: viewerRect.top + viewerRect.height / 2
+  };
+}
+
+function previewBaseRect() {
+  const rect = dom.previewCanvas.getBoundingClientRect();
+  const view = state.previewView;
+  return {
+    left: rect.left - view.panX,
+    top: rect.top - view.panY,
+    width: dom.previewCanvas.offsetWidth || rect.width / Math.max(view.scale, 0.001),
+    height: dom.previewCanvas.offsetHeight || rect.height / Math.max(view.scale, 0.001)
+  };
+}
+
+function previewViewportRect() {
+  const rect = dom.dropTarget.getBoundingClientRect();
+  const style = getComputedStyle(dom.dropTarget);
+  const left = rect.left + Number.parseFloat(style.paddingLeft || 0);
+  const right = rect.right - Number.parseFloat(style.paddingRight || 0);
+  const top = rect.top + Number.parseFloat(style.paddingTop || 0);
+  const bottom = rect.bottom - Number.parseFloat(style.paddingBottom || 0);
+  return {
+    left,
+    right,
+    top,
+    bottom,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top)
+  };
+}
+
+function clampPreviewView() {
+  const view = state.previewView;
+  view.scale = clamp(view.scale || PREVIEW_MIN_ZOOM, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
+
+  if (!state.source || !state.lastRender || view.scale <= PREVIEW_MIN_ZOOM + 0.001) {
+    view.scale = PREVIEW_MIN_ZOOM;
+    view.panX = 0;
+    view.panY = 0;
+    return;
+  }
+
+  const baseRect = previewBaseRect();
+  const viewportRect = previewViewportRect();
+  const scaledWidth = baseRect.width * view.scale;
+  const scaledHeight = baseRect.height * view.scale;
+
+  if (scaledWidth <= viewportRect.width) {
+    view.panX = 0;
+  } else {
+    view.panX = clamp(
+      view.panX,
+      viewportRect.right - baseRect.left - scaledWidth,
+      viewportRect.left - baseRect.left
+    );
+  }
+
+  if (scaledHeight <= viewportRect.height) {
+    view.panY = 0;
+  } else {
+    view.panY = clamp(
+      view.panY,
+      viewportRect.bottom - baseRect.top - scaledHeight,
+      viewportRect.top - baseRect.top
+    );
+  }
+}
+
+function resetPreviewView(showStatus = false) {
+  const view = state.previewView;
+  view.scale = PREVIEW_MIN_ZOOM;
+  view.panX = 0;
+  view.panY = 0;
+  view.pointerId = null;
+  state.splitPointerId = null;
+  applyPreviewView();
+  if (showStatus && state.source) updateStatus("VIEW FIT");
+}
+
+function applyPreviewView() {
+  const view = state.previewView;
+  const isZoomed = state.source && view.scale > PREVIEW_MIN_ZOOM + 0.001;
+  dom.previewCanvas.style.transform = isZoomed
+    ? `matrix(${roundTransform(view.scale)}, 0, 0, ${roundTransform(view.scale)}, ${roundTransform(view.panX)}, ${roundTransform(view.panY)})`
+    : "";
+  dom.dropTarget.classList.toggle("is-zoomed", Boolean(isZoomed));
+  dom.dropTarget.classList.toggle("is-panning", state.previewView.pointerId !== null);
+  dom.resetViewButton.disabled = !state.source;
+  dom.resetViewButton.textContent = isZoomed ? `${Math.round(view.scale * 100)}%` : "Fit";
+  dom.resetViewButton.title = isZoomed
+    ? "Reset preview zoom (double-click image)"
+    : "Preview fit to window";
+}
+
+function roundTransform(value) {
+  return Math.round(value * 1000) / 1000;
 }
 
 function drawComposite() {
@@ -438,6 +671,8 @@ function drawComposite() {
     context.closePath();
     context.fill();
   }
+  clampPreviewView();
+  applyPreviewView();
 }
 
 // --- Solo ---
@@ -910,6 +1145,7 @@ async function loadImageFile(file) {
     state.sourceName = file.name;
     dom.dimensionsText.textContent = `${state.source.width} x ${state.source.height}`;
     dom.emptyState.hidden = true;
+    resetPreviewView();
     prepareThumbSource();
     state.thumbsPending = true;
     galleryThumbsDirty = true;

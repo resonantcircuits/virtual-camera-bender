@@ -79,6 +79,7 @@
         <section id="dropTarget" class="viewer">
           <canvas id="previewCanvas"></canvas>
           <div class="viewer-toolbar">
+            <button id="resetViewButton" class="command-button zoom-reset-button" type="button" title="Reset preview zoom (double-click image)">Fit</button>
             <button id="splitButton" class="command-button" type="button" title="A/B split compare — drag on the image (or press S)">Split A/B</button>
             <button id="compareButton" class="command-button" type="button" title="Hold to view the original image (or hold C)">Hold · Original</button>
           </div>
@@ -165,6 +166,7 @@
         <section>
           <h3>Comparing</h3>
           <p><strong>Split A/B</strong> overlays the original left of a divider you drag across the image. <strong>Hold &middot; Original</strong> (or holding <kbd>C</kbd>) flashes the untouched photo.</p>
+          <p>Mouse wheel zooms the preview image. When zoomed, drag the image to pan and double-click to reset the view.</p>
         </section>
         <section>
           <h3>Export</h3>

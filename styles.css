@@ -191,6 +191,19 @@ h3 {
   touch-action: none;
 }
 
+.viewer.is-zoomed #previewCanvas {
+  cursor: grab;
+  touch-action: none;
+}
+
+.viewer.is-panning #previewCanvas {
+  cursor: grabbing;
+}
+
+.viewer.is-split #previewCanvas {
+  cursor: col-resize;
+}
+
 #previewCanvas {
   display: block;
   width: auto;
@@ -199,6 +212,8 @@ h3 {
   max-height: calc(100vh - 140px);
   background: #030303;
   image-rendering: auto;
+  transform-origin: 0 0;
+  will-change: transform;
   box-shadow:
     0 0 0 1px rgba(141, 255, 122, 0.42),
     0 24px 80px rgba(0, 0, 0, 0.62);
@@ -222,6 +237,10 @@ h3 {
 .viewer-toolbar .command-button.is-active {
   border-color: var(--amber);
   color: var(--amber);
+}
+
+.viewer-toolbar .zoom-reset-button {
+  min-width: 54px;
 }
 
 .seed-row {
