@@ -21,6 +21,7 @@ import {
 
 const PREVIEW_MAX_DIMENSION = 1500;
 const THUMB_MAX_DIMENSION = 110;
+const GALLERY_THUMB_MAX_DIMENSION = 300;
 const GHOST_EXPORT_MAX_DIMENSION = 3000;
 const HISTORY_LIMIT = 60;
 
@@ -82,10 +83,21 @@ const dom = {
   seedLockButton: document.querySelector("#seedLockButton"),
   helpButton: document.querySelector("#helpButton"),
   helpDialog: document.querySelector("#helpDialog"),
-  helpClose: document.querySelector("#helpClose")
+  helpClose: document.querySelector("#helpClose"),
+  galleryButton: document.querySelector("#galleryButton"),
+  galleryDialog: document.querySelector("#galleryDialog"),
+  galleryClose: document.querySelector("#galleryClose"),
+  galleryFilter: document.querySelector("#galleryFilter"),
+  galleryCount: document.querySelector("#galleryCount"),
+  galleryHint: document.querySelector("#galleryHint"),
+  galleryGrid: document.querySelector("#galleryGrid")
 };
 
 const thumbCanvases = [];
+const galleryCanvases = [];
+// Gallery thumbnails are expensive (22 renders at 300px), so they are only
+// generated when the gallery is opened and the source has changed since.
+let galleryThumbsDirty = true;
 let worker = null;
 let previewJobId = 0;
 let exportJobId = 0;
@@ -96,6 +108,7 @@ init();
 
 function init() {
   worker = setupWorker();
+  renderGalleryGrid();
   renderPresetList();
   renderRandomControls();
   renderControls();
@@ -137,8 +150,8 @@ function onWorkerMessage(event) {
   } else if (type === "export") {
     if (jobId !== exportJobId) return;
     completeExport(imageData, pendingExportRequest);
-  } else if (type === "thumb") {
-    const canvas = thumbCanvases[index];
+  } else if (type === "thumb" || type === "gallery-thumb") {
+    const canvas = (type === "thumb" ? thumbCanvases : galleryCanvases)[index];
     if (!canvas) return;
     canvas.width = width;
     canvas.height = height;
@@ -223,6 +236,23 @@ function bindEvents() {
     if (event.target === dom.helpDialog) dom.helpDialog.close();
   });
 
+  dom.galleryButton.addEventListener("click", openGallery);
+  dom.galleryClose.addEventListener("click", () => dom.galleryDialog.close());
+  dom.galleryDialog.addEventListener("click", (event) => {
+    if (event.target === dom.galleryDialog) dom.galleryDialog.close();
+  });
+  dom.galleryFilter.addEventListener("input", applyGalleryFilter);
+  dom.galleryFilter.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "Enter") {
+      const first = visibleGalleryCards()[0];
+      if (first) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  });
+  dom.galleryGrid.addEventListener("keydown", handleGalleryGridKeys);
+
   dom.compareButton.addEventListener("pointerdown", () => setComparing(true));
   dom.compareButton.addEventListener("pointerup", () => setComparing(false));
   dom.compareButton.addEventListener("pointerleave", () => setComparing(false));
@@ -247,6 +277,17 @@ function bindEvents() {
       return;
     }
     if (event.repeat) return;
+    if (event.key === "g" || event.key === "G") {
+      // Without preventDefault the same keystroke types "g" into the
+      // freshly focused gallery filter input.
+      event.preventDefault();
+      if (dom.galleryDialog.open) dom.galleryDialog.close();
+      else if (!dom.helpDialog.open) openGallery();
+      return;
+    }
+    // While the gallery is up, only its own keys apply — the editor
+    // shortcuts below would act on the app hidden behind the modal.
+    if (dom.galleryDialog.open) return;
     if (event.key === "?") {
       if (dom.helpDialog.open) dom.helpDialog.close();
       else dom.helpDialog.showModal();
@@ -426,6 +467,17 @@ function setActivePreset(index) {
   dom.presetList.querySelectorAll(".preset-button").forEach((button, i) => {
     button.classList.toggle("is-active", i === index);
   });
+  dom.galleryGrid.querySelectorAll(".gallery-card").forEach((card, i) => {
+    card.classList.toggle("is-active", i === index);
+  });
+}
+
+function applyBuiltInPreset(index) {
+  pushHistory(snapshotPreset());
+  state.preset = clonePreset(BUILT_IN_PRESETS[index]);
+  setActivePreset(index);
+  renderControls();
+  scheduleRender();
 }
 
 function renderPresetList() {
@@ -443,17 +495,110 @@ function renderPresetList() {
     text.className = "preset-text";
     text.innerHTML = `<span>${preset.name}</span><small>${preset.tags.join(" / ")}</small>`;
     button.append(thumb, text);
-    button.addEventListener("click", () => {
-      pushHistory(snapshotPreset());
-      state.preset = clonePreset(preset);
-      setActivePreset(index);
-      renderControls();
-      scheduleRender();
-    });
+    button.addEventListener("click", () => applyBuiltInPreset(index));
     thumbCanvases.push(thumb);
     dom.presetList.append(button);
   });
   setActivePreset(state.activePresetIndex);
+}
+
+// --- Camera gallery ---
+
+function renderGalleryGrid() {
+  dom.galleryGrid.innerHTML = "";
+  galleryCanvases.length = 0;
+  BUILT_IN_PRESETS.forEach((preset, index) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "gallery-card";
+    card.dataset.search = `${preset.name} ${preset.tags.join(" ")} ${preset.description}`.toLowerCase();
+    const thumb = document.createElement("canvas");
+    thumb.className = "gallery-thumb";
+    thumb.width = 4;
+    thumb.height = 3;
+    const name = document.createElement("span");
+    name.className = "gallery-card-name";
+    name.textContent = preset.name;
+    const tags = document.createElement("small");
+    tags.className = "gallery-card-tags";
+    tags.textContent = preset.tags.join(" / ");
+    const description = document.createElement("small");
+    description.className = "gallery-card-desc";
+    description.textContent = preset.description;
+    card.append(thumb, name, tags, description);
+    card.addEventListener("click", () => {
+      applyBuiltInPreset(index);
+      dom.galleryDialog.close();
+      updateStatus(`${preset.name.toUpperCase()} LOADED`);
+    });
+    galleryCanvases.push(thumb);
+    dom.galleryGrid.append(card);
+  });
+}
+
+function openGallery() {
+  if (state.source && galleryThumbsDirty) {
+    galleryThumbsDirty = false;
+    generateGalleryThumbnails();
+  }
+  dom.galleryHint.hidden = !!state.source;
+  dom.galleryFilter.value = "";
+  applyGalleryFilter();
+  dom.galleryDialog.showModal();
+  const active = dom.galleryGrid.querySelector(".gallery-card.is-active");
+  (active || dom.galleryFilter).focus();
+}
+
+function applyGalleryFilter() {
+  const query = dom.galleryFilter.value.trim().toLowerCase();
+  let shown = 0;
+  dom.galleryGrid.querySelectorAll(".gallery-card").forEach((card) => {
+    const match = !query || card.dataset.search.includes(query);
+    card.hidden = !match;
+    if (match) shown += 1;
+  });
+  dom.galleryCount.textContent = `${shown}/${BUILT_IN_PRESETS.length}`;
+}
+
+function visibleGalleryCards() {
+  return [...dom.galleryGrid.querySelectorAll(".gallery-card:not([hidden])")];
+}
+
+function handleGalleryGridKeys(event) {
+  const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
+  if (!keys.includes(event.key)) return;
+  const cards = visibleGalleryCards();
+  const current = cards.indexOf(document.activeElement);
+  if (current === -1) return;
+  // Column count from layout: cards sharing the first card's row.
+  const firstTop = cards[0].offsetTop;
+  let columns = cards.findIndex((card) => card.offsetTop !== firstTop);
+  if (columns === -1) columns = cards.length;
+  const step = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" ? -columns : columns;
+  const next = current + step;
+  if (event.key === "ArrowUp" && next < 0) {
+    event.preventDefault();
+    dom.galleryFilter.focus();
+    return;
+  }
+  if (next < 0 || next >= cards.length) return;
+  event.preventDefault();
+  cards[next].focus();
+  cards[next].scrollIntoView({ block: "nearest" });
+}
+
+function generateGalleryThumbnails() {
+  const size = sourceSize();
+  const fitted = fitWithin(size.width, size.height, GALLERY_THUMB_MAX_DIMENSION);
+  const canvas = document.createElement("canvas");
+  canvas.width = fitted.width;
+  canvas.height = fitted.height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(state.source, 0, 0, fitted.width, fitted.height);
+  const source = context.getImageData(0, 0, fitted.width, fitted.height);
+  renderThumbSet(source, "gallery-thumb", galleryCanvases);
 }
 
 function renderRandomControls() {
@@ -767,6 +912,7 @@ async function loadImageFile(file) {
     dom.emptyState.hidden = true;
     prepareThumbSource();
     state.thumbsPending = true;
+    galleryThumbsDirty = true;
     scheduleRender();
   } catch (error) {
     console.error(error);
@@ -781,6 +927,7 @@ async function loadGhostFile(file) {
     state.ghostName = file.name;
     state.ghostPreview = rasterizeGhost(PREVIEW_MAX_DIMENSION);
     state.ghostThumb = rasterizeGhost(THUMB_MAX_DIMENSION);
+    galleryThumbsDirty = true;
     renderAdvancedControls();
     scheduleRender();
     updateStatus("GHOST LOADED");
@@ -795,6 +942,7 @@ function clearGhost() {
   state.ghostName = "";
   state.ghostPreview = null;
   state.ghostThumb = null;
+  galleryThumbsDirty = true;
   renderAdvancedControls();
   scheduleRender();
   updateStatus("GHOST CLEARED");
@@ -1094,15 +1242,19 @@ function prepareThumbSource() {
 
 function generateThumbnails() {
   if (!thumbSource) return;
+  renderThumbSet(thumbSource, "thumb", thumbCanvases);
+}
+
+function renderThumbSet(source, type, canvases) {
   BUILT_IN_PRESETS.forEach((preset, index) => {
     if (worker) {
-      const copy = new Uint8ClampedArray(thumbSource.data);
+      const copy = new Uint8ClampedArray(source.data);
       worker.postMessage(
         {
-          type: "thumb",
+          type,
           index,
-          width: thumbSource.width,
-          height: thumbSource.height,
+          width: source.width,
+          height: source.height,
           buffer: copy.buffer,
           preset,
           ghost: ghostPayload(state.ghostThumb)
@@ -1111,12 +1263,12 @@ function generateThumbnails() {
       );
     } else {
       const image = {
-        width: thumbSource.width,
-        height: thumbSource.height,
-        data: new Uint8ClampedArray(thumbSource.data)
+        width: source.width,
+        height: source.height,
+        data: new Uint8ClampedArray(source.data)
       };
       processCircuitBendImageData(image, preset, ghostResources(state.ghostThumb));
-      const canvas = thumbCanvases[index];
+      const canvas = canvases[index];
       if (!canvas) return;
       canvas.width = image.width;
       canvas.height = image.height;

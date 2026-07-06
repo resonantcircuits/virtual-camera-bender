@@ -58,7 +58,10 @@
           </section>
 
           <section class="panel-section preset-gallery-section">
-            <h2>Effects</h2>
+            <div class="section-heading">
+              <h2>Effects</h2>
+              <button id="galleryButton" class="command-button" type="button" title="Browse all cameras on your image (G)">Gallery</button>
+            </div>
             <div id="presetList" class="preset-list"></div>
           </section>
 
@@ -111,7 +114,7 @@
 
       <footer class="statusbar">
         <span id="statusText">NO SIGNAL</span>
-        <span class="statusbar-hint">R RANDOMIZE · C ORIGINAL · S SPLIT · &#8984;Z UNDO · ? HELP</span>
+        <span class="statusbar-hint">R RANDOMIZE · G GALLERY · C ORIGINAL · S SPLIT · &#8984;Z UNDO · ? HELP</span>
         <span id="dimensionsText">0 x 0</span>
       </footer>
     </div>
@@ -129,6 +132,7 @@
           <h3>The Signal Path</h3>
           <p>Camera preset &rarr; Macro dials &rarr; Circuit modules &rarr; Image.</p>
           <p><strong>Cameras are starting points, not limits.</strong> Clicking one copies its full settings into the editor. From there everything is yours: every slider, randomizer, and module works from the current state, no matter which camera you started with.</p>
+          <p>The <strong>Gallery</strong> (button above the Effects list, or <kbd>G</kbd>) shows every camera rendered live on your loaded image, side by side. Click a card to load that camera.</p>
         </section>
         <section>
           <h3>Macros vs Advanced Circuit</h3>
@@ -178,6 +182,7 @@
           <h3>Shortcuts</h3>
           <p>
             <kbd>R</kbd> global randomize &middot;
+            <kbd>G</kbd> camera gallery &middot;
             <kbd>C</kbd> hold original &middot;
             <kbd>S</kbd> split compare &middot;
             <kbd>&#8984;Z</kbd> undo &middot;
@@ -186,6 +191,17 @@
           </p>
         </section>
       </div>
+    </dialog>
+
+    <dialog id="galleryDialog" class="gallery-dialog">
+      <div class="gallery-header">
+        <h2>Camera Gallery</h2>
+        <input id="galleryFilter" class="gallery-filter" type="text" placeholder="Filter by name, tag, or notes&hellip;" autocomplete="off" spellcheck="false">
+        <span id="galleryCount" class="gallery-count"></span>
+        <button id="galleryClose" class="command-button" type="button" title="Close (Esc)">Close</button>
+      </div>
+      <p id="galleryHint" class="gallery-hint">NO SIGNAL &middot; load an image to preview every camera on your own photo. Cards show placeholder film until then.</p>
+      <div id="galleryGrid" class="gallery-grid"></div>
     </dialog>
   </body>
 </html>
