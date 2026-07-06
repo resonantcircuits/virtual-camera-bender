@@ -97,7 +97,36 @@ export function downloadBlob(blob, filename) {
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export async function createBlobWriter(filename, mime, extension) {
+  if ("showSaveFilePicker" in window) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [
+          {
+            description: "Image",
+            accept: { [mime]: [extension] }
+          }
+        ]
+      });
+      return async (blob) => {
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      };
+    } catch (error) {
+      if (error?.name === "AbortError") return null;
+      console.warn("Save picker failed, falling back to browser download", error);
+    }
+  }
+
+  const requestedName = window.prompt("Export filename", filename);
+  if (requestedName === null) return null;
+  const fallbackName = requestedName.trim() || filename;
+  return async (blob) => downloadBlob(blob, fallbackName);
 }
 
 export function safeFilename(value) {
@@ -141,4 +170,3 @@ export function fbmNoise(x, y, seed = 1) {
   }
   return value;
 }
-

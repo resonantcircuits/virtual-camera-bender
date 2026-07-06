@@ -31,6 +31,13 @@
               <option value="jpg">JPEG</option>
             </select>
           </label>
+          <label class="format-select">
+            <span>Size</span>
+            <select id="exportSize">
+              <option value="preview">Preview</option>
+              <option value="full">Full</option>
+            </select>
+          </label>
           <button id="exportButton" class="command-button is-primary" type="button">Export</button>
           <button id="helpButton" class="command-button" type="button" title="How this thing works (?)">?</button>
         </div>
@@ -84,6 +91,7 @@
             <div class="seed-row">
               <input id="seedInput" type="text" inputmode="numeric" autocomplete="off">
               <button id="rerollButton" class="command-button" type="button" title="New seed, same settings">Reroll</button>
+              <button id="seedLockButton" class="command-button icon-button" type="button" title="Freeze seed during randomize" aria-label="Freeze seed during randomize" aria-pressed="false"></button>
             </div>
           </section>
 
@@ -125,21 +133,46 @@
         <section>
           <h3>Macros vs Advanced Circuit</h3>
           <p><strong>Macro dials</strong> are the big knobs. Moving one re-tunes the module parameters underneath it — so they overwrite fine tweaks in that area. Use them to rough in a look.</p>
-          <p><strong>Advanced Circuit</strong> is the per-module truth: every parameter of every effect. Use it to fine-tune after the macros get you close. Each module header has three buttons: <strong>R</strong> re-rolls just that module (keeps the seed, so everything else renders identically), <strong>S</strong> solos it so you see only its effect, and the <strong>lamp</strong> switches it on or off.</p>
+          <p><strong>Advanced Circuit</strong> is the per-module truth: every parameter of every effect. Use it to fine-tune after the macros get you close. Hover a parameter for a short description of what it changes.</p>
+          <p>Each module header has four controls: the <strong>lock</strong> freezes that module during right-side randomize, <strong>R</strong> re-rolls just that module, <strong>S</strong> solos it so you see only its effect, and the <strong>lamp</strong> switches it on or off.</p>
+        </section>
+        <section>
+          <h3>Macro Bindings</h3>
+          <p><strong>Bend</strong> pushes broad digital stress: exposure gain, false-color saturation, edge burn, vertical smear response, and cheap-camera sharpening.</p>
+          <p><strong>Color Fault</strong> drives false color, contour rings, edge halos, channel damage, and colored sensor noise.</p>
+          <p><strong>Melt</strong> drives vertical smear, pixel sorting, striping, curtain streaks, and some sync wobble.</p>
+          <p><strong>Burn</strong> drives exposure clipping, black crush, contour bands, contour rings, edge burn, and smear trail length.</p>
+          <p><strong>Noise</strong> drives sensor noise, shadow noise, hot pixels, striping, and cheap-camera dither.</p>
+          <p><strong>Cheapness</strong> drives internal downscale, bit depth, dither, sharpening, JPEG/DCT crunch, and some sensor noise.</p>
+          <p><strong>Chaos</strong> drives memory faults, sync tears, buffer ghosting, chroma shift, DCT scramble, and instability mixed into several other modules.</p>
         </section>
         <section>
           <h3>Randomize</h3>
           <p>Randomize always bends the <em>current</em> settings — it never resets to a preset.</p>
           <p><strong>Mode</strong> sets how hard it hits: <strong>Bent</strong> is gentle, <strong>Damaged</strong> is clearly broken, <strong>Shorted</strong> is violent, <strong>Explore</strong> draws from the full range. The per-module R dice use this mode too.</p>
           <p><strong>Global</strong> builds a whole new camera (new name, new seed, fresh macros, and a fresh pick of which modules are active). The <strong>family buttons</strong> (Color, Melt, Burn, Noise, Cheap, Memory) re-roll only that damage domain and leave the rest alone — good for keeping a look you like while re-rolling the part you don't.</p>
+          <p>Locked Advanced Circuit modules are restored after right-side randomize, including whether they are enabled. Pressing <strong>R</strong> on a locked module does nothing and flashes the lock. Locks are session-only and are not saved into presets.</p>
         </section>
         <section>
           <h3>Seed</h3>
           <p>The seed steers every random pattern in the render: noise grain, drip positions, block glitches. <strong>Reroll</strong> keeps all your settings but redraws the damage in new places. Same settings + same seed = same image.</p>
+          <p>The seed lock only affects right-side randomize. Manual <strong>Reroll</strong> still changes the seed on purpose. Seed lock is session-only and is not saved into presets.</p>
         </section>
         <section>
           <h3>Comparing</h3>
-          <p><strong>Split A/B</strong> overlays the original left of a divider you drag across the image. <strong>Hold &middot; Original</strong> (or holding <kbd>C</kbd>) flashes the untouched photo. Export always renders at full source resolution.</p>
+          <p><strong>Split A/B</strong> overlays the original left of a divider you drag across the image. <strong>Hold &middot; Original</strong> (or holding <kbd>C</kbd>) flashes the untouched photo.</p>
+        </section>
+        <section>
+          <h3>Export</h3>
+          <p><strong>Format</strong> chooses PNG, WebP, or JPEG. <strong>Size</strong> chooses what gets written.</p>
+          <p><strong>Preview</strong> exports the same scaled render shown in the UI, capped at 1500 px on the longest edge. This is the default because resolution-dependent effects like contour rings, noise, sorting, and OSD match what you see.</p>
+          <p><strong>Full</strong> re-renders the original source resolution. It can take longer, make larger files, and look denser because many effects are intentionally resolution-dependent.</p>
+          <p>Supported browsers open a save dialog for filename and location. Others ask for a filename and then use the browser's normal download folder.</p>
+        </section>
+        <section>
+          <h3>Presets and Session State</h3>
+          <p><strong>Save Preset</strong> writes camera settings, seed, macros, module parameters, output format, and export size. It does not save the source photo, ghost source image, module locks, seed lock, undo history, or split/solo view state.</p>
+          <p><strong>Buffer Ghost</strong> can use a loaded second image as the stale frame. If no ghost image is loaded, it falls back to the current image.</p>
         </section>
         <section>
           <h3>Shortcuts</h3>

@@ -239,6 +239,132 @@ export const ADVANCED_DEFS = [
   }
 ];
 
+export const ADVANCED_CONTROL_HELP = {
+  "pipeline.cheapCamera.enabled": "Turns the cheap camera degradation stage on or off.",
+  "pipeline.cheapCamera.internalScale": "Downscales internally before upscaling; lower values make chunkier pixels and stronger low-end camera artifacts.",
+  "pipeline.cheapCamera.blur": "Softens the source like a poor lens before later damage is applied.",
+  "pipeline.cheapCamera.bitDepth": "Limits color precision; lower values create harder posterization and channel stepping.",
+  "pipeline.cheapCamera.dither": "Adds patterned noise around reduced color steps so flat bands break up.",
+  "pipeline.cheapCamera.sharpen": "Adds harsh compact-camera edge sharpening after the cheap processing pass.",
+
+  "pipeline.syncFault.enabled": "Turns timing and frame-sync damage on or off.",
+  "pipeline.syncFault.tearCount": "Controls how many horizontal timing tears appear.",
+  "pipeline.syncFault.tearShift": "Controls how far torn bands are displaced sideways.",
+  "pipeline.syncFault.wobbleAmount": "Adds rolling-shutter style horizontal wobble.",
+  "pipeline.syncFault.wobbleFrequency": "Controls how tightly the wobble waves repeat vertically.",
+  "pipeline.syncFault.drift": "Offsets scan phase over the frame, making timing errors slide and bend.",
+
+  "pipeline.bayerFault.enabled": "Turns broken Bayer/demosaic sampling on or off.",
+  "pipeline.bayerFault.phaseError": "Shifts the Bayer sampling phase; higher values produce stronger wrong-color checker patterns.",
+  "pipeline.bayerFault.strength": "Blends the demosaic fault into the image.",
+  "pipeline.bayerFault.zipper": "Adds jagged color zippering around edges.",
+
+  "pipeline.bufferGhost.enabled": "Turns stale-frame buffer ghosting on or off.",
+  "__ghostSource": "Optional second image used as the stale buffer frame; without one the module reuses the current image.",
+  "pipeline.bufferGhost.amount": "Blends more or less of the stale frame into the result.",
+  "pipeline.bufferGhost.blockSize": "Controls the size of the copied ghost blocks.",
+  "pipeline.bufferGhost.ghostShift": "Offsets the stale frame before it is mixed in.",
+  "pipeline.bufferGhost.ghostZoom": "Scales the stale frame before it is mixed in.",
+  "pipeline.bufferGhost.fieldMode": "Splits the ghost into alternating interlaced fields.",
+
+  "pipeline.colorBend.enabled": "Turns whole-image color channel surgery on or off.",
+  "pipeline.colorBend.hueRotate": "Rotates hue by degrees before channel faults are mixed in.",
+  "pipeline.colorBend.hueStrength": "Controls how strongly the hue rotation affects the image.",
+  "pipeline.colorBend.channelMode": "Chooses a hard RGB channel reorder.",
+  "pipeline.colorBend.channelStrength": "Blends between original channels and the selected channel reorder.",
+  "pipeline.colorBend.invert": "Chooses which channel, or all channels, to invert.",
+  "pipeline.colorBend.invertStrength": "Blends between original color and the selected inversion.",
+  "pipeline.colorBend.solarize": "Folds tones back on themselves for hard digital solarization.",
+
+  "pipeline.chromaShift.enabled": "Turns RGB channel offsetting on or off.",
+  "pipeline.chromaShift.amount": "Controls how far color channels separate from each other.",
+  "pipeline.chromaShift.angle": "Sets the direction of the channel offset.",
+  "pipeline.chromaShift.wobble": "Varies the channel offset by row for unstable color fringing.",
+
+  "pipeline.exposureFault.enabled": "Turns gain, crush, clipping, and exposure contour faults on or off.",
+  "pipeline.exposureFault.gain": "Raises or lowers signal gain before clipping.",
+  "pipeline.exposureFault.blackCrush": "Pushes shadows toward blocked-up black.",
+  "pipeline.exposureFault.highlightClip": "Clips bright areas into blown-out digital regions.",
+  "pipeline.exposureFault.contourBands": "Adds hard tone bands around clipped and high-contrast areas.",
+
+  "pipeline.contourRings.enabled": "Turns luminance contour rings on or off.",
+  "pipeline.contourRings.strength": "Controls overall ring intensity.",
+  "pipeline.contourRings.scale": "Controls ring spacing; higher values broaden the contour pattern.",
+  "pipeline.contourRings.bandSharpness": "Makes contour bands harder and more graphic.",
+  "pipeline.contourRings.tonalBias": "Targets rings toward different brightness ranges.",
+  "pipeline.contourRings.colorBleed": "Pushes contour rings into false color instead of mostly brightness changes.",
+
+  "pipeline.falseColor.enabled": "Turns palette remapping and posterized false color on or off.",
+  "pipeline.falseColor.mode": "Chooses the false-color palette.",
+  "pipeline.falseColor.strength": "Blends between original color and the false-color mapping.",
+  "pipeline.falseColor.posterizeLevels": "Sets the number of tone steps before palette mapping.",
+  "pipeline.falseColor.smoothness": "Blends between hard poster bands and smoother gradients.",
+  "pipeline.falseColor.channelSwap": "Adds extra RGB channel swapping inside the false-color pass.",
+  "pipeline.falseColor.hueWarp": "Warps palette lookup so hues bend away from natural color.",
+  "pipeline.falseColor.saturation": "Boosts or reduces the intensity of the remapped colors.",
+
+  "pipeline.gradientWash.enabled": "Turns position-based color wash bands on or off.",
+  "pipeline.gradientWash.mode": "Chooses the palette used by the wash.",
+  "pipeline.gradientWash.strength": "Controls how much of the wash is blended over the image.",
+  "pipeline.gradientWash.angle": "Sets the direction of the color bands.",
+  "pipeline.gradientWash.scale": "Controls the width of the wash bands.",
+  "pipeline.gradientWash.keepLuma": "Preserves original brightness so silhouettes and contrast survive the wash.",
+  "pipeline.gradientWash.wobble": "Warps the wash bands with procedural noise.",
+
+  "pipeline.pixelSort.enabled": "Turns vertical pixel sorting streaks on or off.",
+  "pipeline.pixelSort.strength": "Controls how strongly sorted runs replace the original pixels.",
+  "pipeline.pixelSort.threshold": "Sets the brightness trigger for starting sorted runs.",
+  "pipeline.pixelSort.window": "Controls the local band size used for sorted runs.",
+  "pipeline.pixelSort.direction": "Chooses whether sorted streaks run upward or downward.",
+  "pipeline.pixelSort.mode": "Chooses whether bright or dark pixels trigger sorting.",
+  "pipeline.pixelSort.maxRun": "Limits the maximum length of a sorted streak.",
+
+  "pipeline.edgeBurn.enabled": "Turns colored edge halos and dark outlines on or off.",
+  "pipeline.edgeBurn.strength": "Controls edge halo intensity.",
+  "pipeline.edgeBurn.threshold": "Sets edge sensitivity; lower values catch more edges.",
+  "pipeline.edgeBurn.darkOutline": "Adds blackened edge outlining before color is applied.",
+
+  "pipeline.verticalSmear.enabled": "Turns CCD-style vertical readout smear on or off.",
+  "pipeline.verticalSmear.strength": "Controls overall smear intensity.",
+  "pipeline.verticalSmear.threshold": "Sets which bright areas start a vertical smear.",
+  "pipeline.verticalSmear.decay": "Controls how slowly smear trails fade as they travel.",
+  "pipeline.verticalSmear.length": "Controls how far smear trails extend.",
+  "pipeline.verticalSmear.spread": "Bleeds smear into neighboring columns.",
+  "pipeline.verticalSmear.contrast": "Boosts contrast inside smear trails.",
+  "pipeline.verticalSmear.curtainStrength": "Adds falling curtain-like streaks independent of bright highlights.",
+  "pipeline.verticalSmear.curtainDensity": "Controls how many curtain streaks start.",
+  "pipeline.verticalSmear.curtainDrop": "Controls how far curtain streaks fall.",
+  "pipeline.verticalSmear.jitter": "Adds column-to-column instability to smear paths.",
+  "pipeline.verticalSmear.edgeBias": "Biases smear response toward detected edges.",
+
+  "pipeline.sensorNoise.enabled": "Turns synthetic sensor noise and hot pixels on or off.",
+  "pipeline.sensorNoise.amount": "Controls total noise strength.",
+  "pipeline.sensorNoise.colorAmount": "Controls how colorful the noise is.",
+  "pipeline.sensorNoise.shadowBias": "Pushes more noise into darker areas.",
+  "pipeline.sensorNoise.striping": "Adds row and column fixed-pattern striping.",
+  "pipeline.sensorNoise.hotPixels": "Adds isolated bright sensor defects.",
+
+  "pipeline.memoryFault.enabled": "Turns memory-card style row and block corruption on or off.",
+  "pipeline.memoryFault.interlace": "Mixes alternating rows for interlaced field damage.",
+  "pipeline.memoryFault.blockShift": "Shifts rectangular blocks out of place.",
+  "pipeline.memoryFault.rowRepeat": "Repeats scanlines from nearby rows.",
+  "pipeline.memoryFault.scanlineDropout": "Drops or darkens horizontal scanlines.",
+
+  "pipeline.dctCrunch.enabled": "Turns JPEG/DCT block corruption on or off.",
+  "pipeline.dctCrunch.quality": "Controls compression quality; lower values make harsher blocks.",
+  "pipeline.dctCrunch.chromaSubsample": "Reduces color detail while preserving more luma structure.",
+  "pipeline.dctCrunch.dcDrift": "Drifts block-average color across the scan order.",
+  "pipeline.dctCrunch.acScramble": "Scrambles detail coefficients inside selected blocks.",
+  "pipeline.dctCrunch.blockRepeat": "Repeats macroblocks for stuttering codec damage.",
+
+  "pipeline.osdOverlay.enabled": "Turns the camera UI overlay on or off.",
+  "pipeline.osdOverlay.datestamp": "Draws a seeded compact-camera date stamp.",
+  "pipeline.osdOverlay.hudIcons": "Draws REC, ISO, battery, and focus marks.",
+  "pipeline.osdOverlay.glitchText": "Corrupts OSD glyphs and offsets duplicate text.",
+  "pipeline.osdOverlay.scale": "Controls OSD pixel size relative to the image.",
+  "pipeline.osdOverlay.color": "Chooses the OSD overlay color."
+};
+
 function defaultMacros() {
   return {
     bend: 0.62,
@@ -400,7 +526,7 @@ function defaultPipeline() {
     output: {
       exportScale: 1,
       format: "png",
-      preserveOriginalResolution: true
+      preserveOriginalResolution: false
     }
   };
 }

@@ -226,7 +226,7 @@ h3 {
 
 .seed-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr auto auto;
   gap: 8px;
 }
 
@@ -275,6 +275,24 @@ h3 {
   padding: 0 12px;
 }
 
+.icon-button {
+  width: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.icon-button svg,
+.lock-button svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .command-button:hover:not(:disabled),
 .preset-button:hover {
   border-color: var(--green);
@@ -290,6 +308,12 @@ h3 {
   border-color: rgba(141, 255, 122, 0.85);
   background: #123018;
   color: var(--green);
+}
+
+.command-button.icon-button.is-active {
+  border-color: var(--amber);
+  background: #33260d;
+  color: var(--amber);
 }
 
 .preset-list {
@@ -503,7 +527,8 @@ summary {
 }
 
 .solo-button,
-.dice-button {
+.dice-button,
+.lock-button {
   width: 20px;
   height: 20px;
   display: grid;
@@ -516,6 +541,11 @@ summary {
   font-size: 0.62rem;
   font-weight: 700;
   cursor: pointer;
+}
+
+.lock-button:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
 }
 
 .solo-button:hover {
@@ -532,6 +562,32 @@ summary {
   border-color: var(--amber);
   background: #33260d;
   color: var(--amber);
+}
+
+.lock-button.is-active,
+.advanced-group.is-frozen .lock-button {
+  border-color: var(--cyan);
+  background: #0d2b33;
+  color: var(--cyan);
+}
+
+.lock-button.is-flashing {
+  animation: lock-flash 650ms ease;
+}
+
+@keyframes lock-flash {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  35%,
+  65% {
+    border-color: var(--danger);
+    color: var(--danger);
+    box-shadow: 0 0 10px rgba(255, 89, 79, 0.72);
+    transform: scale(1.12);
+  }
 }
 
 .group-lamp {

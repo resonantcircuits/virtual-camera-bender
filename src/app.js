@@ -1,5 +1,6 @@
 import { processCircuitBendImageData } from "./engine-core.js";
 import {
+  ADVANCED_CONTROL_HELP,
   ADVANCED_DEFS,
   applyMacrosToPipeline,
   BUILT_IN_PRESETS,
@@ -8,7 +9,15 @@ import {
   normalizePreset
 } from "./presets.js";
 import { RANDOM_FAMILIES, RANDOM_MODES, randomizeModule, randomizePreset } from "./randomize.js";
-import { downloadBlob, fitWithin, getAtPath, safeFilename, setAtPath } from "./utils.js";
+import {
+  clone,
+  createBlobWriter,
+  downloadBlob,
+  fitWithin,
+  getAtPath,
+  safeFilename,
+  setAtPath
+} from "./utils.js";
 
 const PREVIEW_MAX_DIMENSION = 1500;
 const THUMB_MAX_DIMENSION = 110;
@@ -33,6 +42,8 @@ const state = {
   splitMode: false,
   splitRatio: 0.5,
   soloModule: null,
+  frozenModules: new Set(),
+  freezeSeed: false,
   openGroups: new Set(),
   activePresetIndex: 0,
   pendingSnapshot: null,
@@ -62,11 +73,13 @@ const dom = {
   presetName: document.querySelector("#presetName"),
   presetDescription: document.querySelector("#presetDescription"),
   exportFormat: document.querySelector("#exportFormat"),
+  exportSize: document.querySelector("#exportSize"),
   dropTarget: document.querySelector("#dropTarget"),
   compareButton: document.querySelector("#compareButton"),
   splitButton: document.querySelector("#splitButton"),
   seedInput: document.querySelector("#seedInput"),
   rerollButton: document.querySelector("#rerollButton"),
+  seedLockButton: document.querySelector("#seedLockButton"),
   helpButton: document.querySelector("#helpButton"),
   helpDialog: document.querySelector("#helpDialog"),
   helpClose: document.querySelector("#helpClose")
@@ -76,7 +89,7 @@ const thumbCanvases = [];
 let worker = null;
 let previewJobId = 0;
 let exportJobId = 0;
-let pendingExportFormat = null;
+let pendingExportRequest = null;
 let thumbSource = null;
 
 init();
@@ -112,14 +125,18 @@ function setupWorker() {
 }
 
 function onWorkerMessage(event) {
-  const { type, jobId, index, width, height, elapsed, buffer } = event.data;
+  const { type, jobId, index, width, height, elapsed, buffer, error } = event.data;
+  if (error) {
+    handleWorkerError(type, jobId, error);
+    return;
+  }
   const imageData = new ImageData(new Uint8ClampedArray(buffer), width, height);
   if (type === "preview") {
     if (jobId !== previewJobId) return;
     finishPreview(imageData, elapsed);
   } else if (type === "export") {
     if (jobId !== exportJobId) return;
-    completeExport(imageData, pendingExportFormat);
+    completeExport(imageData, pendingExportRequest);
   } else if (type === "thumb") {
     const canvas = thumbCanvases[index];
     if (!canvas) return;
@@ -127,6 +144,17 @@ function onWorkerMessage(event) {
     canvas.height = height;
     canvas.getContext("2d").putImageData(imageData, 0, 0);
     canvas.classList.add("has-image");
+  }
+}
+
+function handleWorkerError(type, jobId, error) {
+  console.error(`Render worker ${type} job failed`, error);
+  if (type === "export" && jobId === exportJobId) {
+    pendingExportRequest = null;
+    updateStatus("EXPORT FAILED");
+  } else if (type === "preview" && jobId === previewJobId) {
+    state.isRendering = false;
+    updateStatus("RENDER FAILED");
   }
 }
 
@@ -157,6 +185,9 @@ function bindEvents() {
   dom.exportFormat.addEventListener("change", () => {
     state.preset.pipeline.output.format = dom.exportFormat.value;
   });
+  dom.exportSize.addEventListener("change", () => {
+    state.preset.pipeline.output.preserveOriginalResolution = dom.exportSize.value === "full";
+  });
   dom.dropTarget.addEventListener("dragover", (event) => {
     event.preventDefault();
     dom.dropTarget.classList.add("is-dragging");
@@ -184,6 +215,7 @@ function bindEvents() {
     }
   });
   dom.rerollButton.addEventListener("click", rerollSeed);
+  dom.seedLockButton.addEventListener("click", toggleSeedFreeze);
 
   dom.helpButton.addEventListener("click", () => dom.helpDialog.showModal());
   dom.helpClose.addEventListener("click", () => dom.helpDialog.close());
@@ -450,20 +482,71 @@ function renderRandomControls() {
     button.title = description || "";
     button.addEventListener("click", () => {
       pushHistory(snapshotPreset());
-      state.preset = randomizePreset(state.preset, family, dom.randomMode.value);
+      state.preset = randomizePresetWithLocks(family, dom.randomMode.value);
       setActivePreset(-1);
       renderControls();
+      if (state.frozenModules.size) flashFrozenModuleLocks();
       scheduleRender();
+      updateStatus(`${label.toUpperCase()} RANDOMIZED${state.frozenModules.size ? " · LOCKS HELD" : ""}`);
     });
     dom.randomFamilyList.append(button);
   });
+}
+
+function randomizePresetWithLocks(family, modeName) {
+  const previousSeed = state.preset.seed;
+  const frozenModules = snapshotFrozenModules(state.preset);
+  const nextPreset = randomizePreset(state.preset, family, modeName);
+  restoreFrozenModules(nextPreset, frozenModules);
+  if (state.freezeSeed) nextPreset.seed = previousSeed;
+  return nextPreset;
+}
+
+function snapshotFrozenModules(preset) {
+  const modules = {};
+  state.frozenModules.forEach((key) => {
+    if (preset.pipeline[key]) modules[key] = clone(preset.pipeline[key]);
+  });
+  return modules;
+}
+
+function restoreFrozenModules(preset, modules) {
+  Object.entries(modules).forEach(([key, moduleConfig]) => {
+    if (preset.pipeline[key]) preset.pipeline[key] = clone(moduleConfig);
+  });
+}
+
+function toggleModuleFreeze(moduleKey, groupName) {
+  if (state.frozenModules.has(moduleKey)) {
+    state.frozenModules.delete(moduleKey);
+    updateStatus(`${groupName.toUpperCase()} UNFROZEN`);
+  } else {
+    state.frozenModules.add(moduleKey);
+    updateStatus(`${groupName.toUpperCase()} FROZEN`);
+  }
+  renderAdvancedControls();
+}
+
+function flashModuleLock(moduleKey) {
+  const button = dom.advancedControls.querySelector(`[data-module-key="${moduleKey}"] .lock-button`);
+  if (!button) return;
+  button.classList.remove("is-flashing");
+  void button.offsetWidth;
+  button.classList.add("is-flashing");
+  window.setTimeout(() => button.classList.remove("is-flashing"), 650);
+}
+
+function flashFrozenModuleLocks() {
+  state.frozenModules.forEach((moduleKey) => flashModuleLock(moduleKey));
 }
 
 function renderControls() {
   dom.presetName.value = state.preset.name;
   dom.presetDescription.value = state.preset.description || "";
   dom.exportFormat.value = state.preset.pipeline.output.format || "png";
+  dom.exportSize.value = state.preset.pipeline.output.preserveOriginalResolution ? "full" : "preview";
   dom.seedInput.value = String(state.preset.seed);
+  refreshSeedLockButton();
   renderMacroControls();
   renderAdvancedControls();
 }
@@ -499,8 +582,11 @@ function renderMacroControls() {
 function renderAdvancedControls() {
   dom.advancedControls.innerHTML = "";
   ADVANCED_DEFS.forEach((group) => {
+    const moduleFrozen = state.frozenModules.has(group.key);
     const details = document.createElement("details");
     details.className = "advanced-group";
+    details.dataset.moduleKey = group.key;
+    details.classList.toggle("is-frozen", moduleFrozen);
     if (state.soloModule) {
       details.classList.toggle("is-solo", state.soloModule === group.key);
       details.classList.toggle("is-dimmed", state.soloModule !== group.key);
@@ -516,6 +602,7 @@ function renderAdvancedControls() {
     summary.innerHTML = `
       <span>${group.group}</span>
       <span class="summary-tools">
+        <button type="button" class="lock-button" title="${moduleFrozen ? "Module frozen during randomize" : "Freeze this module during randomize"}" aria-label="${moduleFrozen ? "Unfreeze" : "Freeze"} ${group.group}" aria-pressed="${moduleFrozen}">${lockIconSvg(moduleFrozen)}</button>
         <button type="button" class="dice-button" title="Randomize this module (uses Randomize mode)">R</button>
         <button type="button" class="solo-button" title="Solo this module">S</button>
         <button type="button" class="group-lamp" title="Toggle module on/off"></button>
@@ -523,10 +610,22 @@ function renderAdvancedControls() {
     `;
     details.append(summary);
 
+    const lockButton = summary.querySelector(".lock-button");
+    lockButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleModuleFreeze(group.key, group.group);
+    });
+
     const diceButton = summary.querySelector(".dice-button");
     diceButton.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (state.frozenModules.has(group.key)) {
+        flashModuleLock(group.key);
+        updateStatus(`${group.group.toUpperCase()} FROZEN`);
+        return;
+      }
       pushHistory(snapshotPreset());
       state.preset = randomizeModule(state.preset, group.key, dom.randomMode.value);
       renderAdvancedControls();
@@ -561,6 +660,8 @@ function renderAdvancedControls() {
     group.controls.forEach(([path, label, type, min, max, step]) => {
       const value = getAtPath(state.preset, path);
       const row = document.createElement("label");
+      const tooltip = ADVANCED_CONTROL_HELP[path] || `${label} parameter.`;
+      row.title = tooltip;
 
       if (type === "boolean") {
         row.className = "control-row is-toggle";
@@ -569,6 +670,7 @@ function renderAdvancedControls() {
           <input type="checkbox" ${value ? "checked" : ""}>
         `;
         const input = row.querySelector("input");
+        input.title = tooltip;
         input.addEventListener("change", () => {
           pushHistory(snapshotPreset());
           setAtPath(state.preset, path, input.checked);
@@ -586,6 +688,8 @@ function renderAdvancedControls() {
           <button type="button" class="ghost-clear" title="Clear ghost image" ${state.ghostSource ? "" : "hidden"}>✕</button>
         `;
         const ghostInput = document.createElement("input");
+        const ghostOutput = row.querySelector("output");
+        ghostOutput.title = tooltip;
         ghostInput.type = "file";
         ghostInput.accept = "image/*";
         ghostInput.hidden = true;
@@ -617,6 +721,7 @@ function renderAdvancedControls() {
           </select>
         `;
         const select = row.querySelector("select");
+        select.title = tooltip;
         select.addEventListener("change", () => {
           pushHistory(snapshotPreset());
           setAtPath(state.preset, path, select.value);
@@ -631,6 +736,8 @@ function renderAdvancedControls() {
         `;
         const input = row.querySelector("input");
         const output = row.querySelector("output");
+        input.title = tooltip;
+        output.title = tooltip;
         input.addEventListener("pointerdown", armSliderSnapshot);
         input.addEventListener("keydown", armSliderSnapshot);
         input.addEventListener("change", commitSliderSnapshot);
@@ -742,6 +849,38 @@ function rerollSeed() {
   scheduleRender();
 }
 
+function toggleSeedFreeze() {
+  state.freezeSeed = !state.freezeSeed;
+  refreshSeedLockButton();
+  updateStatus(state.freezeSeed ? "SEED FROZEN" : "SEED UNFROZEN");
+}
+
+function refreshSeedLockButton() {
+  dom.seedLockButton.innerHTML = lockIconSvg(state.freezeSeed);
+  dom.seedLockButton.classList.toggle("is-active", state.freezeSeed);
+  dom.seedLockButton.setAttribute("aria-pressed", String(state.freezeSeed));
+  dom.seedLockButton.title = state.freezeSeed
+    ? "Seed is frozen during randomize"
+    : "Freeze seed during randomize";
+  dom.seedLockButton.setAttribute(
+    "aria-label",
+    state.freezeSeed ? "Unfreeze seed during randomize" : "Freeze seed during randomize"
+  );
+}
+
+function lockIconSvg(locked) {
+  const shackle = locked
+    ? '<path d="M7 10V7a5 5 0 0 1 10 0v3" />'
+    : '<path d="M8 10V7a5 5 0 0 1 9.5-2.2" />';
+  return `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="5" y="10" width="14" height="10" rx="2" />
+      ${shackle}
+      <path d="M12 14v3" />
+    </svg>
+  `;
+}
+
 // --- Rendering ---
 
 function sourceSize() {
@@ -843,9 +982,35 @@ async function exportImage() {
     updateStatus("NO IMAGE");
     return;
   }
-  updateStatus("EXPORTING");
-  await nextFrame();
   try {
+    const exportFullSize = state.preset.pipeline.output.preserveOriginalResolution === true;
+    if (!exportFullSize && !state.lastRender?.width) {
+      updateStatus("PREVIEW NOT READY");
+      return;
+    }
+
+    const format = state.preset.pipeline.output.format || "png";
+    const mime = exportMime(format);
+    const extension = `.${format}`;
+    const sizeSuffix = exportFullSize ? "full" : "preview";
+    const filename = `${safeFilename(state.preset.name)}-${sizeSuffix}${extension}`;
+    const writeBlob = await createBlobWriter(filename, mime, extension);
+    if (!writeBlob) {
+      updateStatus("EXPORT CANCELED");
+      return;
+    }
+    const exportRequest = { format, mime, writeBlob };
+
+    if (!exportFullSize) {
+      updateStatus("EXPORTING · PREVIEW");
+      await nextFrame();
+      await completeExport(previewImageData(), exportRequest);
+      return;
+    }
+
+    updateStatus("EXPORTING · FULL RES");
+    await nextFrame();
+
     const size = sourceSize();
     const canvas = document.createElement("canvas");
     canvas.width = size.width;
@@ -854,12 +1019,11 @@ async function exportImage() {
     context.drawImage(state.source, 0, 0, size.width, size.height);
     const imageData = context.getImageData(0, 0, size.width, size.height);
     const preset = effectivePreset();
-    const format = state.preset.pipeline.output.format || "png";
     const exportGhost = state.ghostSource ? rasterizeGhost(GHOST_EXPORT_MAX_DIMENSION) : null;
 
     if (worker) {
       exportJobId += 1;
-      pendingExportFormat = format;
+      pendingExportRequest = exportRequest;
       worker.postMessage(
         {
           type: "export",
@@ -874,25 +1038,38 @@ async function exportImage() {
       );
     } else {
       processCircuitBendImageData(imageData, preset, ghostResources(exportGhost));
-      await completeExport(imageData, format);
+      await completeExport(imageData, exportRequest);
     }
   } catch (error) {
     console.error(error);
+    pendingExportRequest = null;
     updateStatus("EXPORT FAILED");
   }
 }
 
-async function completeExport(imageData, format) {
+function previewImageData() {
+  const context = state.lastRender.getContext("2d");
+  return context.getImageData(0, 0, state.lastRender.width, state.lastRender.height);
+}
+
+function exportMime(format) {
+  return `image/${format === "jpg" ? "jpeg" : format}`;
+}
+
+async function completeExport(imageData, exportRequest) {
   try {
-    pendingExportFormat = null;
+    pendingExportRequest = null;
     const canvas = document.createElement("canvas");
     canvas.width = imageData.width;
     canvas.height = imageData.height;
     canvas.getContext("2d").putImageData(imageData, 0, 0);
-    const exportFormat = format || "png";
-    const mime = `image/${exportFormat === "jpg" ? "jpeg" : exportFormat}`;
-    const blob = await canvasToBlob(canvas, mime, 0.95);
-    downloadBlob(blob, `${safeFilename(state.preset.name)}.${exportFormat}`);
+    const request = exportRequest || {
+      format: "png",
+      mime: "image/png",
+      writeBlob: async (blob) => downloadBlob(blob, `${safeFilename(state.preset.name)}.png`)
+    };
+    const blob = await canvasToBlob(canvas, request.mime, 0.95);
+    await request.writeBlob(blob);
     updateStatus("EXPORTED");
   } catch (error) {
     console.error(error);
