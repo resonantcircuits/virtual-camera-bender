@@ -562,6 +562,35 @@ summary {
   grid-template-columns: minmax(88px, 1fr) minmax(110px, 1.4fr);
 }
 
+.control-row.is-ghost {
+  grid-template-columns: minmax(88px, 1fr) minmax(60px, 1fr) auto auto;
+}
+
+.control-row.is-ghost output {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ghost-load,
+.ghost-clear {
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel-strong);
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ghost-load:hover,
+.ghost-clear:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+
 .control-row.is-select select {
   min-height: 30px;
 }

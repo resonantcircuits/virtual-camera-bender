@@ -65,8 +65,21 @@ function renderCommand(argv) {
     data: new Uint8ClampedArray(decoded.data.buffer, decoded.data.byteOffset, decoded.data.byteLength)
   };
 
+  const resources = {};
+  if (options.ghostPath) {
+    if (!existsSync(options.ghostPath)) {
+      fail(`Ghost image does not exist: ${options.ghostPath}`);
+    }
+    const ghost = decodeImage(options.ghostPath, options.maxDimension);
+    resources.ghost = {
+      width: ghost.width,
+      height: ghost.height,
+      data: new Uint8ClampedArray(ghost.data.buffer, ghost.data.byteOffset, ghost.data.byteLength)
+    };
+  }
+
   const start = Date.now();
-  processCircuitBendImageData(image, preset);
+  processCircuitBendImageData(image, preset, resources);
   encodeImage(options.output, image.width, image.height, Buffer.from(image.data));
   const seconds = ((Date.now() - start) / 1000).toFixed(2);
   console.log(
@@ -81,6 +94,7 @@ function parseArgs(argv) {
     presetPath: null,
     builtin: BUILT_IN_PRESETS[0].name,
     maxDimension: null,
+    ghostPath: null,
     sets: [],
     macros: []
   };
@@ -94,6 +108,8 @@ function parseArgs(argv) {
       options.builtin = argv[++index];
     } else if (arg === "--max-dimension") {
       options.maxDimension = Number(argv[++index]);
+    } else if (arg === "--ghost") {
+      options.ghostPath = resolve(argv[++index]);
     } else if (arg === "--set") {
       options.sets.push(splitAssignment(argv[++index], "--set"));
     } else if (arg === "--macro") {
@@ -265,6 +281,7 @@ Options:
   --builtin <name>            Built-in preset name. Default: Bent CCD-03
   --preset <file.json>        Preset JSON file to load
   --max-dimension <pixels>    Resize input before processing for test renders
+  --ghost <image>             Second image used by the bufferGhost module
   --macro key=value           Override a macro before rendering
   --set path=value            Override any preset field after macro mapping
 

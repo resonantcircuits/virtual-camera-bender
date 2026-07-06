@@ -63,6 +63,19 @@ export const ADVANCED_DEFS = [
     ]
   },
   {
+    group: "Buffer Ghost",
+    key: "bufferGhost",
+    controls: [
+      ["pipeline.bufferGhost.enabled", "Enabled", "boolean"],
+      ["__ghostSource", "Ghost Source", "ghost"],
+      ["pipeline.bufferGhost.amount", "Amount", "range", 0, 1, 0.01],
+      ["pipeline.bufferGhost.blockSize", "Block Size", "range", 0, 1, 0.01],
+      ["pipeline.bufferGhost.ghostShift", "Ghost Shift", "range", 0, 1, 0.01],
+      ["pipeline.bufferGhost.ghostZoom", "Ghost Zoom", "range", 0, 1, 0.01],
+      ["pipeline.bufferGhost.fieldMode", "Field Interlace", "boolean"]
+    ]
+  },
+  {
     group: "Color Bend",
     key: "colorBend",
     controls: [
@@ -261,6 +274,14 @@ function defaultPipeline() {
       phaseError: 1,
       strength: 0.7,
       zipper: 0.3
+    },
+    bufferGhost: {
+      enabled: false,
+      amount: 0.5,
+      blockSize: 0.35,
+      ghostShift: 0.35,
+      ghostZoom: 0.15,
+      fieldMode: false
     },
     colorBend: {
       enabled: false,
@@ -479,6 +500,9 @@ export function applyMacrosToPipeline(preset) {
   p.syncFault.tearCount = clamp((chaos - 0.55) * 1.6);
   p.syncFault.tearShift = clamp(0.2 + chaos * 0.45);
   p.syncFault.wobbleAmount = clamp((chaos - 0.62) * 0.9 + m.melt * 0.06);
+
+  p.bufferGhost.enabled = chaos > 0.7;
+  p.bufferGhost.amount = clamp((chaos - 0.62) * 0.9);
 
   return preset;
 }
@@ -1020,6 +1044,40 @@ export const BUILT_IN_PRESETS = [
       edgeBurn: { enabled: false },
       exposureFault: { gain: 1.15, blackCrush: 0.15, highlightClip: 0.35 },
       sensorNoise: { amount: 0.14, colorAmount: 0.7, striping: 0.05 }
+    }
+  }),
+  createPreset({
+    name: "Double Buffer",
+    description: "Uncleared frame buffer: a shifted stale frame bleeds through in blocks.",
+    tags: ["ghost", "buffer", "stale"],
+    seed: 733917,
+    macros: {
+      bend: 0.38,
+      colorFault: 0.34,
+      melt: 0.05,
+      burn: 0.34,
+      noise: 0.3,
+      cheapness: 0.34,
+      chaos: 0.72
+    },
+    pipeline: {
+      bufferGhost: {
+        enabled: true,
+        amount: 0.62,
+        blockSize: 0.5,
+        ghostShift: 0.55,
+        ghostZoom: 0.28,
+        fieldMode: false
+      },
+      syncFault: { enabled: false },
+      memoryFault: { enabled: true, interlace: 0.12, blockShift: 0.1, rowRepeat: 0.08, scanlineDropout: 0.04 },
+      chromaShift: { enabled: true, amount: 0.14, angle: 0, wobble: 0.3 },
+      falseColor: { strength: 0.24, smoothness: 0.6, saturation: 1.4 },
+      contourRings: { enabled: false },
+      verticalSmear: { enabled: false },
+      pixelSort: { enabled: false },
+      dctCrunch: { enabled: false },
+      sensorNoise: { amount: 0.18, striping: 0.08 }
     }
   }),
   createPreset({

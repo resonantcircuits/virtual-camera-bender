@@ -16,7 +16,7 @@ export function renderCircuitBend(source, preset, options = {}) {
   context.drawImage(source, 0, 0, canvas.width, canvas.height);
 
   const image = context.getImageData(0, 0, canvas.width, canvas.height);
-  processCircuitBendImageData(image, preset);
+  processCircuitBendImageData(image, preset, options.resources || {});
   context.putImageData(image, 0, 0);
   return canvas;
 }

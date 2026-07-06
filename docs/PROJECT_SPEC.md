@@ -119,6 +119,7 @@ Input image
 -> cheap-camera downscale + lens blur
 -> sync fault (frame-wrap tears + rolling-shutter wobble)
 -> bayer fault (wrong-phase demosaic checkerboards + zipper edges)
+-> buffer ghost (stale-frame blocks / field interlace, self or loaded second image)
 -> chroma shift
 -> exposure and clipping fault
 -> color bend (hue rotate / channel swap / invert / solarize)
@@ -178,7 +179,7 @@ Determinism is desirable but not absolute. Presets store seeds and reproduce the
 
 Presets are full-system configurations, not separate special effects. They act as starting points: loading one copies its settings into the editor, after which every control and randomizer works from the current state.
 
-The app ships with 18 built-in cameras. The original five:
+The app ships with 19 built-in cameras. The original five:
 
 - `Bent CCD-03`: strong magenta/cyan clipping, medium vertical melt
 - `Dead Flash Compact`: blown highlights, hard edge burn, noisy shadows
@@ -198,12 +199,13 @@ Nine more, each modeled on specific reference images:
 - `Poison Corridor`: melted lens blur posterized into green contour slime
 - `Negative Bloom`: full channel inversion with saturation push and solarize
 
-Four more added with the Phase 5 digital-brain modules (2026-07-06):
+Five more added with the Phase 5 digital-brain modules (2026-07-06):
 
 - `Codec Rot`: corrupted JPEG decode — block hue drift, scrambled macroblocks, chunky chroma
 - `Hold Vertical`: lost sync — frame-wrap tears, wavy rolling shutter, interlace fringes
 - `Tourist Compact '03`: overcompressed vacation snap with orange datestamp and HUD burn-in
 - `Zipper Mosaic`: misaligned demosaic — green-magenta checkerboards and zipper edges
+- `Double Buffer`: uncleared frame buffer — a shifted stale frame bleeds through in blocks
 
 ## Roadmap
 
@@ -246,7 +248,7 @@ Four more added with the Phase 5 digital-brain modules (2026-07-06):
 - add temporal stability controls — open
 - support batch image processing — open
 
-### Phase 5: New Effect Families (ideated 2026-07-05; items 1-4 done 2026-07-06)
+### Phase 5: New Effect Families (ideated 2026-07-05; items 1-5 done 2026-07-06)
 
 The current engine covers the analog signal path (sensor readout, exposure, color response, noise) well. The remaining gaps are the camera's digital brain: codec, firmware, and timing faults. Each entry below has enough implementation detail to start cold.
 
@@ -264,8 +266,8 @@ Applied right after cheapCamera. (a) frame wrap: below each seeded tear row the 
 **4. `bayerFault` — demosaic corruption — done**
 The image is resampled into an RGGB mosaic at the true grid phase, then bilinear-demosaiced assuming a shifted phase (`phaseError` 0-3: horizontal/vertical/diagonal misalignment) so channels reconstruct from the wrong sensor wells — green/magenta pixel checkerboards, wholesale channel swaps, zipper edges. Phase 0 is a correct-phase demosaic: just the cheap-camera softening. `zipper` adds alternating-pixel green/magenta shimmer along source edges; `strength` blends. Applied early (after syncFault, before chromaShift). Preset-driven (no macro coupling); rolled by the Cheap family (35%) and a rare guest in global randomize (15%). Built-in preset: `Zipper Mosaic`.
 
-**5. `bufferGhost` — stale-frame ghosting**
-Frame buffer not cleared: blocks/bands of a "different frame" bleed through. Fake the previous frame with a transformed copy of the same image (shifted/zoomed/earlier pipeline stage snapshot). Blend in seeded blocks or interlaced fields (odd/even rows from different transforms → comb tearing). Params: `amount`, `blockSize`, `ghostShift`, `ghostZoom`, `fieldMode` (bool).
+**5. `bufferGhost` — stale-frame ghosting — done**
+Frame buffer not cleared: fbm-gated blocks (or odd scan fields with `fieldMode` → comb tearing) show a stale frame, blended per-block. The stale frame is a shifted/zoomed snapshot of the image itself by default, or — extending the original idea — a second image loaded by the user (Ghost Source `LOAD` button in the Buffer Ghost panel; `--ghost <image>` in the CLI). The ghost travels as a render resource (`processCircuitBendImageData(image, preset, { ghost })`), sampled bilinearly in normalized coordinates so any resolution works; it is session state, never serialized into preset JSON. Params: `amount`, `blockSize`, `ghostShift`, `ghostZoom`, `fieldMode`. Macro coupling: chaos > 0.7 enables it. Built-in preset: `Double Buffer`.
 
 **6. `ampGlow` — thermal corner glow**
 Long-exposure sensor amplifier heat: purple/orange glow creeping from one seeded corner/edge, palette-tinted. Cheap radial gradient added late. Params: `strength`, `corner` (seeded), `hue`, `spread`.

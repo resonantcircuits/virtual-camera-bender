@@ -15,7 +15,7 @@ export const RANDOM_FAMILIES = [
   ["burn", "Burn", "Re-roll exposure clipping, contour rings, and edge fringes — keeps the rest"],
   ["noise", "Noise", "Re-roll sensor noise and speckle — keeps the rest"],
   ["cheap", "Cheap", "Re-roll resolution, bit depth, blur, dither, and JPEG crunch — keeps the rest"],
-  ["memory", "Memory", "Re-roll interlace, block shifts, sync tears, and scanline faults — keeps the rest"]
+  ["memory", "Memory", "Re-roll interlace, block shifts, sync tears, ghost frames, and scanline faults — keeps the rest"]
 ];
 
 export const RANDOM_MODES = [
@@ -193,6 +193,15 @@ export const MODULE_RANDOMIZERS = {
     bayer.strength = intensity(mode, rng, 0.3, 1);
     bayer.zipper = randomRange(0.1, 0.8, rng);
   },
+  bufferGhost(preset, mode, rng) {
+    const ghost = preset.pipeline.bufferGhost;
+    ghost.enabled = true;
+    ghost.amount = intensity(mode, rng, 0.2, 0.9);
+    ghost.blockSize = randomRange(0.15, 0.8, rng);
+    ghost.ghostShift = randomRange(0.1, 0.8, rng);
+    ghost.ghostZoom = rng() > 0.5 ? randomRange(0.05, 0.7, rng) : 0;
+    ghost.fieldMode = rng() > 0.72;
+  },
   syncFault(preset, mode, rng) {
     const sync = preset.pipeline.syncFault;
     sync.enabled = true;
@@ -296,7 +305,8 @@ function randomizeGlobal(preset, mode, rng) {
     "sensorNoise",
     "memoryFault",
     "dctCrunch",
-    "syncFault"
+    "syncFault",
+    "bufferGhost"
   ].forEach((key) => {
     if (pipeline[key].enabled) MODULE_RANDOMIZERS[key](preset, mode, rng);
   });
@@ -366,6 +376,8 @@ function randomizeMemory(preset, mode, rng) {
   else preset.pipeline.chromaShift.enabled = false;
   if (rng() < 0.45) MODULE_RANDOMIZERS.syncFault(preset, mode, rng);
   else preset.pipeline.syncFault.enabled = false;
+  if (rng() < 0.4) MODULE_RANDOMIZERS.bufferGhost(preset, mode, rng);
+  else preset.pipeline.bufferGhost.enabled = false;
 }
 
 function randomCameraName(rng) {

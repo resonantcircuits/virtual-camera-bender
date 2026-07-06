@@ -8,7 +8,7 @@ The project is inspired by early 2000s consumer digital cameras pushed into fail
 
 ## Current State
 
-The still-image editor is working: image upload (click or drag-and-drop), live preview, 18 built-in camera presets with live thumbnails, macro and per-module controls, family/global/per-module randomizers, undo/redo, A/B comparison, JSON preset save/load, original-resolution export (PNG/WebP/JPEG), and a headless CLI renderer that shares the same engine.
+The still-image editor is working: image upload (click or drag-and-drop), live preview, 19 built-in camera presets with live thumbnails, macro and per-module controls, family/global/per-module randomizers, undo/redo, A/B comparison, JSON preset save/load, original-resolution export (PNG/WebP/JPEG), and a headless CLI renderer that shares the same engine.
 
 Repository layout:
 
@@ -38,7 +38,7 @@ Then open `http://localhost:8787`.
 
 The still-image pipeline currently chains these modules (all preset-controlled):
 
-cheap camera (downscale, lens blur, bit crush + dither, sharpen) → sync fault (frame-wrap tears, rolling-shutter wobble) → bayer fault (wrong-phase demosaic checkerboards) → chroma shift → exposure fault → color bend (hue rotate, channel swap/invert, solarize) → contour rings → false color (9 palettes, posterized or smooth gradient map) → gradient wash (positional rainbow fields) → edge burn → pixel sort → vertical smear → sensor noise → memory fault (interlace, block shift, row repeat, scanline dropout) → DCT crunch (JPEG quantization, DC hue drift, AC scramble, block stutter, chroma subsampling) → OSD overlay (datestamp and HUD burn-in).
+cheap camera (downscale, lens blur, bit crush + dither, sharpen) → sync fault (frame-wrap tears, rolling-shutter wobble) → bayer fault (wrong-phase demosaic checkerboards) → buffer ghost (stale-frame blocks, self or loaded second image) → chroma shift → exposure fault → color bend (hue rotate, channel swap/invert, solarize) → contour rings → false color (9 palettes, posterized or smooth gradient map) → gradient wash (positional rainbow fields) → edge burn → pixel sort → vertical smear → sensor noise → memory fault (interlace, block shift, row repeat, scanline dropout) → DCT crunch (JPEG quantization, DC hue drift, AC scramble, block stutter, chroma subsampling) → OSD overlay (datestamp and HUD burn-in).
 
 ## Workflow Features
 
@@ -47,6 +47,7 @@ cheap camera (downscale, lens blur, bit crush + dither, sharpen) → sync fault 
 - **A/B split compare** — toggle Split A/B and drag the divider across the image; hold `C` for a quick full-frame flash of the original.
 - **Per-module randomize, solo & bypass** — each module group in Advanced Circuit has an `R` (dice: re-roll only that module's parameters, keeping the seed), an `S` (solo: render only that module), and a lamp button (quick enable/disable). The dice respects the Randomize mode selected in the left panel.
 - **Live preset thumbnails** — the preset list previews every built-in camera on the currently loaded image.
+- **Ghost image** — the Buffer Ghost module blends a stale frame into blocks of the image: a shifted copy of the photo by default, or any second image via the `LOAD` button in its Advanced Circuit panel (`--ghost <image>` in the CLI).
 
 ## Shortcuts
 
@@ -64,6 +65,7 @@ Stills can also be rendered headless (requires `ffmpeg` on PATH):
 ```sh
 node src/cli.js render input.jpg output.png --builtin "IR Bloom"
 node src/cli.js render input.jpg output.png --preset my-camera.vcb-preset.json --set pipeline.pixelSort.strength=0.9
+node src/cli.js render input.jpg output.png --builtin "Double Buffer" --ghost other-frame.jpg
 node src/cli.js list-presets
 ```
 
@@ -74,7 +76,7 @@ The first milestone (still-image web app with upload, preview, presets, randomiz
 - video mode: per-frame processing with stable seeds and temporal smoothing
 - preset gallery view with thumbnails and notes
 - batch image processing through the CLI
-- more effect families targeting the camera's digital brain (JPEG/DCT corruption, OSD/datestamp burn-in, sync tear + rolling-shutter wobble, and Bayer/demosaic faults are done): stale-buffer ghosting, amp glow, dead columns, purple fringing, AWB/AE hunting bands, and generational recompression — full implementation notes in `docs/PROJECT_SPEC.md` under "Phase 5: New Effect Families"
+- more effect families targeting the camera's digital brain (JPEG/DCT corruption, OSD/datestamp burn-in, sync tear + rolling-shutter wobble, Bayer/demosaic faults, and stale-buffer ghosting are done): amp glow, dead columns, purple fringing, AWB/AE hunting bands, and generational recompression — full implementation notes in `docs/PROJECT_SPEC.md` under "Phase 5: New Effect Families"
 
 ## Design Direction
 

@@ -98,13 +98,14 @@ const EDGE_COLORS = {
   yellow: [255, 242, 42]
 };
 
-export function processCircuitBendImageData(image, preset) {
+export function processCircuitBendImageData(image, preset, resources = {}) {
   const seed = Number.isFinite(preset.seed) ? preset.seed : 1;
   const pipeline = preset.pipeline;
   applyCheapScale(image, pipeline.cheapCamera);
   applySoftFocus(image, pipeline.cheapCamera);
   applySyncFault(image, pipeline.syncFault, seed);
   applyBayerFault(image, pipeline.bayerFault);
+  applyBufferGhost(image, pipeline.bufferGhost, seed, resources.ghost || null);
   applyChromaShift(image, pipeline.chromaShift, seed);
   applyExposureFault(image, pipeline.exposureFault, seed);
   applyColorBend(image, pipeline.colorBend);
@@ -343,6 +344,70 @@ function applyBayerFault(image, config) {
       data[index] = clampByte(lerp(source[index], r, strength));
       data[index + 1] = clampByte(lerp(source[index + 1], g, strength));
       data[index + 2] = clampByte(lerp(source[index + 2], b, strength));
+    }
+  }
+}
+
+function applyBufferGhost(image, config, seed, ghost) {
+  if (!config?.enabled || !(config.amount > 0.005)) return;
+  const { width, height, data } = image;
+  const amount = clamp(config.amount);
+  const blockSize = clamp(config.blockSize ?? 0.35);
+  const ghostShift = clamp(config.ghostShift ?? 0.35);
+  const ghostZoom = clamp(config.ghostZoom ?? 0.15);
+  const fieldMode = !!config.fieldMode;
+
+  // The stale frame: an externally supplied image when one is loaded
+  // (session/CLI resource, never stored in the preset), otherwise a
+  // snapshot of the current frame re-framed by shift + zoom.
+  const external = ghost && ghost.width > 0 && ghost.height > 0;
+  const ghostData = external ? ghost.data : new Uint8ClampedArray(data);
+  const ghostW = external ? ghost.width : width;
+  const ghostH = external ? ghost.height : height;
+
+  const zoom = 1 + ghostZoom * 0.45;
+  const shiftAngle = hashUnit(1, 3, seed + 5001) * Math.PI * 2;
+  const shiftU = Math.cos(shiftAngle) * ghostShift * 0.24;
+  const shiftV = Math.sin(shiftAngle) * ghostShift * 0.24;
+
+  const cellW = Math.max(6, Math.round(width * lerp(0.03, 0.3, blockSize)));
+  const cellH = Math.max(4, Math.round(cellW * 0.55));
+
+  for (let y = 0; y < height; y += 1) {
+    const v = ((y / height - 0.5 - shiftV) / zoom + 0.5) * ghostH;
+    const fieldWeight = fieldMode && (y & 1) === 1 ? amount * 0.92 : 0;
+    for (let x = 0; x < width; x += 1) {
+      let weight = fieldWeight;
+      if (!fieldMode) {
+        const bx = Math.floor(x / cellW);
+        const by = Math.floor(y / cellH);
+        // Stale blocks arrive in coherent patches with per-block variation.
+        if (fbmNoise(bx / 7, by / 7, seed + 5003) < amount * 0.78) {
+          weight = clamp(amount * (0.5 + hashUnit(bx, by, seed + 5007) * 0.6));
+        }
+      }
+      if (weight <= 0.003) continue;
+
+      const u = ((x / width - 0.5 - shiftU) / zoom + 0.5) * ghostW;
+      const gx = clamp(u, 0, ghostW - 1.001);
+      const gy = clamp(v, 0, ghostH - 1.001);
+      const x0 = gx | 0;
+      const y0 = gy | 0;
+      const tx = gx - x0;
+      const ty = gy - y0;
+      const i00 = (y0 * ghostW + x0) * 4;
+      const i10 = i00 + 4;
+      const i01 = i00 + ghostW * 4;
+      const i11 = i01 + 4;
+
+      const index = pixelIndex(x, y, width);
+      for (let channel = 0; channel < 3; channel += 1) {
+        const top = lerp(ghostData[i00 + channel], ghostData[i10 + channel], tx);
+        const bottom = lerp(ghostData[i01 + channel], ghostData[i11 + channel], tx);
+        data[index + channel] = clampByte(
+          lerp(data[index + channel], lerp(top, bottom, ty), weight)
+        );
+      }
     }
   }
 }

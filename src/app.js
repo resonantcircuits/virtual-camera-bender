@@ -12,6 +12,7 @@ import { downloadBlob, fitWithin, getAtPath, safeFilename, setAtPath } from "./u
 
 const PREVIEW_MAX_DIMENSION = 1500;
 const THUMB_MAX_DIMENSION = 110;
+const GHOST_EXPORT_MAX_DIMENSION = 3000;
 const HISTORY_LIMIT = 60;
 
 const MODULE_KEYS = ADVANCED_DEFS.map((group) => group.key);
@@ -19,6 +20,10 @@ const MODULE_KEYS = ADVANCED_DEFS.map((group) => group.key);
 const state = {
   source: null,
   sourceName: "",
+  ghostSource: null,
+  ghostName: "",
+  ghostPreview: null,
+  ghostThumb: null,
   preset: clonePreset(BUILT_IN_PRESETS[0]),
   renderQueued: false,
   isRendering: false,
@@ -570,6 +575,33 @@ function renderAdvancedControls() {
           refreshLamp();
           scheduleRender();
         });
+      } else if (type === "ghost") {
+        // Not a preset field: the ghost image is session state, like the
+        // source photo. bufferGhost falls back to a self-frame without it.
+        row.className = "control-row is-ghost";
+        row.innerHTML = `
+          <span>${label}</span>
+          <output>${state.ghostName || "self-frame"}</output>
+          <button type="button" class="ghost-load" title="Load a second image as the stale frame">LOAD</button>
+          <button type="button" class="ghost-clear" title="Clear ghost image" ${state.ghostSource ? "" : "hidden"}>✕</button>
+        `;
+        const ghostInput = document.createElement("input");
+        ghostInput.type = "file";
+        ghostInput.accept = "image/*";
+        ghostInput.hidden = true;
+        row.append(ghostInput);
+        row.querySelector(".ghost-load").addEventListener("click", (event) => {
+          event.preventDefault();
+          ghostInput.click();
+        });
+        ghostInput.addEventListener("change", () => {
+          const file = ghostInput.files?.[0];
+          if (file) loadGhostFile(file);
+        });
+        row.querySelector(".ghost-clear").addEventListener("click", (event) => {
+          event.preventDefault();
+          clearGhost();
+        });
       } else if (type === "select") {
         row.className = "control-row is-select";
         const options = min;
@@ -633,6 +665,58 @@ async function loadImageFile(file) {
     console.error(error);
     updateStatus("IMAGE LOAD FAILED");
   }
+}
+
+async function loadGhostFile(file) {
+  updateStatus("LOADING GHOST");
+  try {
+    state.ghostSource = await fileToImageSource(file);
+    state.ghostName = file.name;
+    state.ghostPreview = rasterizeGhost(PREVIEW_MAX_DIMENSION);
+    state.ghostThumb = rasterizeGhost(THUMB_MAX_DIMENSION);
+    renderAdvancedControls();
+    scheduleRender();
+    updateStatus("GHOST LOADED");
+  } catch (error) {
+    console.error(error);
+    updateStatus("GHOST LOAD FAILED");
+  }
+}
+
+function clearGhost() {
+  state.ghostSource = null;
+  state.ghostName = "";
+  state.ghostPreview = null;
+  state.ghostThumb = null;
+  renderAdvancedControls();
+  scheduleRender();
+  updateStatus("GHOST CLEARED");
+}
+
+function rasterizeGhost(maxDimension) {
+  const width = state.ghostSource.width || state.ghostSource.naturalWidth;
+  const height = state.ghostSource.height || state.ghostSource.naturalHeight;
+  const fitted = fitWithin(width, height, maxDimension);
+  const canvas = document.createElement("canvas");
+  canvas.width = fitted.width;
+  canvas.height = fitted.height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(state.ghostSource, 0, 0, fitted.width, fitted.height);
+  return context.getImageData(0, 0, fitted.width, fitted.height);
+}
+
+// Worker payload: the buffer is intentionally NOT transferred, so the
+// cached ghost survives repeated renders (structured clone copies it).
+function ghostPayload(imageData) {
+  if (!imageData) return null;
+  return { width: imageData.width, height: imageData.height, buffer: imageData.data.buffer };
+}
+
+function ghostResources(imageData) {
+  if (!imageData) return {};
+  return { ghost: { width: imageData.width, height: imageData.height, data: imageData.data } };
 }
 
 async function loadPresetFile(file) {
@@ -716,13 +800,14 @@ function renderPreview() {
           width: imageData.width,
           height: imageData.height,
           buffer: imageData.data.buffer,
-          preset
+          preset,
+          ghost: ghostPayload(state.ghostPreview)
         },
         [imageData.data.buffer]
       );
     } else {
       const startedAt = performance.now();
-      processCircuitBendImageData(imageData, preset);
+      processCircuitBendImageData(imageData, preset, ghostResources(state.ghostPreview));
       finishPreview(imageData, Math.round(performance.now() - startedAt));
     }
   } catch (error) {
@@ -770,6 +855,7 @@ async function exportImage() {
     const imageData = context.getImageData(0, 0, size.width, size.height);
     const preset = effectivePreset();
     const format = state.preset.pipeline.output.format || "png";
+    const exportGhost = state.ghostSource ? rasterizeGhost(GHOST_EXPORT_MAX_DIMENSION) : null;
 
     if (worker) {
       exportJobId += 1;
@@ -781,12 +867,13 @@ async function exportImage() {
           width: imageData.width,
           height: imageData.height,
           buffer: imageData.data.buffer,
-          preset
+          preset,
+          ghost: ghostPayload(exportGhost)
         },
         [imageData.data.buffer]
       );
     } else {
-      processCircuitBendImageData(imageData, preset);
+      processCircuitBendImageData(imageData, preset, ghostResources(exportGhost));
       await completeExport(imageData, format);
     }
   } catch (error) {
@@ -840,7 +927,8 @@ function generateThumbnails() {
           width: thumbSource.width,
           height: thumbSource.height,
           buffer: copy.buffer,
-          preset
+          preset,
+          ghost: ghostPayload(state.ghostThumb)
         },
         [copy.buffer]
       );
@@ -850,7 +938,7 @@ function generateThumbnails() {
         height: thumbSource.height,
         data: new Uint8ClampedArray(thumbSource.data)
       };
-      processCircuitBendImageData(image, preset);
+      processCircuitBendImageData(image, preset, ghostResources(state.ghostThumb));
       const canvas = thumbCanvases[index];
       if (!canvas) return;
       canvas.width = image.width;
