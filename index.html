@@ -114,7 +114,16 @@
 
           <section class="panel-section">
             <details>
-              <summary>Advanced Circuit</summary>
+              <summary class="panel-summary"><span>Physics Rail</span><button id="physicsAllOffButton" class="all-off-button" type="button" title="Switch off every physics module">ALL OFF</button></summary>
+              <p class="hint circuit-note">Simulated bend circuitry on the raw sensor signal (analog front end, ADC data bus). Runs before every module below; macros never touch it.</p>
+              <div id="physicsControls" class="advanced-stack"></div>
+            </details>
+          </section>
+
+          <section class="panel-section">
+            <details>
+              <summary class="panel-summary"><span>Stylized Circuit</span><button id="stylizedAllOffButton" class="all-off-button" type="button" title="Switch off every stylized module">ALL OFF</button></summary>
+              <p class="hint circuit-note">Artistic approximations of camera damage — color, melt, burn, noise, memory, codec. The macro dials drive these; fine-tune each module here.</p>
               <div id="advancedControls" class="advanced-stack"></div>
             </details>
           </section>
@@ -144,10 +153,12 @@
           <p>The <strong>Gallery</strong> (button above the Effects list, or <kbd>G</kbd>) shows every camera rendered live on your loaded image, side by side. Click a card to load that camera.</p>
         </section>
         <section>
-          <h3>Macros vs Advanced Circuit</h3>
+          <h3>Macros vs Circuit Panels</h3>
           <p><strong>Macro dials</strong> are the big knobs. Moving one re-tunes the module parameters underneath it — so they overwrite fine tweaks in that area. Use them to rough in a look.</p>
-          <p><strong>Advanced Circuit</strong> is the per-module truth: every parameter of every effect. Use it to fine-tune after the macros get you close. Hover a parameter for a short description of what it changes.</p>
-          <p>Each module header has four controls: the <strong>lock</strong> freezes that module during right-side randomize, <strong>R</strong> re-rolls just that module, <strong>S</strong> solos it so you see only its effect, and the <strong>lamp</strong> switches it on or off.</p>
+          <p><strong>Physics Rail</strong> is different in kind: it simulates real bend circuitry acting on the raw sensor signal (oscillators into the analog path, logic chips on the ADC data bus). It runs before everything else, and macros never touch it — it changes through its own controls, presets, the <strong>Physics</strong> randomize family, its <strong>R</strong> dice, and the physics-led share of Global rolls.</p>
+          <p><strong>Stylized Circuit</strong> is the per-module truth for the plausibility effects: every parameter of every effect. Use it to fine-tune after the macros get you close. Hover a parameter for a short description of what it changes.</p>
+          <p>Each module header has four controls: the <strong>lock</strong> freezes that module during right-side randomize, <strong>R</strong> re-rolls just that module, <strong>S</strong> solos it so you see only its effect, and the <strong>lamp</strong> switches it on or off (there is no separate Enabled toggle inside the group).</p>
+          <p>The <strong>ALL OFF</strong> button in each panel header switches off every module in that panel — handy for hearing the physics rail alone, or the stylized circuit alone.</p>
         </section>
         <section>
           <h3>Macro Bindings</h3>
@@ -163,8 +174,8 @@
           <h3>Randomize</h3>
           <p>Randomize always bends the <em>current</em> settings — it never resets to a preset.</p>
           <p><strong>Mode</strong> sets how hard it hits: <strong>Bent</strong> is gentle, <strong>Damaged</strong> is clearly broken, <strong>Shorted</strong> is violent, <strong>Explore</strong> draws from the full range. The per-module R dice use this mode too.</p>
-          <p><strong>Global</strong> builds a whole new camera (new name, new seed, fresh macros, and a fresh pick of which modules are active). The <strong>family buttons</strong> (Color, Melt, Burn, Noise, Cheap, Memory) re-roll only that damage domain and leave the rest alone — good for keeping a look you like while re-rolling the part you don't.</p>
-          <p>Locked Advanced Circuit modules are restored after right-side randomize, including whether they are enabled. Pressing <strong>R</strong> on a locked module does nothing and flashes the lock. Locks are session-only and are not saved into presets.</p>
+          <p><strong>Global</strong> builds a whole new camera (new name, new seed, fresh macros, and a fresh pick of which modules are active). Some builds are led by the physics rail with the stylized damage pulled back; a few stack both circuits. The <strong>family buttons</strong> (Physics, Color, Melt, Burn, Noise, Cheap, Memory) re-roll only that damage domain and leave the rest alone — good for keeping a look you like while re-rolling the part you don't.</p>
+          <p>Locked circuit modules (in either panel) are restored after right-side randomize, including whether they are enabled. Pressing <strong>R</strong> on a locked module does nothing and flashes the lock. Locks are session-only and are not saved into presets.</p>
         </section>
         <section>
           <h3>Seed</h3>

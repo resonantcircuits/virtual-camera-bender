@@ -96,6 +96,9 @@ const dom = {
   presetList: document.querySelector("#presetList"),
   macroControls: document.querySelector("#macroControls"),
   advancedControls: document.querySelector("#advancedControls"),
+  physicsControls: document.querySelector("#physicsControls"),
+  physicsAllOffButton: document.querySelector("#physicsAllOffButton"),
+  stylizedAllOffButton: document.querySelector("#stylizedAllOffButton"),
   randomFamilyList: document.querySelector("#randomFamilyList"),
   randomMode: document.querySelector("#randomMode"),
   presetName: document.querySelector("#presetName"),
@@ -287,6 +290,8 @@ function bindEvents() {
     if (event.target === dom.videoDialog) dom.videoDialog.close();
   });
   dom.copyCommandButton.addEventListener("click", copyRenderCommand);
+  dom.physicsAllOffButton.addEventListener("click", (event) => panelAllOff(event, true, "PHYSICS RAIL OFF"));
+  dom.stylizedAllOffButton.addEventListener("click", (event) => panelAllOff(event, false, "STYLIZED CIRCUIT OFF"));
 
   dom.galleryFilter.addEventListener("input", applyGalleryFilter);
   dom.galleryFilter.addEventListener("keydown", (event) => {
@@ -944,7 +949,8 @@ function toggleModuleFreeze(moduleKey, groupName) {
 }
 
 function flashModuleLock(moduleKey) {
-  const button = dom.advancedControls.querySelector(`[data-module-key="${moduleKey}"] .lock-button`);
+  // Module groups live in either circuit panel (physics rail or stylized).
+  const button = document.querySelector(`.advanced-group[data-module-key="${moduleKey}"] .lock-button`);
   if (!button) return;
   button.classList.remove("is-flashing");
   void button.offsetWidth;
@@ -1064,8 +1070,25 @@ function renderMacroControls() {
   });
 }
 
+// ALL OFF in a circuit panel header: switch off every module in that panel
+// (physics rail or stylized) without touching their other settings.
+function panelAllOff(event, physics, statusLabel) {
+  // The button lives inside a <summary>; don't toggle the dropdown with it.
+  event.preventDefault();
+  event.stopPropagation();
+  pushHistory(snapshotPreset());
+  ADVANCED_DEFS.forEach((group) => {
+    if (Boolean(group.physics) !== physics) return;
+    setAtPath(state.preset, `pipeline.${group.key}.enabled`, false);
+  });
+  renderAdvancedControls();
+  scheduleRender();
+  updateStatus(statusLabel);
+}
+
 function renderAdvancedControls() {
   dom.advancedControls.innerHTML = "";
+  dom.physicsControls.innerHTML = "";
   ADVANCED_DEFS.forEach((group) => {
     const moduleFrozen = state.frozenModules.has(group.key);
     const details = document.createElement("details");
@@ -1083,14 +1106,17 @@ function renderAdvancedControls() {
     });
 
     const summary = document.createElement("summary");
-    const enabledPath = group.controls.find(([, , type]) => type === "boolean")?.[0];
+    // Every pipeline module has an `enabled` flag; the lamp is its only UI
+    // (there is no "Enabled" row inside the group).
+    const enabledPath = `pipeline.${group.key}.enabled`;
+    const lampHelp = ADVANCED_CONTROL_HELP[enabledPath] || "Toggle module on/off";
     summary.innerHTML = `
       <span>${group.group}</span>
       <span class="summary-tools">
         <button type="button" class="lock-button" title="${moduleFrozen ? "Module frozen during randomize" : "Freeze this module during randomize"}" aria-label="${moduleFrozen ? "Unfreeze" : "Freeze"} ${group.group}" aria-pressed="${moduleFrozen}">${lockIconSvg(moduleFrozen)}</button>
         <button type="button" class="dice-button" title="Randomize this module (uses Randomize mode)">R</button>
         <button type="button" class="solo-button" title="Solo this module">S</button>
-        <button type="button" class="group-lamp" title="Toggle module on/off"></button>
+        <button type="button" class="group-lamp" title="${lampHelp}"></button>
       </span>
     `;
     details.append(summary);
@@ -1191,6 +1217,33 @@ function renderAdvancedControls() {
           event.preventDefault();
           clearGhost();
         });
+      } else if (type === "bits") {
+        // DIP-switch bank for busBend bit masks: `min` carries the list of
+        // ADC bit indices this bank can reach, high bit first.
+        row.className = "control-row is-bits";
+        const bankBits = min;
+        row.innerHTML = `
+          <span>${label}</span>
+          <span class="bit-bank">
+            ${bankBits
+              .map(
+                (bit) =>
+                  `<button type="button" class="bit-switch ${(value | 0) & (1 << bit) ? "is-on" : ""}" data-bit="${bit}" title="D${bit}"><i></i><em>${bit}</em></button>`
+              )
+              .join("")}
+          </span>
+        `;
+        row.querySelectorAll(".bit-switch").forEach((button) => {
+          button.addEventListener("click", (event) => {
+            event.preventDefault();
+            pushHistory(snapshotPreset());
+            const bit = Number(button.dataset.bit);
+            const next = ((getAtPath(state.preset, path) | 0) ^ (1 << bit)) >>> 0;
+            setAtPath(state.preset, path, next);
+            button.classList.toggle("is-on", Boolean(next & (1 << bit)));
+            scheduleRender();
+          });
+        });
       } else if (type === "select") {
         row.className = "control-row is-select";
         const options = min;
@@ -1237,7 +1290,7 @@ function renderAdvancedControls() {
       details.append(row);
     });
 
-    dom.advancedControls.append(details);
+    (group.physics ? dom.physicsControls : dom.advancedControls).append(details);
   });
 }
 

@@ -504,6 +504,30 @@ summary {
   color: var(--green);
 }
 
+.panel-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.all-off-button {
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel-strong);
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.all-off-button:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .advanced-stack {
   padding: 0 14px 12px 10px;
 }
@@ -670,6 +694,76 @@ summary {
   min-height: 30px;
 }
 
+/* busBend DIP-switch banks */
+.control-row.is-bits {
+  grid-template-columns: minmax(88px, 1fr) auto;
+}
+
+.bit-bank {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #090908;
+  justify-self: end;
+}
+
+.bit-switch {
+  width: 15px;
+  padding: 2px 0 1px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.bit-switch i {
+  display: block;
+  width: 9px;
+  height: 16px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-strong);
+  position: relative;
+}
+
+.bit-switch i::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  bottom: 1px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--muted);
+  transition: top 0.08s ease, bottom 0.08s ease;
+}
+
+.bit-switch.is-on i {
+  border-color: var(--green);
+}
+
+.bit-switch.is-on i::after {
+  top: 1px;
+  bottom: auto;
+  background: var(--green);
+}
+
+.bit-switch em {
+  font-style: normal;
+  font-size: 0.52rem;
+  color: var(--muted);
+  line-height: 1;
+}
+
+.bit-switch.is-on em {
+  color: var(--green);
+}
+
 .statusbar {
   min-height: 34px;
   display: flex;
@@ -690,6 +784,12 @@ summary {
   color: var(--muted);
   font-size: 0.7rem;
   line-height: 1.5;
+}
+
+/* Descriptions under the circuit panel headers (Physics Rail / Stylized) */
+.circuit-note {
+  margin: 6px 12px 12px;
+  line-height: 1.65;
 }
 
 .help-dialog {
