@@ -116,6 +116,7 @@ The engine (`src/engine-core.js`) runs a fixed camera-circuit pipeline:
 
 ```text
 Input image
+-> physics rail (one raw round trip: inverse ISP -> 12-bit Bayer raw -> afeBend -> busBend -> forward ISP)
 -> cheap-camera downscale + lens blur
 -> sync fault (frame-wrap tears + rolling-shutter wobble)
 -> bayer fault (wrong-phase demosaic checkerboards + zipper edges)
@@ -168,9 +169,9 @@ Video mode (implemented) applies the same engine per frame with temporal schedul
 
 Randomization happens at three levels (all implemented in `src/randomize.js`):
 
-- global randomize: builds a whole new camera — fresh macros, a fresh pick of active modules, new name and seed. Each roll mutes some damage channels so results have distinct characters instead of everything firing at once.
-- family randomizers (`Color`, `Melt`, `Burn`, `Noise`, `Cheap`, `Memory`): re-roll one damage domain with fresh draws, leave the rest untouched.
-- per-module dice (`R` in each Advanced Circuit group header): re-roll one module's parameters while keeping the global seed, so everything else renders identically.
+- global randomize: builds a whole new camera — fresh macros, a fresh pick of active modules, new name and seed. Each roll mutes some damage channels so results have distinct characters instead of everything firing at once. The physics rail participates as archetypes, not background guests: ~65% of builds are stylized-only, ~25% physics-led (one rail circuit rolls, occasionally both, with stylized macros scaled way down so the circuit look reads), ~10% stack both at full strength.
+- family randomizers (`Physics`, `Color`, `Melt`, `Burn`, `Noise`, `Cheap`, `Memory`): re-roll one damage domain with fresh draws, leave the rest untouched. Families are *domains*, not modules — future physics modules (ccdClock, addressBus, jpegStream) join the Physics family and the per-module dice rather than adding buttons.
+- per-module dice (`R` in each circuit-panel group header): re-roll one module's parameters while keeping the global seed, so everything else renders identically.
 
 All draws are fresh values within the mode's intensity band — never cumulative — so repeated presses wander instead of ratcheting toward maximum damage.
 
@@ -306,6 +307,51 @@ Integration checklist for any new module (this is the established pattern):
 - document in `docs/PRESET_FORMAT.md` example JSON + module reference (a sync-check script pattern exists: parse the doc's JSON example and diff module params against `defaultPipeline()`)
 - verify: `node src/cli.js render test-images/<img> out.png --set pipeline.<module>.enabled=true ...` and view the PNG; compare against local, uncommitted `reference-images/`
 - consider one new built-in preset per major module, modeled on a specific reference image
+
+### Phase 6: Physics-Based Bus Bend (`busBend`) — v1 done 2026-07-07
+
+A departure from the "plausible approximation" philosophy: this module actually simulates the signal path a real logic-chip camera bend attacks. Reference: the PowerShot A520 "source/target selector" bend (r/CircuitBending, u/theglorioustopsail; schematic in local `diagrams/`, result photos in local `reference-images/reference-camera-1/`). That bend taps the parallel data bus between the CCD's 12-bit ADC and the DIGIC processor: a 10-switch DIP selects source bits (D11-D2), a 1µF cap + 1kΩ pot forms a variable high-pass, a NAND-as-NOT or a D-flip-flop divide-by-two conditions the signal, and a 9-position selector injects it back onto target bits (D11-D4, GND) against the ADC's own pin drivers.
+
+Implementation (`src/bus-bend.js`, pure JS, browser-free, called first in the pipeline):
+
+1. **Inverse ISP**: sRGB → linear (LUT) → divide out WB gains → RGGB mosaic → 12-bit raw with black-level pedestal.
+2. **Per-clock circuit sim** in row-major readout order: intra-bank hard shorts (drive-fight averaging with comparator-noise thresholding), one-pole RC high-pass whose time constant maps from the pot (normalized to a 3072px sensor row so streak scale is resolution-independent; the pot also sets a DC pull-down load on bypass targets and the surviving edge amplitude), Schmitt-conditioned invert/divide logic with strong CMOS drive, bus-contention resolution per target pin, and one-clock-delayed feedback of the resolved wire into the filter/flip-flop (this feedback is why divide only sings when source and target pins overlap, matching the builder's description).
+3. **Forward ISP**: black level, WB gains, bilinear demosaic, linear → sRGB. WB × gamma amplification of raw bit damage is what produces the posterized rainbow contours, color negatives, and scanline chaos of the reference photos.
+
+Validated against the four reference looks via CLI contact sheets (identity round-trip is clean; HPF/INV/DIV families reproduced). ~0.25s at 960px, ~fine for video (26 fps at 640px). Built-in presets: `Rainbow Bus Tap`, `Logic Negative`, `Divide By Two`, `Cloud Solarizer`. UI: DIP-switch bit-bank control type (`bits`) in the advanced panel. Excluded from global randomize (character module, like osdOverlay) but has a full per-module dice.
+
+Future extensions (not scheduled): more logic "chips" (XOR, counters, shift registers), horizontal-blanking/interlaced-field readout if scanline statistics need to match harder, CCD clock-signal bending, oversampled analog sim via WASM if sub-clock effects are ever wanted.
+
+### Phase 7: The Physics Rail (ideated 2026-07-07)
+
+Phase 6 proved that simulating the actual circuit beats approximating its look. A real camera offers a chain of physically distinct bend domains, each failing with a different visual grammar because the image lives in a different representation at each stage. Phase 7 builds them as siblings sharing one infrastructure, chained in true signal order at the head of the pipeline:
+
+```text
+charge domain -> analog domain -> ADC data bus -> memory -> codec
+(ccdClock)      (afeBend, done)  (busBend, done)  (addressBus) (jpegStream)
+```
+
+**0. Shared raw-domain harness (`src/raw-domain.js`) — done 2026-07-07**
+Factor the inverse/forward ISP out of `bus-bend.js`: sRGB→linear LUTs, RGGB mosaic, 12-bit raw with black pedestal, bilinear demosaic, gamma. The engine runs a single *physics rail* pass: one `imageToRaw`, then every enabled physics module in signal order on the same raw buffer, then one `rawToImage` — so corruptions compound physically (a charge smear that then gets bus-bent inherits both) and the image isn't demosaic-softened once per module. One camera has one white balance: the rail takes WB gains from the first enabled physics module.
+
+**1. `afeBend` — analog front end bend (analog domain) — done 2026-07-07**
+Shipped as `src/afe-bend.js` with built-in presets `Ground Loop` (rolling hum bands), `Carrier Clash` (square-wave moire + gain pump), `Reset Ghost` (CDS derivative emboss). Validated: flat-field band period matches the cycles-per-row math; red-before-green black clipping gives the hard colored band edges; idle module round-trips the image intact; compounds correctly with busBend on the shared rail. ~0.37s at 960px including camera-JPEG finish.
+The pixel stream before the ADC is a continuous voltage; this is where the classic "audio into the video path" bend lives. Three couplings, all in one per-clock pass over the raw stream:
+- *Oscillator injection* (additive): sine/square/saw/sample-hold-noise waveform at a frequency parameterized in cycles-per-row (log sweep ~0.02–320) — sub-row frequencies give rolling horizontal hum bands, tens of cycles per row give tilted moiré against the pixel clock; a `skew` param adds per-row phase creep (band tilt), `wobble` adds seeded phase drift so bands breathe.
+- *PGA/VREF wobble* (multiplicative): the same oscillator modulating gain-above-black — exposure that pumps instead of bands that add.
+- *CDS timing skew*: correlated double sampling with the reset sample landing on a stale pixel (`signal[n] − amount·(signal[n−lag] − black)`) — the frame becomes a horizontal-derivative emboss with negative trails; lag on a log sweep of 1–48 clocks.
+Where busBend is harsh and posterized, this module is liquid: smooth interference physics, colored by WB like everything raw-domain.
+
+**2. `ccdClock` — charge-transfer clock bend (charge domain)**
+Before there are bits or even voltages, the image is charge packets marched by multi-phase transfer clocks (V1/V2 row clocks, H1/H2 register clocks). Model the sensor as charge buckets and corrupt the transfer schedule: skipped V pulses (row repeats + charge accumulation), doubled pulses (row skips), partial transfer efficiency (a fraction of charge left behind each shift → *physical* vertical smear, unlike the painterly `verticalSmear`), inter-well mixing, and H-register glitches for per-row horizontal shear. Geometric melt — the NOYSTOISE look, and the A520 author's own "future work" item.
+
+**3. `addressBus` — frame-buffer address-line bend (memory domain)**
+`memoryFault` is painterly; the physical version shorts or sticks *address lines* on the SDRAM, so memory aliases in exact powers of two: mirrored tiles, interleaved row pairs, ping-ponged halves — crystalline deterministic repetition, nothing like random block damage. Cheap to simulate (remap read addresses through a corrupted-bit function) and very distinct.
+
+**4. `jpegStream` — entropy-domain bitstream corruption (codec domain)**
+`dctCrunch` damages coefficients; real corrupt JPEGs damage the *Huffman bitstream*, so everything after a flipped bit decodes wrong until the next restart marker — the classic cascading shear-and-hue-slide. Needs a small sequential JPEG encoder/decoder pair (encode with restart markers, flip seeded bits, tolerant decode). Largest effort of the four; consider last.
+
+Build order by distinctness-per-effort: **afeBend → ccdClock → addressBus → jpegStream**. Each lands with the standard integration checklist (Phase 5) plus a physics-validation gate: CLI contact sheets, identity round-trip clean when idle, and at least one seeded config matching a documented real-bend behavior.
 
 ## Decisions Made (formerly Open Decisions)
 

@@ -4,11 +4,11 @@
 
 Virtual Camera Bender is a web-based still-image editor for creating circuit-bent compact digital camera aesthetics from input images, with a CLI companion that applies the same cameras to video.
 
-The project is inspired by early 2000s consumer digital cameras pushed into failure states: false color, clipped highlights, vertical readout smear, dense sensor noise, posterized contours, and occasional memory or scanline corruption. The goal is artistic plausibility, not physically exact simulation.
+The project is inspired by early 2000s consumer digital cameras pushed into failure states: false color, clipped highlights, vertical readout smear, dense sensor noise, posterized contours, and occasional memory or scanline corruption. The goal is artistic plausibility, not physically exact simulation — with one exception: the bus bend module physically simulates a real logic-chip bend on the camera's ADC data bus.
 
 ## Current State
 
-The still-image editor is working: image upload (click or drag-and-drop), live preview, 35 built-in camera presets with live thumbnails, macro and per-module controls, family/global/per-module randomizers, undo/redo, A/B comparison, JSON preset save/load, original-resolution export (PNG/WebP/JPEG), and a headless CLI renderer that shares the same engine.
+The still-image editor is working: image upload (click or drag-and-drop), live preview, 42 built-in camera presets with live thumbnails, macro and per-module controls, family/global/per-module randomizers, undo/redo, A/B comparison, JSON preset save/load, original-resolution export (PNG/WebP/JPEG), and a headless CLI renderer that shares the same engine.
 
 Video is supported image-first: load a clip in the app to design the look on a contact sheet of its frames (no in-app playback or encoding), tune temporal behavior (locked/hold/flicker seeds, parameter drift, frame ghosting), then render with the CLI (`render-video`, ffmpeg-backed, parallel workers).
 
@@ -43,16 +43,16 @@ Then open `http://localhost:8787`.
 
 The still-image pipeline currently chains these modules (all preset-controlled):
 
-cheap camera (downscale, lens blur, bit crush + dither, sharpen) → sync fault (frame-wrap tears, rolling-shutter wobble) → bayer fault (wrong-phase demosaic checkerboards) → buffer ghost (stale-frame blocks, self or loaded second image) → chroma shift → exposure fault → color bend (hue rotate, channel swap/invert, solarize) → contour rings → false color (9 palettes, posterized or smooth gradient map) → gradient wash (positional rainbow fields) → edge burn → pixel sort → vertical smear → sensor noise → memory fault (interlace, block shift, row repeat, scanline dropout) → DCT crunch (JPEG quantization, DC hue drift, AC scramble, block stutter, chroma subsampling) → OSD overlay (datestamp and HUD burn-in).
+physics rail (one shared raw round trip: inverse ISP → 12-bit Bayer raw → enabled circuit sims in signal order → forward ISP), currently AFE bend (analog oscillator injection, gain wobble, CDS ghosting) → bus bend (per-clock ADC data-bus bend circuit) → then cheap camera (downscale, lens blur, bit crush + dither, sharpen) → sync fault (frame-wrap tears, rolling-shutter wobble) → bayer fault (wrong-phase demosaic checkerboards) → buffer ghost (stale-frame blocks, self or loaded second image) → chroma shift → exposure fault → color bend (hue rotate, channel swap/invert, solarize) → contour rings → false color (9 palettes, posterized or smooth gradient map) → gradient wash (positional rainbow fields) → edge burn → pixel sort → vertical smear → sensor noise → memory fault (interlace, block shift, row repeat, scanline dropout) → DCT crunch (JPEG quantization, DC hue drift, AC scramble, block stutter, chroma subsampling) → OSD overlay (datestamp and HUD burn-in).
 
 ## Workflow Features
 
 - **Web Worker rendering** — processing runs off the main thread, so the UI stays responsive during heavy renders and full-resolution exports.
 - **Undo / Redo** — every preset switch, randomize, reroll, and control tweak is tracked (up to 60 steps).
 - **A/B split compare** — toggle Split A/B and drag the divider across the image; hold `C` for a quick full-frame flash of the original.
-- **Per-module randomize, solo & bypass** — each module group in Advanced Circuit has an `R` (dice: re-roll only that module's parameters, keeping the seed), an `S` (solo: render only that module), and a lamp button (quick enable/disable). The dice respects the Randomize mode selected in the left panel.
+- **Per-module randomize, solo & bypass** — each module group in the circuit panels has an `R` (dice: re-roll only that module's parameters, keeping the seed), an `S` (solo: render only that module), and a lamp button (quick enable/disable). The dice respects the Randomize mode selected in the left panel.
 - **Live preset thumbnails** — the preset list previews every built-in camera on the currently loaded image.
-- **Ghost image** — the Buffer Ghost module blends a stale frame into blocks of the image: a shifted copy of the photo by default, or any second image via the `LOAD` button in its Advanced Circuit panel (`--ghost <image>` in the CLI).
+- **Ghost image** — the Buffer Ghost module blends a stale frame into blocks of the image: a shifted copy of the photo by default, or any second image via the `LOAD` button in its Stylized Circuit panel (`--ghost <image>` in the CLI).
 
 - **Video frames sheet** — loading a video opens a 25-frame contact sheet rendered through the current camera (`V` or the Frames button); clicking a frame makes it the working image, carrying its temporal seed so the preview matches the final render of that exact frame.
 - **Temporal panel** — visible when a video is loaded: seed mode (locked / hold / flicker), hold length, parameter drift amount/speed, and ghost lag (feeds Buffer Ghost the frame N back for real stale-buffer trails). Saved in the preset; the Copy Render Command button emits the matching CLI line.

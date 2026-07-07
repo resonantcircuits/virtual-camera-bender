@@ -37,6 +37,31 @@ The schema below matches the current implementation (`src/presets.js`). It is st
     "ghostFrame": 0
   },
   "pipeline": {
+    "afeBend": {
+      "enabled": false,
+      "wave": "sine",
+      "freq": 0.18,
+      "skew": 0.0,
+      "inject": 0.35,
+      "gainMod": 0.0,
+      "wobble": 0.1,
+      "cdsAmount": 0.0,
+      "cdsSkew": 0.3,
+      "wbRed": 2.0,
+      "wbBlue": 1.5
+    },
+    "busBend": {
+      "enabled": false,
+      "sourceMask": 0,
+      "targetMask": 0,
+      "targetGnd": false,
+      "fn": "bypass",
+      "pot": 0.5,
+      "injectStrength": 0.55,
+      "jitter": 0.08,
+      "wbRed": 2.0,
+      "wbBlue": 1.5
+    },
     "cheapCamera": {
       "enabled": true,
       "internalScale": 0.75,
@@ -210,6 +235,8 @@ The schema below matches the current implementation (`src/presets.js`). It is st
 
 ## Module Reference
 
+- `afeBend`: physics-based analog-front-end bend, first on the physics rail (before `busBend`; the rail shares one raw round trip, see below). Attacks the pixel voltage stream before the ADC: `inject` adds an oscillator into the signal (`wave`: `sine`/`square`/`saw`/`noise`; `freq` is a log sweep in cycles per sensor row, ~0.02-320 — low = rolling horizontal hum bands, high = pixel-clock moire; `skew` tilts the bands by adding phase per row; `wobble` is seeded phase drift). `gainMod` modulates analog gain / ADC reference with the same oscillator (pumping exposure instead of additive bands). `cdsAmount`/`cdsSkew` skew the correlated-double-sampling timing so the reset sample lands on a stale pixel (log 1-48 clocks back): the frame becomes an embossed horizontal derivative with negative trails. `wbRed`/`wbBlue` as in `busBend`. When both physics modules are enabled they share a single inverse/forward ISP pass in signal order (analog -> bus), with WB gains taken from `afeBend`.
+- `busBend`: physics-based ADC data-bus bend (modeled on the PowerShot A520 source/target selector bend), applied first. The image is pushed through an inverse ISP into a 12-bit RGGB Bayer raw stream, replayed clock-by-clock in readout order through a simulated bend circuit, then developed by a forward ISP (black level, WB gains, bilinear demosaic, gamma). `sourceMask`/`targetMask` are integer bitmasks of tapped ADC output bits (source bank reaches D11-D2, target bank D11-D4; multiple pins in a bank short together, pins in both banks merge the source and target nodes). `fn`: `bypass` passes the RC-high-pass-filtered analog edges, `invert` a logic NOT of them, `divide` a flip-flop halving the signal frequency (only interesting when source and target pins overlap — the flip-flop clocks itself off the pins it corrupts). `pot`: the filter pot — low values clamp targets toward ground and pass only sharp edges, high values let multi-scanline streaks through. `targetGnd`: adds the target selector's GND position (drags the target node low). `injectStrength`: how strongly injection wins bus contention; `jitter`: comparator noise (speckle on contended ties); `wbRed`/`wbBlue`: the simulated camera's white-balance gains, which set how corrupted raw explodes into color.
 - `colorBend`: whole-image color surgery — luminance-preserving `hueRotate` (degrees), hard channel reordering (`channelMode`: `gbr`, `brg`, `grb`, `bgr`, `rbg`), per-channel or full inversion (`invert`: `red`/`green`/`blue`/`all`), and `solarize` tone folding.
 - `chromaShift`: spatial RGB mis-registration; red and blue planes shift in opposite directions along `angle`, with optional per-row `wobble`.
 - `gradientWash`: position-driven color field (rainbow sky wash). `keepLuma` re-applies the source luminance so silhouettes survive; `wobble` warps the bands with noise.
