@@ -43,10 +43,42 @@ export function defaultTemporal() {
 
 export const ADVANCED_DEFS = [
   {
+    group: "AFE Bend",
+    key: "afeBend",
+    physics: true,
+    controls: [
+      ["pipeline.afeBend.wave", "Waveform", "select", ["sine", "square", "saw", "noise"]],
+      ["pipeline.afeBend.freq", "Frequency", "range", 0, 1, 0.01],
+      ["pipeline.afeBend.skew", "Band Skew", "range", -0.5, 0.5, 0.01],
+      ["pipeline.afeBend.inject", "Inject", "range", 0, 1, 0.01],
+      ["pipeline.afeBend.gainMod", "Gain Wobble", "range", 0, 1, 0.01],
+      ["pipeline.afeBend.wobble", "Phase Drift", "range", 0, 1, 0.01],
+      ["pipeline.afeBend.cdsAmount", "CDS Ghost", "range", 0, 1, 0.01],
+      ["pipeline.afeBend.cdsSkew", "CDS Lag", "range", 0, 1, 0.01],
+      ["pipeline.afeBend.wbRed", "WB Red Gain", "range", 1, 3.5, 0.01],
+      ["pipeline.afeBend.wbBlue", "WB Blue Gain", "range", 1, 3.5, 0.01]
+    ]
+  },
+  {
+    group: "Bus Bend",
+    key: "busBend",
+    physics: true,
+    controls: [
+      ["pipeline.busBend.sourceMask", "Source DIP", "bits", [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]],
+      ["pipeline.busBend.targetMask", "Target Select", "bits", [11, 10, 9, 8, 7, 6, 5, 4]],
+      ["pipeline.busBend.targetGnd", "Target GND", "boolean"],
+      ["pipeline.busBend.fn", "Function", "select", ["bypass", "invert", "divide"]],
+      ["pipeline.busBend.pot", "Filter Pot", "range", 0, 1, 0.01],
+      ["pipeline.busBend.injectStrength", "Inject Strength", "range", 0, 1, 0.01],
+      ["pipeline.busBend.jitter", "Comparator Noise", "range", 0, 1, 0.01],
+      ["pipeline.busBend.wbRed", "WB Red Gain", "range", 1, 3.5, 0.01],
+      ["pipeline.busBend.wbBlue", "WB Blue Gain", "range", 1, 3.5, 0.01]
+    ]
+  },
+  {
     group: "Cheap Camera",
     key: "cheapCamera",
     controls: [
-      ["pipeline.cheapCamera.enabled", "Enabled", "boolean"],
       ["pipeline.cheapCamera.internalScale", "Internal Scale", "range", 0.25, 1, 0.01],
       ["pipeline.cheapCamera.blur", "Lens Blur", "range", 0, 1, 0.01],
       ["pipeline.cheapCamera.bitDepth", "Bit Depth", "range", 3, 8, 1],
@@ -58,7 +90,6 @@ export const ADVANCED_DEFS = [
     group: "Sync Fault",
     key: "syncFault",
     controls: [
-      ["pipeline.syncFault.enabled", "Enabled", "boolean"],
       ["pipeline.syncFault.tearCount", "Tear Count", "range", 0, 1, 0.01],
       ["pipeline.syncFault.tearShift", "Tear Shift", "range", 0, 1, 0.01],
       ["pipeline.syncFault.wobbleAmount", "Wobble", "range", 0, 1, 0.01],
@@ -70,7 +101,6 @@ export const ADVANCED_DEFS = [
     group: "Bayer Fault",
     key: "bayerFault",
     controls: [
-      ["pipeline.bayerFault.enabled", "Enabled", "boolean"],
       ["pipeline.bayerFault.phaseError", "Phase Error", "range", 0, 3, 1],
       ["pipeline.bayerFault.strength", "Strength", "range", 0, 1, 0.01],
       ["pipeline.bayerFault.zipper", "Zipper Edges", "range", 0, 1, 0.01]
@@ -80,7 +110,6 @@ export const ADVANCED_DEFS = [
     group: "Buffer Ghost",
     key: "bufferGhost",
     controls: [
-      ["pipeline.bufferGhost.enabled", "Enabled", "boolean"],
       ["__ghostSource", "Ghost Source", "ghost"],
       ["pipeline.bufferGhost.amount", "Amount", "range", 0, 1, 0.01],
       ["pipeline.bufferGhost.blockSize", "Block Size", "range", 0, 1, 0.01],
@@ -93,7 +122,6 @@ export const ADVANCED_DEFS = [
     group: "Color Bend",
     key: "colorBend",
     controls: [
-      ["pipeline.colorBend.enabled", "Enabled", "boolean"],
       ["pipeline.colorBend.hueRotate", "Hue Rotate", "range", 0, 360, 1],
       ["pipeline.colorBend.hueStrength", "Hue Strength", "range", 0, 1, 0.01],
       ["pipeline.colorBend.channelMode", "Channel Swap", "select", CHANNEL_MODES],
@@ -107,7 +135,6 @@ export const ADVANCED_DEFS = [
     group: "Chroma Shift",
     key: "chromaShift",
     controls: [
-      ["pipeline.chromaShift.enabled", "Enabled", "boolean"],
       ["pipeline.chromaShift.amount", "Amount", "range", 0, 1, 0.01],
       ["pipeline.chromaShift.angle", "Angle", "range", 0, 360, 1],
       ["pipeline.chromaShift.wobble", "Row Wobble", "range", 0, 1, 0.01]
@@ -117,7 +144,6 @@ export const ADVANCED_DEFS = [
     group: "Exposure Fault",
     key: "exposureFault",
     controls: [
-      ["pipeline.exposureFault.enabled", "Enabled", "boolean"],
       ["pipeline.exposureFault.gain", "Gain", "range", 0.65, 2.2, 0.01],
       ["pipeline.exposureFault.blackCrush", "Black Crush", "range", 0, 1, 0.01],
       ["pipeline.exposureFault.highlightClip", "Highlight Clip", "range", 0, 1, 0.01],
@@ -129,7 +155,6 @@ export const ADVANCED_DEFS = [
     group: "AWB Seizure",
     key: "awbSeizure",
     controls: [
-      ["pipeline.awbSeizure.enabled", "Enabled", "boolean"],
       ["pipeline.awbSeizure.wbSwing", "WB Swing", "range", 0, 1, 0.01],
       ["pipeline.awbSeizure.aeSwing", "AE Swing", "range", 0, 1, 0.01],
       ["pipeline.awbSeizure.bandHeight", "Band Height", "range", 0, 1, 0.01],
@@ -140,7 +165,6 @@ export const ADVANCED_DEFS = [
     group: "Contour Rings",
     key: "contourRings",
     controls: [
-      ["pipeline.contourRings.enabled", "Enabled", "boolean"],
       ["pipeline.contourRings.strength", "Strength", "range", 0, 1, 0.01],
       ["pipeline.contourRings.scale", "Ring Scale", "range", 0, 1, 0.01],
       ["pipeline.contourRings.bandSharpness", "Band Sharpness", "range", 0, 1, 0.01],
@@ -152,7 +176,6 @@ export const ADVANCED_DEFS = [
     group: "False Color",
     key: "falseColor",
     controls: [
-      ["pipeline.falseColor.enabled", "Enabled", "boolean"],
       ["pipeline.falseColor.mode", "Palette", "select", FALSE_COLOR_MODES],
       ["pipeline.falseColor.strength", "Strength", "range", 0, 1, 0.01],
       ["pipeline.falseColor.posterizeLevels", "Posterize", "range", 3, 14, 1],
@@ -166,7 +189,6 @@ export const ADVANCED_DEFS = [
     group: "Gradient Wash",
     key: "gradientWash",
     controls: [
-      ["pipeline.gradientWash.enabled", "Enabled", "boolean"],
       ["pipeline.gradientWash.mode", "Palette", "select", FALSE_COLOR_MODES],
       ["pipeline.gradientWash.strength", "Strength", "range", 0, 1, 0.01],
       ["pipeline.gradientWash.angle", "Angle", "range", 0, 360, 1],
@@ -179,7 +201,6 @@ export const ADVANCED_DEFS = [
     group: "Pixel Sort",
     key: "pixelSort",
     controls: [
-      ["pipeline.pixelSort.enabled", "Enabled", "boolean"],
       ["pipeline.pixelSort.strength", "Strength", "range", 0, 1, 0.01],
       ["pipeline.pixelSort.threshold", "Threshold", "range", 0.05, 0.95, 0.01],
       ["pipeline.pixelSort.window", "Band Window", "range", 0.02, 1, 0.01],
@@ -192,7 +213,6 @@ export const ADVANCED_DEFS = [
     group: "Edge Burn",
     key: "edgeBurn",
     controls: [
-      ["pipeline.edgeBurn.enabled", "Enabled", "boolean"],
       ["pipeline.edgeBurn.strength", "Strength", "range", 0, 1, 0.01],
       ["pipeline.edgeBurn.threshold", "Threshold", "range", 0.02, 0.45, 0.01],
       ["pipeline.edgeBurn.darkOutline", "Dark Outline", "range", 0, 1, 0.01]
@@ -202,7 +222,6 @@ export const ADVANCED_DEFS = [
     group: "Vertical Smear",
     key: "verticalSmear",
     controls: [
-      ["pipeline.verticalSmear.enabled", "Enabled", "boolean"],
       ["pipeline.verticalSmear.strength", "Strength", "range", 0, 1, 0.01],
       ["pipeline.verticalSmear.threshold", "Threshold", "range", 0.05, 0.95, 0.01],
       ["pipeline.verticalSmear.decay", "Decay", "range", 0.65, 0.995, 0.001],
@@ -220,7 +239,6 @@ export const ADVANCED_DEFS = [
     group: "Sensor Noise",
     key: "sensorNoise",
     controls: [
-      ["pipeline.sensorNoise.enabled", "Enabled", "boolean"],
       ["pipeline.sensorNoise.amount", "Amount", "range", 0, 1, 0.01],
       ["pipeline.sensorNoise.colorAmount", "Color Amount", "range", 0, 1, 0.01],
       ["pipeline.sensorNoise.shadowBias", "Shadow Bias", "range", 0, 1, 0.01],
@@ -234,7 +252,6 @@ export const ADVANCED_DEFS = [
     group: "Amp Glow",
     key: "ampGlow",
     controls: [
-      ["pipeline.ampGlow.enabled", "Enabled", "boolean"],
       ["pipeline.ampGlow.strength", "Strength", "range", 0, 1, 0.01],
       ["pipeline.ampGlow.corner", "Corner", "select", ["seeded", "top-left", "top-right", "bottom-left", "bottom-right"]],
       ["pipeline.ampGlow.hue", "Hue", "range", 0, 1, 0.01],
@@ -245,7 +262,6 @@ export const ADVANCED_DEFS = [
     group: "Memory Fault",
     key: "memoryFault",
     controls: [
-      ["pipeline.memoryFault.enabled", "Enabled", "boolean"],
       ["pipeline.memoryFault.interlace", "Interlace", "range", 0, 1, 0.01],
       ["pipeline.memoryFault.blockShift", "Block Shift", "range", 0, 1, 0.01],
       ["pipeline.memoryFault.rowRepeat", "Row Repeat", "range", 0, 1, 0.01],
@@ -256,7 +272,6 @@ export const ADVANCED_DEFS = [
     group: "DCT Crunch",
     key: "dctCrunch",
     controls: [
-      ["pipeline.dctCrunch.enabled", "Enabled", "boolean"],
       ["pipeline.dctCrunch.quality", "Quality", "range", 0, 1, 0.01],
       ["pipeline.dctCrunch.chromaSubsample", "Chroma Subsample", "range", 0, 1, 0.01],
       ["pipeline.dctCrunch.dcDrift", "DC Drift", "range", 0, 1, 0.01],
@@ -269,7 +284,6 @@ export const ADVANCED_DEFS = [
     group: "OSD Overlay",
     key: "osdOverlay",
     controls: [
-      ["pipeline.osdOverlay.enabled", "Enabled", "boolean"],
       ["pipeline.osdOverlay.datestamp", "Datestamp", "boolean"],
       ["pipeline.osdOverlay.hudIcons", "HUD Icons", "boolean"],
       ["pipeline.osdOverlay.glitchText", "Glitch Text", "range", 0, 1, 0.01],
@@ -280,6 +294,29 @@ export const ADVANCED_DEFS = [
 ];
 
 export const ADVANCED_CONTROL_HELP = {
+  "pipeline.afeBend.enabled": "Turns the analog-front-end bend on or off (oscillator injection, gain wobble, CDS ghosting before the ADC).",
+  "pipeline.afeBend.wave": "Oscillator shape injected into the analog path: sine hums, square slams, saw sweeps, noise is sample-and-hold static.",
+  "pipeline.afeBend.freq": "Oscillator frequency in cycles per sensor row (log sweep): low = rolling horizontal hum bands, high = moire against the pixel clock.",
+  "pipeline.afeBend.skew": "Extra oscillator phase creep per row; tilts the interference bands.",
+  "pipeline.afeBend.inject": "How much oscillator voltage is added into the pixel stream.",
+  "pipeline.afeBend.gainMod": "Oscillator modulating the analog gain / ADC reference instead: exposure that pumps rather than bands that add.",
+  "pipeline.afeBend.wobble": "Seeded oscillator phase drift so bands breathe and wander instead of locking.",
+  "pipeline.afeBend.cdsAmount": "Correlated-double-sampling fault: the reset sample lands on a stale pixel, turning the frame into an embossed derivative with negative trails.",
+  "pipeline.afeBend.cdsSkew": "How stale the CDS reset sample is, in clocks (log 1-48): trail length of the emboss ghost.",
+  "pipeline.afeBend.wbRed": "Simulated camera red white-balance gain applied when the bent raw is developed.",
+  "pipeline.afeBend.wbBlue": "Simulated camera blue white-balance gain applied when the bent raw is developed.",
+
+  "pipeline.busBend.enabled": "Turns the physics-based ADC data-bus bend on or off.",
+  "pipeline.busBend.sourceMask": "DIP switches tapping ADC output bits D11 (brightness MSB) down to D2. Multiple switches short those bits together.",
+  "pipeline.busBend.targetMask": "Selects which ADC bits receive the bent signal. Multiple targets short together and fight the injection.",
+  "pipeline.busBend.targetGnd": "Adds the GND position of the target selector, dragging the target node toward logic low.",
+  "pipeline.busBend.fn": "Bypass passes the filtered analog signal; invert drives a logic NOT of it; divide clocks a flip-flop that halves the signal frequency.",
+  "pipeline.busBend.pot": "The high-pass filter pot. Low settings clamp targets hard and pass only sharp edges; high settings let long decaying streaks through.",
+  "pipeline.busBend.injectStrength": "How strongly the injected signal wins bus contention against the ADC's own pin drivers.",
+  "pipeline.busBend.jitter": "Analog comparator noise; breaks contended-voltage ties into speckle.",
+  "pipeline.busBend.wbRed": "Simulated camera red white-balance gain applied after the corrupted raw is developed.",
+  "pipeline.busBend.wbBlue": "Simulated camera blue white-balance gain applied after the corrupted raw is developed.",
+
   "pipeline.cheapCamera.enabled": "Turns the cheap camera degradation stage on or off.",
   "pipeline.cheapCamera.internalScale": "Downscales internally before upscaling; lower values make chunkier pixels and stronger low-end camera artifacts.",
   "pipeline.cheapCamera.blur": "Softens the source like a poor lens before later damage is applied.",
@@ -435,6 +472,31 @@ function defaultMacros() {
 
 function defaultPipeline() {
   return {
+    afeBend: {
+      enabled: false,
+      wave: "sine",
+      freq: 0.18,
+      skew: 0,
+      inject: 0.35,
+      gainMod: 0,
+      wobble: 0.1,
+      cdsAmount: 0,
+      cdsSkew: 0.3,
+      wbRed: 2,
+      wbBlue: 1.5
+    },
+    busBend: {
+      enabled: false,
+      sourceMask: 0,
+      targetMask: 0,
+      targetGnd: false,
+      fn: "bypass",
+      pot: 0.5,
+      injectStrength: 0.55,
+      jitter: 0.08,
+      wbRed: 2,
+      wbBlue: 1.5
+    },
     cheapCamera: {
       enabled: true,
       internalScale: 0.8,

@@ -1,4 +1,7 @@
 import { clamp, fbmNoise, fract, hashSigned, hashUnit, lerp, smoothstep } from "./utils.js";
+import { imageToRaw, rawToImage, wbGains } from "./raw-domain.js";
+import { afeBendActive, applyAfeBendRaw } from "./afe-bend.js";
+import { busBendActive, applyBusBendRaw } from "./bus-bend.js";
 
 const PALETTES = {
   "solarized-ccd": [
@@ -104,6 +107,7 @@ export function processCircuitBendImageData(image, preset, resources = {}, optio
   // when the structural seed is held; stills leave it equal to the seed.
   const liveSeed = Number.isFinite(options.liveSeed) ? options.liveSeed : seed;
   const pipeline = preset.pipeline;
+  applyPhysicsRail(image, pipeline, seed, liveSeed);
   applyCheapScale(image, pipeline.cheapCamera);
   applySoftFocus(image, pipeline.cheapCamera);
   applySyncFault(image, pipeline.syncFault, seed);
@@ -126,6 +130,21 @@ export function processCircuitBendImageData(image, preset, resources = {}, optio
   applyFinalCrunch(image, pipeline);
   applyOsdOverlay(image, pipeline.osdOverlay, seed);
   return image;
+}
+
+// The physics rail runs first: circuit-level bends corrupt the sensor signal
+// before any of the camera's (or our) image processing exists. One raw round
+// trip covers every enabled physics module, in true signal order
+// (analog front end -> ADC data bus), so their damage compounds physically.
+function applyPhysicsRail(image, pipeline, seed, liveSeed) {
+  const afeOn = afeBendActive(pipeline.afeBend);
+  const busOn = busBendActive(pipeline.busBend);
+  if (!afeOn && !busOn) return;
+  const wb = wbGains(afeOn ? pipeline.afeBend : pipeline.busBend);
+  const raw = imageToRaw(image, wb);
+  if (afeOn) applyAfeBendRaw(raw, image.width, image.height, pipeline.afeBend, seed);
+  if (busOn) applyBusBendRaw(raw, image.width, image.height, pipeline.busBend, seed, liveSeed);
+  rawToImage(image, raw, wb);
 }
 
 function applyCheapScale(image, config) {

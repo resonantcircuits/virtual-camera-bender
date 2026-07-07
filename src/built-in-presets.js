@@ -1046,5 +1046,87 @@ export const BUILT_IN_PRESETS = [
       verticalSmear: { enabled: false, strength: 0 },
       falseColor: { mode: "solarized-ccd", posterizeLevels: 5 }
     }
+  }),
+  // --- busBend physics presets: simulated logic-chip bend on the ADC data
+  // bus (PowerShot A520 source/target selector bend). All other plausibility
+  // modules stay off or minimal so the circuit's own artifacts carry the look.
+  createPreset({
+    name: "Rainbow Bus Tap",
+    description: "Low ADC bits filtered into the brightness MSBs: banded psychedelic contour fields.",
+    tags: ["bus-bend", "physics", "hpf", "contour"],
+    seed: 52011,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      busBend: { enabled: true, sourceMask: 96, targetMask: 2560, fn: "bypass", pot: 0.45 },
+      dctCrunch: { enabled: true, quality: 0.72, chromaSubsample: 0.45, generations: 1 }
+    }
+  }),
+  createPreset({
+    name: "Logic Negative",
+    description: "A NAND gate inverts the bus edges into the mid bits: mauve posterized negatives.",
+    tags: ["bus-bend", "physics", "invert", "negative"],
+    seed: 52021,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      busBend: { enabled: true, sourceMask: 3072, targetMask: 896, fn: "invert", pot: 0.5 },
+      dctCrunch: { enabled: true, quality: 0.72, chromaSubsample: 0.45, generations: 1 }
+    }
+  }),
+  createPreset({
+    name: "Divide By Two",
+    description: "A flip-flop halves the bus frequency back onto its own pins: chaotic shifting scanlines.",
+    tags: ["bus-bend", "physics", "divide", "scanline"],
+    seed: 52031,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      busBend: { enabled: true, sourceMask: 960, targetMask: 960, fn: "divide", pot: 0.5 },
+      dctCrunch: { enabled: true, quality: 0.72, chromaSubsample: 0.45, generations: 1 }
+    },
+    temporal: { mode: "flicker" }
+  }),
+  createPreset({
+    name: "Ground Loop",
+    description: "Mains hum injected into the analog path: rolling horizontal interference bands.",
+    tags: ["afe-bend", "physics", "hum", "bands"],
+    seed: 52051,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      afeBend: { enabled: true, wave: "sine", freq: 0.12, inject: 0.32, wobble: 0.3 },
+      dctCrunch: { enabled: true, quality: 0.74, chromaSubsample: 0.4, generations: 1 }
+    },
+    temporal: { driftAmount: 0.18, driftSpeed: 0.5 }
+  }),
+  createPreset({
+    name: "Carrier Clash",
+    description: "A square-wave carrier beating against the pixel clock: tilted moire and pumping gain.",
+    tags: ["afe-bend", "physics", "moire", "oscillator"],
+    seed: 52061,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      afeBend: { enabled: true, wave: "square", freq: 0.72, skew: 0.18, inject: 0.3, gainMod: 0.25, wobble: 0.12 },
+      dctCrunch: { enabled: true, quality: 0.72, chromaSubsample: 0.45, generations: 1 }
+    }
+  }),
+  createPreset({
+    name: "Reset Ghost",
+    description: "CDS sampling the wrong pixel: the frame collapses into an embossed derivative with negative trails.",
+    tags: ["afe-bend", "physics", "cds", "emboss"],
+    seed: 52071,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      afeBend: { enabled: true, inject: 0, cdsAmount: 0.85, cdsSkew: 0.45 },
+      dctCrunch: { enabled: true, quality: 0.76, chromaSubsample: 0.4, generations: 1 }
+    }
+  }),
+  createPreset({
+    name: "Cloud Solarizer",
+    description: "One MSB gently leaks into the next bit down: pastel solarized skies, clean midtones.",
+    tags: ["bus-bend", "physics", "solarize", "subtle"],
+    seed: 52041,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      busBend: { enabled: true, sourceMask: 2048, targetMask: 1024, fn: "bypass", pot: 0.7 },
+      dctCrunch: { enabled: true, quality: 0.78, chromaSubsample: 0.4, generations: 1 }
+    }
   })
 ];
