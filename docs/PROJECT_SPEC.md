@@ -116,7 +116,7 @@ The engine (`src/engine-core.js`) runs a fixed camera-circuit pipeline:
 
 ```text
 Input image
--> physics rail (one raw round trip: inverse ISP -> 12-bit Bayer raw -> afeBend -> busBend -> forward ISP)
+-> physics rail (one raw round trip: inverse ISP -> 12-bit Bayer raw -> irCut -> ccdClock -> afeBend -> railSag -> busBend -> masterClock -> addressBus -> forward ISP)
 -> cheap-camera downscale + lens blur
 -> sync fault (frame-wrap tears + rolling-shutter wobble)
 -> bayer fault (wrong-phase demosaic checkerboards + zipper edges)
@@ -188,7 +188,7 @@ Determinism is desirable but not absolute. Presets store seeds and reproduce the
 
 Presets are full-system configurations, not separate special effects. They act as starting points: loading one copies its settings into the editor, after which every control and randomizer works from the current state.
 
-The app ships with 22 built-in cameras. The original five:
+The app ships with 53 built-in cameras (the Phase 6/7/8 physics modules each added theirs — see those sections). The original five:
 
 - `Bent CCD-03`: strong magenta/cyan clipping, medium vertical melt
 - `Dead Flash Compact`: blown highlights, hard edge burn, noisy shadows
@@ -328,7 +328,7 @@ Phase 6 proved that simulating the actual circuit beats approximating its look. 
 
 ```text
 charge domain -> analog domain -> ADC data bus -> memory -> codec
-(ccdClock, done) (afeBend, done) (busBend, done)  (addressBus) (jpegStream)
+(ccdClock, done) (afeBend, done) (busBend, done)  (addressBus, done) (jpegStream)
 ```
 
 **0. Shared raw-domain harness (`src/raw-domain.js`) — done 2026-07-07**
@@ -346,13 +346,14 @@ Where busBend is harsh and posterized, this module is liquid: smooth interferenc
 Before there are bits or even voltages, the image is charge packets marched by multi-phase transfer clocks (V1/V2 row clocks, H1/H2 register clocks). Model the sensor as charge buckets and corrupt the transfer schedule: skipped V pulses (row repeats + charge accumulation), doubled pulses (row skips), partial transfer efficiency (a fraction of charge left behind each shift → *physical* vertical smear, unlike the painterly `verticalSmear`), inter-well mixing, and H-register glitches for per-row horizontal shear. Geometric melt — the NOYSTOISE look, and the A520 author's own "future work" item.
 Shipped as `src/ccd-clock.js`, first on the rail. Four mechanisms in charge domain (raw minus pedestal, always ≥ 0): anti-blooming failure (lowered full-well depth; overflow spills up/down the column, drained at a limited rate so spikes decay exponentially — knob sweeps from sharp light spikes to full smear pillars), leaky vertical transfer (melt coefficient log-swept in decay length ~1–500 normalized rows, compensated per row as γ^rowRate), V-pulse stall/jump events (a stall of odd length flips the Bayer row phase and color-swaps everything below — physically real, kept), and H-register shear bands (bimodal thin/thick thickness per the reference doc's slice statistics, offsets to ±20% width, wraparound, rainbow fringes from odd offsets). Validated: idle bit-identical, melt/spike scale matches 720px↔6240px, flat-field drip direction and length match the reference IIR, 38-frame video clean. Built-in presets (phenotype pack begins): `A540 Melt`, `A530 Warp` (46 total).
 
-**3. `addressBus` — frame-buffer address-line bend (memory domain)**
+**3. `addressBus` — frame-buffer address-line bend (memory domain) — done 2026-07-08**
 `memoryFault` is painterly; the physical version shorts or sticks *address lines* on the SDRAM, so memory aliases in exact powers of two: mirrored tiles, interleaved row pairs, ping-ponged halves — crystalline deterministic repetition, nothing like random block damage. Cheap to simulate (remap read addresses through a corrupted-bit function) and very distinct.
+Shipped as `src/address-bus.js`, *last* on the rail (the frame buffer holds the stream the DSP already captured, so memory faults land after `masterClock`'s re-framing). Each axis draws 1-3 seeded line faults (stuck low / stuck high / bridged to a neighbour line / two lines swapped) folded into per-axis read-address lookup maps. Implementation notes: fault bit positions are normalized to log2 of the frame dimension so tile scale tracks resolution (verified 720px↔1440px); faults at bit ≥ 1 preserve CFA parity, so the crystalline folds develop with clean color — bit-0 faults are the only Bayer-breakers and get their own `lowBit` dose (the masterClock `shred` lesson); `duty` gates each axis's fault on and off down the readout with the railSag low-passed-noise pattern (unit-variance AR(1) drive), so marginal contacts tear in bands instead of folding the whole frame. Validated: idle bit-identical, existing physics presets bit-identical after the rail change, 39 fps video at 480px. Built-in presets: `S9000 Tear` (seed 58111, flaky-contact tearing per the FinePix S9000's documented frame-buffer corruption), `Mirror Bank` (seed 47017, solid-contact crystalline fold) — 53 total.
 
 **4. `jpegStream` — entropy-domain bitstream corruption (codec domain)**
 `dctCrunch` damages coefficients; real corrupt JPEGs damage the *Huffman bitstream*, so everything after a flipped bit decodes wrong until the next restart marker — the classic cascading shear-and-hue-slide. Needs a small sequential JPEG encoder/decoder pair (encode with restart markers, flip seeded bits, tolerant decode). Largest effort of the four; consider last.
 
-Build order by distinctness-per-effort: **afeBend → ccdClock → addressBus → jpegStream**. Each lands with the standard integration checklist (Phase 5) plus a physics-validation gate: CLI contact sheets, identity round-trip clean when idle, and at least one seeded config matching a documented real-bend behavior.
+Build order by distinctness-per-effort: **afeBend (done) → ccdClock (done) → addressBus (done) → jpegStream**. Each lands with the standard integration checklist (Phase 5) plus a physics-validation gate: CLI contact sheets, identity round-trip clean when idle, and at least one seeded config matching a documented real-bend behavior.
 
 ### Phase 8: More Physics Bends — the Deep-Research Harvest (ideated 2026-07-08)
 
@@ -366,7 +367,7 @@ The rail grows at both ends: optics before charge, power and master clock undern
 
 ```text
 optics -> charge domain -> analog domain -> ADC data bus -> memory -> codec
-(irCut)   (ccdClock, P7)   (afeBend ✓)     (busBend ✓)     (addressBus, P7) (jpegStream, P7)
+(irCut ✓) (ccdClock ✓)     (afeBend ✓)     (busBend ✓)     (addressBus ✓)   (jpegStream, P7)
           └────────────── masterClock warps the timing of all of it ──────────────┘
           └────────────── railSag sags the supply under all of it ────────────────┘
 ```
@@ -383,8 +384,9 @@ Shipped as `src/master-clock.js`, *last* on the rail (the DSP re-frames the alre
 Three doc-sourced extensions to the shipped module: (a) *series resistance* — real benders put 20–100 Ω in the patch line; a `resistance` param softens the hard drive-fight short into a weighted average with partial comparator uncertainty, opening a continuum between clean and fully shorted buses; (b) *common effects bus* — multiple source pins onto one shared node so composite multi-pin collisions resolve together (the DC42 cumulative-corruption look) instead of pairwise; (c) *corrosion map* — see item 6.
 Shipped: `resistance` mixes each pin's wire between its own drive and the shared node (`k = 1/(1+2.2r²)`; at 0 the math and the rnd stream are exactly v1 — all four v1 bus presets verified bit-identical) and `commonBus` forces the merged-node path regardless of mask overlap. The middle of the resistance range is new territory: legible images under analog confetti speckle, where v1 could only posterize. Overloaded common buses (many pins + pot DC load) black the frame out, exactly like a real bender's bad patch. Built-in preset: `DC42 Night Solarize` (49 total). Corrosion (c) still deferred to item 6.
 
-**4. `irCut` — IR-cut filter removal (optical domain)**
+**4. `irCut` — IR-cut filter removal (optical domain) — done 2026-07-08**
 The DSC-V1 magnetic filter bypass: not corruption but a spectral mod, and the rail's first pre-charge module. In linear domain before mosaic: a channel-crosstalk matrix leaks a synthesized IR plane (red-weighted luminance with lifted shadows — hot things glow regardless of color) into all three channels, red most; WB then fights it, giving the classic full-spectrum pink-white foliage and translucent dark fabrics; a soft red-channel bloom models sensor IR halation. Extends the instrument's range beyond glitch into the dreamy end — pairs beautifully *under* the corruption modules since a bent full-spectrum camera is a real object people build.
+Shipped as `src/ir-cut.js`, first on the rail (optics before charge). The NIR plane is synthesized at half resolution from each RGGB quad (0.5R + 0.32G + 0.05B — Rayleigh-scattered blue skies carry almost no IR and go dark), with the Wood effect keyed on *greenness ratio* at near-absolute brightness so foliage glows white-pink regardless of how dark it looks in visible light, box-blurred for halation (IR focuses behind the sensor plane), then leaked into every well per CFA parity with auto-exposure pulling the level back down. `strength` (filter pull), `spectrum` (deep-NIR ghost-white ↔ red-heavy pink cast), `wood`, `haze`, plus the rail WB gains — low red gains tip the develop toward swapped aerochrome palettes. Built-in presets: `V1 Full Spectrum` (seed 30103), `Chlorophyll Ghost` (seed 30109) — 51 total at the time.
 
 **5. Audio-reactive bending (app + temporal, not a module)**
 The doc's amplified-mic-into-clock bend. The engine stays browser-free: modulation is just per-frame param values, which the temporal engine already delivers. App side: mic amplitude → `afeBend.inject`/`freq` (and later `railSag` load) in live preview. CLI side: `render-video --audio <file>` extracts an amplitude envelope and feeds the same params, so corruption bands pulse with the soundtrack. Prerequisite: an `duty` param on `afeBend`'s square wave (the doc modulates duty cycle, `D(t) = D_base + κ·clamp(A_audio)`), a tiny v1.1 extension worth doing regardless.
@@ -392,9 +394,9 @@ The doc's amplified-mic-into-clock bend. The engine stays browser-free: modulati
 **6. Corrosion map — the virtual chassis (meta-feature)**
 Solder bridges age and boards corrode: a persistent, seeded per-"camera body" fault layer — a handful of permanent soft shorts and resistive leaks (biases injected into `busBend`/`railSag` configs) that survive across sessions until a "board cleanup" action wipes them. Turns the app from a filter into an instrument with a history; purely additive state layered on existing params, no engine changes. Design open: where the chassis lives (localStorage vs preset-adjacent file) and whether corrosion accrues with use.
 
-Also: a **phenotype preset pack** — one seeded preset per documented camera in the reference database (`S9000 Tear`, `A540 Melt`, `DC42 Night Solarize`, `EasyShare Freeze`, `V1 Full Spectrum`, …), each landing with the module that enables its documented look. These double as the physics-validation gates.
+Also: a **phenotype preset pack** — one seeded preset per documented camera in the reference database (`S9000 Tear` ✓, `A540 Melt` ✓, `DC42 Night Solarize` ✓, `EasyShare Freeze`, `V1 Full Spectrum` ✓, …), each landing with the module that enables its documented look. These double as the physics-validation gates.
 
-Build order interleaved with the Phase 7 remainder, by distinctness-per-effort: **railSag (done 2026-07-08) → ccdClock (P7, done 2026-07-08) → masterClock (done 2026-07-08) → busBend v2 (done 2026-07-08, corrosion deferred) → irCut → addressBus (P7) → audio-reactive → corrosion map → jpegStream (P7)**. Same integration checklist and physics-validation gate as Phase 7 (plus, since the module info buttons landed: an `ADVANCED_MODULE_HELP` entry per new module).
+Build order interleaved with the Phase 7 remainder, by distinctness-per-effort: **railSag (done 2026-07-08) → ccdClock (P7, done 2026-07-08) → masterClock (done 2026-07-08) → busBend v2 (done 2026-07-08, corrosion deferred) → irCut (done 2026-07-08) → addressBus (P7, done 2026-07-08) → audio-reactive → corrosion map → jpegStream (P7)**. Same integration checklist and physics-validation gate as Phase 7 (plus, since the module info buttons landed: an `ADVANCED_MODULE_HELP` entry per new module).
 
 ## Decisions Made (formerly Open Decisions)
 

@@ -6,6 +6,7 @@ import { afeBendActive, applyAfeBendRaw } from "./afe-bend.js";
 import { railSagActive, applyRailSagRaw } from "./rail-sag.js";
 import { busBendActive, applyBusBendRaw } from "./bus-bend.js";
 import { masterClockActive, applyMasterClockRaw } from "./master-clock.js";
+import { addressBusActive, applyAddressBusRaw } from "./address-bus.js";
 
 const PALETTES = {
   "solarized-ccd": [
@@ -140,7 +141,8 @@ export function processCircuitBendImageData(image, preset, resources = {}, optio
 // before any of the camera's (or our) image processing exists. One raw round
 // trip covers every enabled physics module, in true signal order
 // (optics -> charge transfer -> analog front end -> supply rail at the ADC ->
-// ADC data bus -> DSP capture framing), so their damage compounds physically.
+// ADC data bus -> DSP capture framing -> frame-buffer memory), so their
+// damage compounds physically.
 function applyPhysicsRail(image, pipeline, seed, liveSeed) {
   const irOn = irCutActive(pipeline.irCut);
   const ccdOn = ccdClockActive(pipeline.ccdClock);
@@ -148,7 +150,8 @@ function applyPhysicsRail(image, pipeline, seed, liveSeed) {
   const sagOn = railSagActive(pipeline.railSag);
   const busOn = busBendActive(pipeline.busBend);
   const clkOn = masterClockActive(pipeline.masterClock);
-  if (!irOn && !ccdOn && !afeOn && !sagOn && !busOn && !clkOn) return;
+  const memOn = addressBusActive(pipeline.addressBus);
+  if (!irOn && !ccdOn && !afeOn && !sagOn && !busOn && !clkOn && !memOn) return;
   const wbSource = irOn
     ? pipeline.irCut
     : ccdOn
@@ -159,7 +162,9 @@ function applyPhysicsRail(image, pipeline, seed, liveSeed) {
           ? pipeline.railSag
           : busOn
             ? pipeline.busBend
-            : pipeline.masterClock;
+            : clkOn
+              ? pipeline.masterClock
+              : pipeline.addressBus;
   const wb = wbGains(wbSource);
   const raw = imageToRaw(image, wb);
   if (irOn) applyIrCutRaw(raw, image.width, image.height, pipeline.irCut);
@@ -168,6 +173,7 @@ function applyPhysicsRail(image, pipeline, seed, liveSeed) {
   if (sagOn) applyRailSagRaw(raw, image.width, image.height, pipeline.railSag, seed, liveSeed);
   if (busOn) applyBusBendRaw(raw, image.width, image.height, pipeline.busBend, seed, liveSeed);
   if (clkOn) applyMasterClockRaw(raw, image.width, image.height, pipeline.masterClock, seed);
+  if (memOn) applyAddressBusRaw(raw, image.width, image.height, pipeline.addressBus, seed);
   rawToImage(image, raw, wb);
 }
 

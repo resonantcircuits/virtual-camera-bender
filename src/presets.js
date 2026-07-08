@@ -130,6 +130,20 @@ export const ADVANCED_DEFS = [
     ]
   },
   {
+    group: "Address Bus",
+    key: "addressBus",
+    physics: true,
+    controls: [
+      ["pipeline.addressBus.rows", "Row Lines", "range", 0, 1, 0.01],
+      ["pipeline.addressBus.cols", "Column Lines", "range", 0, 1, 0.01],
+      ["pipeline.addressBus.scale", "Tile Scale", "range", 0, 1, 0.01],
+      ["pipeline.addressBus.lowBit", "Pixel Grind", "range", 0, 1, 0.01],
+      ["pipeline.addressBus.duty", "Contact", "range", 0, 1, 0.01],
+      ["pipeline.addressBus.wbRed", "WB Red Gain", "range", 1, 3.5, 0.01],
+      ["pipeline.addressBus.wbBlue", "WB Blue Gain", "range", 1, 3.5, 0.01]
+    ]
+  },
+  {
     group: "Cheap Camera",
     key: "cheapCamera",
     controls: [
@@ -372,6 +386,10 @@ export const ADVANCED_MODULE_HELP = {
     short: "Reclocks the whole camera so the processor captures the pixel stream at the wrong rate.",
     long: "Master Clock emulates swapping the crystal oscillator (the LTC1799 mod). The capture rate no longer matches the sensor readout, so content stretches, lines skew, and the picture rolls vertically; the sync circuit catches and loses lock in visible tears, and heavy detune shreds color because the Bayer pattern is sampled out of phase."
   },
+  addressBus: {
+    short: "Sticks and bridges the frame buffer's memory address lines so the image reads back aliased.",
+    long: "Address Bus corrupts the SDRAM address lines under the captured frame. Because addresses are binary, a stuck or bridged line aliases memory in exact powers of two: mirrored tiles, interleaved row pairs, ping-ponged frame halves — crystalline, deterministic repetition, nothing like random block damage. A flaky contact makes the fault come and go down the readout, tearing the frame in bands instead of folding all of it."
+  },
   cheapCamera: {
     short: "Adds low-end camera processing: tiny internal scale, blur, posterization, dither, and harsh sharpening.",
     long: "This stage emulates the compromises of a weak compact sensor pipeline. The image can be softened before processing, resized through a smaller internal buffer, quantized to fewer color steps, dithered, and sharpened into brittle edges."
@@ -507,6 +525,15 @@ export const ADVANCED_CONTROL_HELP = {
   "pipeline.masterClock.shred": "Fraction of rows whose sample clock slips at pixel level: those lines capture the color mosaic out of phase and develop into colored static.",
   "pipeline.masterClock.wbRed": "Simulated camera red white-balance gain applied when the bent raw is developed.",
   "pipeline.masterClock.wbBlue": "Simulated camera blue white-balance gain applied when the bent raw is developed.",
+
+  "pipeline.addressBus.enabled": "Turns the frame-buffer address-line bend on or off (mirrored tiles, interleaved rows, ping-ponged halves).",
+  "pipeline.addressBus.rows": "How badly the row address lines are damaged: more faults fold, interleave, and repeat horizontal bands of the frame.",
+  "pipeline.addressBus.cols": "How badly the column address lines are damaged: more faults mirror and interleave the frame side to side.",
+  "pipeline.addressBus.scale": "Which address lines the faults land on: low hits the fine lines (pixel-pair and small-tile interleaves), high folds whole halves of the frame.",
+  "pipeline.addressBus.lowBit": "Chance a fault lands on the lowest address line — the only one that breaks the color mosaic, so aliased regions develop color-swapped.",
+  "pipeline.addressBus.duty": "How much of the readout the bad contact is actually failing: 1 is a solid short folding the whole frame, lower values tear in and out in bands.",
+  "pipeline.addressBus.wbRed": "Simulated camera red white-balance gain applied when the bent raw is developed.",
+  "pipeline.addressBus.wbBlue": "Simulated camera blue white-balance gain applied when the bent raw is developed.",
 
   "pipeline.cheapCamera.enabled": "Turns the cheap camera degradation stage on or off.",
   "pipeline.cheapCamera.internalScale": "Downscales internally before upscaling; lower values make chunkier pixels and stronger low-end camera artifacts.",
@@ -723,6 +750,16 @@ function defaultPipeline() {
       drift: 0.3,
       hLock: 0.6,
       shred: 0.2,
+      wbRed: 2,
+      wbBlue: 1.5
+    },
+    addressBus: {
+      enabled: false,
+      rows: 0.55,
+      cols: 0.3,
+      scale: 0.55,
+      lowBit: 0.15,
+      duty: 0.85,
       wbRed: 2,
       wbBlue: 1.5
     },

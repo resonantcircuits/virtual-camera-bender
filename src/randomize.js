@@ -10,7 +10,7 @@ const MODES = {
 
 export const RANDOM_FAMILIES = [
   ["global", "Global", "Build a whole new camera: re-rolls all macros and modules, new name and seed"],
-  ["physics", "Physics", "Re-roll the physics rail only: IR filter, charge-transfer clock, analog front end, supply rail, data bus, and master clock — keeps the rest"],
+  ["physics", "Physics", "Re-roll the physics rail only: IR filter, charge-transfer clock, analog front end, supply rail, data bus, master clock, and frame-buffer memory — keeps the rest"],
   ["color", "Color", "Re-roll color only: palette, hue/channel bends, gradient wash, WB hunting — keeps the rest"],
   ["melt", "Melt", "Re-roll smear and pixel-sort drips — keeps the rest"],
   ["burn", "Burn", "Re-roll exposure clipping, contour rings, and edge fringes — keeps the rest"],
@@ -115,6 +115,23 @@ export const MODULE_RANDOMIZERS = {
     clk.shred = rng() < 0.6 ? randomRange(0.05, 0.5, rng) : 0;
     clk.wbRed = randomRange(1.6, 2.4, rng);
     clk.wbBlue = randomRange(1.2, 1.9, rng);
+  },
+  addressBus(preset, mode, rng) {
+    const mem = preset.pipeline.addressBus;
+    mem.enabled = true;
+    // One axis leads each roll; both at full strength folds the frame into
+    // unreadable confetti.
+    const coupling = rng();
+    mem.rows = coupling < 0.65 ? intensity(mode, rng, 0.3, 0.9) : rng() < 0.45 ? randomRange(0.1, 0.4, rng) : 0;
+    mem.cols = coupling >= 0.65 ? intensity(mode, rng, 0.3, 0.9) : rng() < 0.45 ? randomRange(0.1, 0.4, rng) : 0;
+    if (mem.rows === 0 && mem.cols === 0) mem.rows = intensity(mode, rng, 0.3, 0.8);
+    mem.scale = randomRange(0.15, 0.9, rng);
+    mem.lowBit = rng() < 0.35 ? randomRange(0.1, 0.6, rng) : 0;
+    // Flaky contacts (tearing bands) are the common look; solid shorts that
+    // fold the whole frame stay a deliberate minority.
+    mem.duty = rng() < 0.7 ? randomRange(0.3, 0.75, rng) : randomRange(0.75, 1, rng);
+    mem.wbRed = randomRange(1.6, 2.4, rng);
+    mem.wbBlue = randomRange(1.2, 1.9, rng);
   },
   busBend(preset, mode, rng) {
     const bend = preset.pipeline.busBend;
@@ -481,11 +498,17 @@ function randomizeGlobal(preset, mode, rng) {
 
 // The rail's modules in signal order, with the damping applied when circuits
 // stack — two full-strength physics bends erase the subject entirely.
-const PHYSICS_MODULES = ["irCut", "ccdClock", "afeBend", "railSag", "busBend", "masterClock"];
+const PHYSICS_MODULES = ["irCut", "ccdClock", "afeBend", "railSag", "busBend", "masterClock", "addressBus"];
 const PHYSICS_DAMPERS = {
   irCut(ir) {
     ir.strength *= 0.75;
     ir.haze *= 0.7;
+  },
+  addressBus(mem) {
+    mem.rows *= 0.65;
+    mem.cols *= 0.65;
+    mem.lowBit *= 0.5;
+    mem.duty = Math.min(mem.duty, 0.6);
   },
   masterClock(clk) {
     clk.detune *= 0.55;

@@ -1198,6 +1198,30 @@ export const BUILT_IN_PRESETS = [
     temporal: { driftAmount: 0.1, driftSpeed: 0.4 }
   }),
   createPreset({
+    name: "S9000 Tear",
+    description: "Flaky SDRAM address contact: the frame buffer reads back in torn, repeated bands under colored digital noise.",
+    tags: ["address-bus", "physics", "tear", "memory"],
+    seed: 58111,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      addressBus: { enabled: true, rows: 0.65, cols: 0.25, scale: 0.5, lowBit: 0.35, duty: 0.45, wbRed: 2.1, wbBlue: 1.4 },
+      dctCrunch: { enabled: true, quality: 0.74, chromaSubsample: 0.4, generations: 1 }
+    },
+    temporal: { driftAmount: 0.1, driftSpeed: 0.35 }
+  }),
+  createPreset({
+    name: "Mirror Bank",
+    description: "Address lines soldered solid: the frame folds into crystalline mirrored tiles and ping-ponged halves.",
+    tags: ["address-bus", "physics", "mirror", "memory"],
+    seed: 47017,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      addressBus: { enabled: true, rows: 0.5, cols: 0.6, scale: 0.85, lowBit: 0, duty: 1 },
+      dctCrunch: { enabled: true, quality: 0.76, chromaSubsample: 0.4, generations: 1 }
+    },
+    temporal: { driftAmount: 0.08, driftSpeed: 0.3 }
+  }),
+  createPreset({
     name: "Brownout",
     description: "Supply rail sagging under load: broad breathing exposure bands with sparse row failures.",
     tags: ["rail-sag", "physics", "brownout", "bands"],
