@@ -114,7 +114,7 @@
 
           <section class="panel-section">
             <details>
-              <summary class="panel-summary"><span>Physics Rail</span><button id="physicsAllOffButton" class="all-off-button" type="button" title="Switch off every physics module">ALL OFF</button></summary>
+              <summary class="panel-summary"><span>Physics Rail</span><span class="panel-summary-actions"><button id="physicsAllOffButton" class="all-off-button" type="button" title="Switch off every physics module">ALL OFF</button><button id="physicsResetAllButton" class="reset-all-button" type="button" title="Reset every physics module to defaults">RESET ALL</button></span></summary>
               <p class="hint circuit-note">Simulated bend circuitry on the raw sensor signal (analog front end, ADC data bus). Runs before every module below; macros never touch it.</p>
               <div id="physicsControls" class="advanced-stack"></div>
             </details>
@@ -122,7 +122,7 @@
 
           <section class="panel-section">
             <details>
-              <summary class="panel-summary"><span>Stylized Circuit</span><button id="stylizedAllOffButton" class="all-off-button" type="button" title="Switch off every stylized module">ALL OFF</button></summary>
+              <summary class="panel-summary"><span>Stylized Circuit</span><span class="panel-summary-actions"><button id="stylizedAllOffButton" class="all-off-button" type="button" title="Switch off every stylized module">ALL OFF</button><button id="stylizedResetAllButton" class="reset-all-button" type="button" title="Reset every stylized module to defaults">RESET ALL</button></span></summary>
               <p class="hint circuit-note">Artistic approximations of camera damage — color, melt, burn, noise, memory, codec. The macro dials drive these; fine-tune each module here.</p>
               <div id="advancedControls" class="advanced-stack"></div>
             </details>
@@ -130,7 +130,7 @@
 
           <section class="panel-section">
             <details open>
-              <summary class="panel-summary"><span>Classic Edit</span><button id="classicEditAllOffButton" class="all-off-button" type="button" title="Switch off every classic editing module">ALL OFF</button></summary>
+              <summary class="panel-summary"><span>Classic Edit</span><span class="panel-summary-actions"><button id="classicEditAllOffButton" class="all-off-button" type="button" title="Switch off every classic editing module">ALL OFF</button><button id="classicEditResetAllButton" class="reset-all-button" type="button" title="Reset every classic editing module to defaults">RESET ALL</button></span></summary>
               <p class="hint circuit-note">Plain photo adjustments applied at the end of the chain. These are not camera emulation; use them to tune the finished result.</p>
               <div id="classicEditControls" class="advanced-stack"></div>
             </details>
@@ -166,8 +166,8 @@
           <p><strong>Physics Rail</strong> is different in kind: it simulates real bend circuitry acting on the raw sensor signal (oscillators into the analog path, logic chips on the ADC data bus). It runs before everything else, and macros never touch it — it changes through its own controls, presets, the <strong>Physics</strong> randomize family, its <strong>dice</strong> button, and the physics-led share of Global rolls.</p>
           <p><strong>Stylized Circuit</strong> is the per-module truth for the plausibility effects: every parameter of every effect. Use it to fine-tune after the macros get you close. Hover a parameter for a short description of what it changes.</p>
           <p><strong>Classic Edit</strong> is ordinary photo editing after the camera damage is complete: brightness, contrast, saturation, color temperature, and tone cleanup. Macros and random families leave it alone.</p>
-          <p>Each module header has five controls: the <strong>lock</strong> freezes that module during right-side randomize, the <strong>dice</strong> re-rolls just that module, <strong>S</strong> solos it so you see only its effect, <strong>i</strong> opens short and long effect notes, and the <strong>lamp</strong> switches it on or off (there is no separate Enabled toggle inside the group).</p>
-          <p>The <strong>ALL OFF</strong> button in each panel header switches off every module in that panel — handy for hearing the physics rail alone, or the stylized circuit alone.</p>
+          <p>Each module header has six controls: the <strong>lock</strong> freezes that module during right-side randomize, the <strong>dice</strong> re-rolls just that module, <strong>R</strong> resets it to defaults, <strong>S</strong> solos it so you see only its effect, <strong>i</strong> opens short and long effect notes, and the <strong>lamp</strong> switches it on or off (there is no separate Enabled toggle inside the group).</p>
+          <p><strong>ALL OFF</strong> switches off every module in a panel. <strong>RESET ALL</strong> restores every module in that panel to defaults.</p>
         </section>
         <section>
           <h3>Macro Bindings</h3>

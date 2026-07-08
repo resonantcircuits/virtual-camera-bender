@@ -360,7 +360,7 @@ export const ADVANCED_DEFS = [
     ]
   },
   {
-    group: "Basic Adjustments",
+    group: "Basic",
     key: "basicAdjustments",
     classicEdit: true,
     noDrift: true,
@@ -485,7 +485,7 @@ export const ADVANCED_MODULE_HELP = {
   },
   basicAdjustments: {
     short: "Applies ordinary photo-editing adjustments after the full camera chain.",
-    long: "Basic Adjustments is deliberately not an emulation module. It runs at the very end as a practical classic editing pass for brightness, contrast, saturation, color temperature, tint, gamma, shadows, and highlights. Macros and random families leave it alone so you can polish the finished result."
+    long: "Basic is deliberately not an emulation module. It runs at the very end as a practical classic editing pass for brightness, contrast, saturation, color temperature, tint, gamma, shadows, and highlights. Macros and random families leave it alone so you can polish the finished result."
   }
 };
 
@@ -720,7 +720,7 @@ function defaultMacros() {
   };
 }
 
-function defaultPipeline() {
+export function defaultPipeline() {
   return {
     irCut: {
       enabled: false,

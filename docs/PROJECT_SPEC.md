@@ -173,8 +173,10 @@ Randomization happens at three levels (all implemented in `src/randomize.js`):
 - global randomize: builds a whole new camera — fresh macros, a fresh pick of active modules, new name and seed. Each roll mutes some damage channels so results have distinct characters instead of everything firing at once. The physics rail participates as archetypes, not background guests: ~65% of builds are stylized-only, ~25% physics-led (one rail circuit rolls, occasionally both, with stylized macros scaled way down so the circuit look reads), ~10% stack both at full strength.
 - family randomizers (`Physics`, `Color`, `Melt`, `Burn`, `Noise`, `Cheap`, `Memory`): re-roll one damage domain with fresh draws, leave the rest untouched. Families are *domains*, not modules — future physics modules (ccdClock, addressBus, jpegStream) join the Physics family and the per-module dice rather than adding buttons.
 - per-module dice (dice button in each right-side module header): re-roll one module's parameters while keeping the global seed, so everything else renders identically.
+- per-module reset (`R` button in each right-side module header): restore that module's `defaultPipeline()` block without touching macros, seed, or other modules.
+- panel reset (`RESET ALL` in each right-side panel header): restore every module in that panel from `defaultPipeline()` without touching other panels, macros, or seed.
 
-The Classic Edit panel is outside the damage randomization model: macros and global/family rolls leave it alone. Its Basic Adjustments dice button can still produce a restrained grade when wanted.
+The Classic Edit panel is outside the damage randomization model: macros and global/family rolls leave it alone. Its Basic dice button can still produce a restrained grade when wanted.
 
 All draws are fresh values within the mode's intensity band — never cumulative — so repeated presses wander instead of ratcheting toward maximum damage.
 
@@ -305,7 +307,7 @@ Implemented as a `generations` param (1-6) on dctCrunch rather than a separate m
 
 Integration checklist for any new module (this is the established pattern):
 - pure function in `src/engine-core.js`, called from `processCircuitBendImageData` (no browser APIs — shared by worker and CLI)
-- defaults in `defaultPipeline()` in `src/presets.js` (disabled by default), plus an `ADVANCED_DEFS` group with `key:` for solo/dice/lamp buttons
+- defaults in `defaultPipeline()` in `src/presets.js` (disabled by default), plus an `ADVANCED_DEFS` group with `key:` for solo/dice/reset/lamp buttons
 - macro coupling in `applyMacrosToPipeline` only if it fits an existing macro (chaos → syncFault/bufferGhost; cheapness → dctCrunch strength; otherwise leave preset-driven like colorBend)
 - entry in `MODULE_RANDOMIZERS` in `src/randomize.js` (this automatically powers the per-module dice)
 - document in `docs/PRESET_FORMAT.md` example JSON + module reference (a sync-check script pattern exists: parse the doc's JSON example and diff module params against `defaultPipeline()`)

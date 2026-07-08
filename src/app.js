@@ -5,6 +5,7 @@ import {
   ADVANCED_MODULE_HELP,
   applyMacrosToPipeline,
   clonePreset,
+  defaultPipeline,
   MACRO_DEFS,
   normalizePreset,
   TEMPORAL_MODES
@@ -35,6 +36,7 @@ const PREVIEW_MAX_ZOOM = 8;
 const PREVIEW_WHEEL_ZOOM_STEP = 520;
 
 const MODULE_KEYS = ADVANCED_DEFS.map((group) => group.key);
+const DEFAULT_PIPELINE = defaultPipeline();
 
 const state = {
   source: null,
@@ -102,8 +104,11 @@ const dom = {
   physicsControls: document.querySelector("#physicsControls"),
   classicEditControls: document.querySelector("#classicEditControls"),
   physicsAllOffButton: document.querySelector("#physicsAllOffButton"),
+  physicsResetAllButton: document.querySelector("#physicsResetAllButton"),
   stylizedAllOffButton: document.querySelector("#stylizedAllOffButton"),
+  stylizedResetAllButton: document.querySelector("#stylizedResetAllButton"),
   classicEditAllOffButton: document.querySelector("#classicEditAllOffButton"),
+  classicEditResetAllButton: document.querySelector("#classicEditResetAllButton"),
   randomFamilyList: document.querySelector("#randomFamilyList"),
   randomMode: document.querySelector("#randomMode"),
   presetName: document.querySelector("#presetName"),
@@ -296,8 +301,11 @@ function bindEvents() {
   });
   dom.copyCommandButton.addEventListener("click", copyRenderCommand);
   dom.physicsAllOffButton.addEventListener("click", (event) => panelAllOff(event, "physics", "PHYSICS RAIL OFF"));
+  dom.physicsResetAllButton.addEventListener("click", (event) => panelResetAll(event, "physics", "PHYSICS RAIL RESET"));
   dom.stylizedAllOffButton.addEventListener("click", (event) => panelAllOff(event, "stylized", "STYLIZED CIRCUIT OFF"));
+  dom.stylizedResetAllButton.addEventListener("click", (event) => panelResetAll(event, "stylized", "STYLIZED CIRCUIT RESET"));
   dom.classicEditAllOffButton.addEventListener("click", (event) => panelAllOff(event, "classicEdit", "CLASSIC EDIT OFF"));
+  dom.classicEditResetAllButton.addEventListener("click", (event) => panelResetAll(event, "classicEdit", "CLASSIC EDIT RESET"));
 
   dom.galleryFilter.addEventListener("input", applyGalleryFilter);
   dom.galleryFilter.addEventListener("keydown", (event) => {
@@ -1092,6 +1100,21 @@ function panelAllOff(event, panel, statusLabel) {
   updateStatus(statusLabel);
 }
 
+function panelResetAll(event, panel, statusLabel) {
+  // The button lives inside a <summary>; don't toggle the dropdown with it.
+  event.preventDefault();
+  event.stopPropagation();
+  pushHistory(snapshotPreset());
+  ADVANCED_DEFS.forEach((group) => {
+    if (groupPanel(group) !== panel) return;
+    const defaults = DEFAULT_PIPELINE[group.key];
+    if (defaults) state.preset.pipeline[group.key] = clone(defaults);
+  });
+  renderAdvancedControls();
+  scheduleRender();
+  updateStatus(statusLabel);
+}
+
 function groupPanel(group) {
   if (group.physics) return "physics";
   if (group.classicEdit) return "classicEdit";
@@ -1169,6 +1192,7 @@ function renderAdvancedControls() {
       <span class="summary-tools">
         <button type="button" class="lock-button" title="${moduleFrozen ? "Module frozen during randomize" : "Freeze this module during randomize"}" aria-label="${moduleFrozen ? "Unfreeze" : "Freeze"} ${group.group}" aria-pressed="${moduleFrozen}">${lockIconSvg(moduleFrozen)}</button>
         <button type="button" class="dice-button" title="Randomize this module (uses Randomize mode)" aria-label="Randomize ${group.group}">${diceIconSvg()}</button>
+        <button type="button" class="reset-button" title="Reset this module to defaults" aria-label="Reset ${group.group} to defaults">R</button>
         <button type="button" class="solo-button" title="Solo this module">S</button>
         <button type="button" class="info-button ${helpOpen ? "is-active" : ""}" title="Explain ${group.group}" aria-label="Explain ${group.group}" aria-expanded="${helpOpen}" aria-controls="module-help-${group.key}">i</button>
         <button type="button" class="group-lamp" title="${lampHelp}"></button>
@@ -1197,6 +1221,13 @@ function renderAdvancedControls() {
       renderAdvancedControls();
       scheduleRender();
       updateStatus(`${group.group.toUpperCase()} RANDOMIZED`);
+    });
+
+    const resetButton = summary.querySelector(".reset-button");
+    resetButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      resetModuleToDefaults(group.key, group.group);
     });
 
     const soloButton = summary.querySelector(".solo-button");
@@ -1369,6 +1400,16 @@ function renderAdvancedControls() {
     else if (panel === "classicEdit") dom.classicEditControls.append(details);
     else dom.advancedControls.append(details);
   });
+}
+
+function resetModuleToDefaults(moduleKey, groupName) {
+  const defaults = DEFAULT_PIPELINE[moduleKey];
+  if (!defaults) return;
+  pushHistory(snapshotPreset());
+  state.preset.pipeline[moduleKey] = clone(defaults);
+  renderAdvancedControls();
+  scheduleRender();
+  updateStatus(`${groupName.toUpperCase()} RESET`);
 }
 
 // --- Image / preset IO ---

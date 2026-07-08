@@ -517,7 +517,15 @@ summary {
   gap: 8px;
 }
 
-.all-off-button {
+.panel-summary-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.all-off-button,
+.reset-all-button {
   height: 20px;
   padding: 0 6px;
   border: 1px solid var(--line);
@@ -532,6 +540,11 @@ summary {
 .all-off-button:hover {
   border-color: var(--danger);
   color: var(--danger);
+}
+
+.reset-all-button:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
 }
 
 .advanced-stack {
@@ -585,6 +598,7 @@ summary {
 
 .solo-button,
 .dice-button,
+.reset-button,
 .lock-button,
 .info-button {
   width: 20px;
@@ -618,6 +632,11 @@ summary {
 .dice-button:hover {
   border-color: var(--green);
   color: var(--green);
+}
+
+.reset-button:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
 }
 
 .info-button:hover {
