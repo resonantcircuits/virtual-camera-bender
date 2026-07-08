@@ -1130,6 +1130,26 @@ export const BUILT_IN_PRESETS = [
     }
   }),
   createPreset({
+    name: "DC42 Night Solarize",
+    description: "Every tapped pin colliding on one common bus: nocturnal luminance noise and solarized rainbow skies.",
+    tags: ["bus-bend", "physics", "common-bus", "solarize"],
+    seed: 73331,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      busBend: {
+        enabled: true,
+        sourceMask: 2560,
+        targetMask: 1280,
+        commonBus: true,
+        resistance: 0.55,
+        pot: 0.75,
+        jitter: 0.12
+      },
+      dctCrunch: { enabled: true, quality: 0.72, chromaSubsample: 0.4, generations: 1 }
+    },
+    temporal: { driftAmount: 0.1, driftSpeed: 0.4 }
+  }),
+  createPreset({
     name: "Loose Sync",
     description: "A master clock a hair off nominal: warbled edges, gentle lean, sparse shredded scanlines.",
     tags: ["master-clock", "physics", "skew", "subtle"],

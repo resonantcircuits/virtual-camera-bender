@@ -131,7 +131,9 @@ export const MODULE_RANDOMIZERS = {
       bend.targetMask = pick(tgtPool, randomInt(1, reach, rng));
     }
     bend.targetGnd = rng() < 0.15;
+    bend.commonBus = rng() < 0.18;
     bend.pot = randomRange(0.08, 0.95, rng);
+    bend.resistance = rng() < 0.4 ? randomRange(0.15, 0.8, rng) : 0;
     bend.injectStrength = randomRange(0.35, 0.8, rng);
     bend.jitter = randomRange(0.03, 0.2, rng);
     bend.wbRed = randomRange(1.6, 2.4, rng);

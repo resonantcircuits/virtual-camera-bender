@@ -18,6 +18,14 @@ import { RAW_BITS } from "./raw-domain.js";
 // in both banks merge S and T into one node, which is what lets the divide
 // flip-flop clock itself off the pin it is corrupting.
 
+// v2 extensions (spec Phase 8 item 3): `resistance` puts the benders' 20-100
+// ohm protection resistor in the patch line — each pin's wire only partially
+// follows the shared node, opening a continuum between clean and fully
+// shorted buses (comparator noise speckles the in-between region).
+// `commonBus` jumpers the source and target nodes into one shared bus, so
+// composite multi-pin collisions resolve together (the Praktica DC42
+// common-bus DIP array look) instead of pairwise through the cap/chip.
+
 // Bank wiring on the real bend: source DIP reaches D11..D2, target selector
 // reaches D11..D4 plus a GND position.
 export const SOURCE_BITS_MASK = 0b111111111100;
@@ -58,6 +66,10 @@ export function applyBusBendRaw(raw, width, height, config, seed, liveSeed = see
   const pot = clamp(config.pot ?? 0.5);
   const strength = clamp(config.injectStrength ?? 0.55);
   const jitter = clamp(config.jitter ?? 0.08) * 0.5;
+  const resistance = clamp(config.resistance ?? 0);
+  // Patch-line coupling: 0 ohm follows the node exactly (v1 hard short),
+  // full resistance leaves the pin mostly driving its own wire.
+  const k = 1 / (1 + 2.2 * resistance * resistance);
 
   // --- analog constants ---
   // potR is the pot position as a fraction of full resistance, swept on a
@@ -75,7 +87,7 @@ export function applyBusBendRaw(raw, width, height, config, seed, liveSeed = see
   const wChip = 0.6 + strength * 4;
   const wGnd = targetGnd ? 3 : 0;
 
-  const merged = inject && (sourceMask & targetMask) !== 0;
+  const merged = inject && (!!config.commonBus || (sourceMask & targetMask) !== 0);
   const unionBits = merged ? maskBits(sourceMask | targetMask) : null;
   const unionN = merged ? unionBits.length : 0;
 
@@ -114,7 +126,8 @@ export function applyBusBendRaw(raw, width, height, config, seed, liveSeed = see
       }
       for (let i = 0; i < unionN; i += 1) {
         const bit = unionBits[i];
-        if (node + (rnd() - 0.5) * jitter > 0.5) v |= 1 << bit;
+        const wire = ((v >>> bit) & 1) * (1 - k) + node * k;
+        if (wire + (rnd() - 0.5) * jitter > 0.5) v |= 1 << bit;
         else v &= ~(1 << bit);
       }
       nodeIn = node;
@@ -123,10 +136,12 @@ export function applyBusBendRaw(raw, width, height, config, seed, liveSeed = see
       for (let i = 0; i < srcN; i += 1) s += (v >>> srcBits[i]) & 1;
       const nodeS = srcN > 0 ? s / srcN : 0;
       if (srcN >= 2) {
-        // Intra-bank hard short: contended source pins all read the mix.
+        // Intra-bank short: contended source pins pull toward the mix, as
+        // hard as the patch-line resistance lets them.
         for (let i = 0; i < srcN; i += 1) {
           const bit = srcBits[i];
-          if (nodeS + (rnd() - 0.5) * jitter > 0.5) v |= 1 << bit;
+          const wire = ((v >>> bit) & 1) * (1 - k) + nodeS * k;
+          if (wire + (rnd() - 0.5) * jitter > 0.5) v |= 1 << bit;
           else v &= ~(1 << bit);
         }
       }
@@ -145,7 +160,8 @@ export function applyBusBendRaw(raw, width, height, config, seed, liveSeed = see
         }
         for (let i = 0; i < tgtN; i += 1) {
           const bit = tgtBits[i];
-          if (nodeT + (rnd() - 0.5) * jitter > 0.5) v |= 1 << bit;
+          const wire = ((v >>> bit) & 1) * (1 - k) + nodeT * k;
+          if (wire + (rnd() - 0.5) * jitter > 0.5) v |= 1 << bit;
           else v &= ~(1 << bit);
         }
       }

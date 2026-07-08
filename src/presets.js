@@ -93,8 +93,10 @@ export const ADVANCED_DEFS = [
       ["pipeline.busBend.sourceMask", "Source DIP", "bits", [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]],
       ["pipeline.busBend.targetMask", "Target Select", "bits", [11, 10, 9, 8, 7, 6, 5, 4]],
       ["pipeline.busBend.targetGnd", "Target GND", "boolean"],
+      ["pipeline.busBend.commonBus", "Common Bus", "boolean"],
       ["pipeline.busBend.fn", "Function", "select", ["bypass", "invert", "divide"]],
       ["pipeline.busBend.pot", "Filter Pot", "range", 0, 1, 0.01],
+      ["pipeline.busBend.resistance", "Series Resistance", "range", 0, 1, 0.01],
       ["pipeline.busBend.injectStrength", "Inject Strength", "range", 0, 1, 0.01],
       ["pipeline.busBend.jitter", "Comparator Noise", "range", 0, 1, 0.01],
       ["pipeline.busBend.wbRed", "WB Red Gain", "range", 1, 3.5, 0.01],
@@ -347,7 +349,7 @@ export const ADVANCED_MODULE_HELP = {
   },
   busBend: {
     short: "Shorts and injects ADC data bits like a real logic-chip circuit bend.",
-    long: "Bus Bend works on the raw ADC data bus, tapping source bits and driving target bits through a simple filter/comparator path. It creates hard digital bands, threshold streaks, bit-plane inversions, and contention speckle because brightness bits are being forced into the wrong logic states."
+    long: "Bus Bend works on the raw ADC data bus, tapping source bits and driving target bits through a simple filter/comparator path. It creates hard digital bands, threshold streaks, bit-plane inversions, and contention speckle because brightness bits are being forced into the wrong logic states. Series Resistance softens the shorts into partial, speckled corruption, and Common Bus jumpers every selected pin onto one shared node so they all collide together."
   },
   masterClock: {
     short: "Reclocks the whole camera so the processor captures the pixel stream at the wrong rate.",
@@ -464,6 +466,8 @@ export const ADVANCED_CONTROL_HELP = {
   "pipeline.busBend.sourceMask": "DIP switches tapping ADC output bits D11 (brightness MSB) down to D2. Multiple switches short those bits together.",
   "pipeline.busBend.targetMask": "Selects which ADC bits receive the bent signal. Multiple targets short together and fight the injection.",
   "pipeline.busBend.targetGnd": "Adds the GND position of the target selector, dragging the target node toward logic low.",
+  "pipeline.busBend.commonBus": "Jumpers the source and target banks onto one shared bus so every selected pin collides together, instead of coupling through the cap and chip.",
+  "pipeline.busBend.resistance": "Series protection resistor in the patch line: zero shorts pins hard to the bus, higher values let each pin mostly keep its own value with speckled partial corruption between.",
   "pipeline.busBend.fn": "Bypass passes the filtered analog signal; invert drives a logic NOT of it; divide clocks a flip-flop that halves the signal frequency.",
   "pipeline.busBend.pot": "The high-pass filter pot. Low settings clamp targets hard and pass only sharp edges; high settings let long decaying streaks through.",
   "pipeline.busBend.injectStrength": "How strongly the injected signal wins bus contention against the ADC's own pin drivers.",
@@ -670,8 +674,10 @@ function defaultPipeline() {
       sourceMask: 0,
       targetMask: 0,
       targetGnd: false,
+      commonBus: false,
       fn: "bypass",
       pot: 0.5,
+      resistance: 0,
       injectStrength: 0.55,
       jitter: 0.08,
       wbRed: 2,
