@@ -171,7 +171,7 @@ Randomization happens at three levels (all implemented in `src/randomize.js`):
 
 - global randomize: builds a whole new camera — fresh macros, a fresh pick of active modules, new name and seed. Each roll mutes some damage channels so results have distinct characters instead of everything firing at once. The physics rail participates as archetypes, not background guests: ~65% of builds are stylized-only, ~25% physics-led (one rail circuit rolls, occasionally both, with stylized macros scaled way down so the circuit look reads), ~10% stack both at full strength.
 - family randomizers (`Physics`, `Color`, `Melt`, `Burn`, `Noise`, `Cheap`, `Memory`): re-roll one damage domain with fresh draws, leave the rest untouched. Families are *domains*, not modules — future physics modules (ccdClock, addressBus, jpegStream) join the Physics family and the per-module dice rather than adding buttons.
-- per-module dice (`R` in each circuit-panel group header): re-roll one module's parameters while keeping the global seed, so everything else renders identically.
+- per-module dice (dice button in each circuit-panel group header): re-roll one module's parameters while keeping the global seed, so everything else renders identically.
 
 All draws are fresh values within the mode's intensity band — never cumulative — so repeated presses wander instead of ratcheting toward maximum damage.
 

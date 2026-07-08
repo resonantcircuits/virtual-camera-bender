@@ -50,7 +50,7 @@ physics rail (one shared raw round trip: inverse ISP → 12-bit Bayer raw → en
 - **Web Worker rendering** — processing runs off the main thread, so the UI stays responsive during heavy renders and full-resolution exports.
 - **Undo / Redo** — every preset switch, randomize, reroll, and control tweak is tracked (up to 60 steps).
 - **A/B split compare** — toggle Split A/B and drag the divider across the image; hold `C` for a quick full-frame flash of the original.
-- **Per-module randomize, solo & bypass** — each module group in the circuit panels has an `R` (dice: re-roll only that module's parameters, keeping the seed), an `S` (solo: render only that module), and a lamp button (quick enable/disable). The dice respects the Randomize mode selected in the left panel.
+- **Per-module randomize, solo & bypass** — each module group in the circuit panels has a dice button (re-roll only that module's parameters, keeping the seed), an `S` (solo: render only that module), and a lamp button (quick enable/disable). The dice respects the Randomize mode selected in the left panel.
 - **Live preset thumbnails** — the preset list previews every built-in camera on the currently loaded image.
 - **Ghost image** — the Buffer Ghost module blends a stale frame into blocks of the image: a shifted copy of the photo by default, or any second image via the `LOAD` button in its Stylized Circuit panel (`--ghost <image>` in the CLI).
 

@@ -1158,7 +1158,7 @@ function renderAdvancedControls() {
       <span>${group.group}</span>
       <span class="summary-tools">
         <button type="button" class="lock-button" title="${moduleFrozen ? "Module frozen during randomize" : "Freeze this module during randomize"}" aria-label="${moduleFrozen ? "Unfreeze" : "Freeze"} ${group.group}" aria-pressed="${moduleFrozen}">${lockIconSvg(moduleFrozen)}</button>
-        <button type="button" class="dice-button" title="Randomize this module (uses Randomize mode)">R</button>
+        <button type="button" class="dice-button" title="Randomize this module (uses Randomize mode)" aria-label="Randomize ${group.group}">${diceIconSvg()}</button>
         <button type="button" class="solo-button" title="Solo this module">S</button>
         <button type="button" class="info-button ${helpOpen ? "is-active" : ""}" title="Explain ${group.group}" aria-label="Explain ${group.group}" aria-expanded="${helpOpen}" aria-controls="module-help-${group.key}">i</button>
         <button type="button" class="group-lamp" title="${lampHelp}"></button>
@@ -1864,6 +1864,19 @@ function lockIconSvg(locked) {
       <rect x="5" y="10" width="14" height="10" rx="2" />
       ${shackle}
       <path d="M12 14v3" />
+    </svg>
+  `;
+}
+
+function diceIconSvg() {
+  return `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="4" y="4" width="16" height="16" rx="3" />
+      <circle cx="8.5" cy="8.5" r="1.25" />
+      <circle cx="15.5" cy="8.5" r="1.25" />
+      <circle cx="12" cy="12" r="1.25" />
+      <circle cx="8.5" cy="15.5" r="1.25" />
+      <circle cx="15.5" cy="15.5" r="1.25" />
     </svg>
   `;
 }

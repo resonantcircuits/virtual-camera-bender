@@ -302,7 +302,8 @@ h3 {
 }
 
 .icon-button svg,
-.lock-button svg {
+.lock-button svg,
+.dice-button svg {
   width: 14px;
   height: 14px;
   fill: none;
@@ -310,6 +311,11 @@ h3 {
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.dice-button circle {
+  fill: currentColor;
+  stroke: none;
 }
 
 .command-button:hover:not(:disabled),
