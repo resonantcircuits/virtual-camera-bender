@@ -4,6 +4,7 @@ import { ccdClockActive, applyCcdClockRaw } from "./ccd-clock.js";
 import { afeBendActive, applyAfeBendRaw } from "./afe-bend.js";
 import { railSagActive, applyRailSagRaw } from "./rail-sag.js";
 import { busBendActive, applyBusBendRaw } from "./bus-bend.js";
+import { masterClockActive, applyMasterClockRaw } from "./master-clock.js";
 
 const PALETTES = {
   "solarized-ccd": [
@@ -138,21 +139,31 @@ export function processCircuitBendImageData(image, preset, resources = {}, optio
 // before any of the camera's (or our) image processing exists. One raw round
 // trip covers every enabled physics module, in true signal order
 // (charge transfer -> analog front end -> supply rail at the ADC -> ADC data
-// bus), so their damage compounds physically.
+// bus -> DSP capture framing), so their damage compounds physically.
 function applyPhysicsRail(image, pipeline, seed, liveSeed) {
   const ccdOn = ccdClockActive(pipeline.ccdClock);
   const afeOn = afeBendActive(pipeline.afeBend);
   const sagOn = railSagActive(pipeline.railSag);
   const busOn = busBendActive(pipeline.busBend);
-  if (!ccdOn && !afeOn && !sagOn && !busOn) return;
+  const clkOn = masterClockActive(pipeline.masterClock);
+  if (!ccdOn && !afeOn && !sagOn && !busOn && !clkOn) return;
   const wb = wbGains(
-    ccdOn ? pipeline.ccdClock : afeOn ? pipeline.afeBend : sagOn ? pipeline.railSag : pipeline.busBend,
+    ccdOn
+      ? pipeline.ccdClock
+      : afeOn
+        ? pipeline.afeBend
+        : sagOn
+          ? pipeline.railSag
+          : busOn
+            ? pipeline.busBend
+            : pipeline.masterClock,
   );
   const raw = imageToRaw(image, wb);
   if (ccdOn) applyCcdClockRaw(raw, image.width, image.height, pipeline.ccdClock, seed);
   if (afeOn) applyAfeBendRaw(raw, image.width, image.height, pipeline.afeBend, seed);
   if (sagOn) applyRailSagRaw(raw, image.width, image.height, pipeline.railSag, seed, liveSeed);
   if (busOn) applyBusBendRaw(raw, image.width, image.height, pipeline.busBend, seed, liveSeed);
+  if (clkOn) applyMasterClockRaw(raw, image.width, image.height, pipeline.masterClock, seed);
   rawToImage(image, raw, wb);
 }
 

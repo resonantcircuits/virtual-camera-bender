@@ -1130,6 +1130,30 @@ export const BUILT_IN_PRESETS = [
     }
   }),
   createPreset({
+    name: "Loose Sync",
+    description: "A master clock a hair off nominal: warbled edges, gentle lean, sparse shredded scanlines.",
+    tags: ["master-clock", "physics", "skew", "subtle"],
+    seed: 61441,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      masterClock: { enabled: true, detune: 0.07, drift: 0.5, hLock: 0.85, shred: 0.08 },
+      dctCrunch: { enabled: true, quality: 0.74, chromaSubsample: 0.4, generations: 1 }
+    },
+    temporal: { driftAmount: 0.14, driftSpeed: 0.45 }
+  }),
+  createPreset({
+    name: "Reclock Roll",
+    description: "Reclocked far past sync capture: the frame rolls in diagonal bands with colored line static.",
+    tags: ["master-clock", "physics", "roll", "tear"],
+    seed: 88259,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      masterClock: { enabled: true, detune: 0.12, drift: 0.12, hLock: 0.1, shred: 0.15 },
+      dctCrunch: { enabled: true, quality: 0.74, chromaSubsample: 0.4, generations: 1 }
+    },
+    temporal: { driftAmount: 0.1, driftSpeed: 0.4 }
+  }),
+  createPreset({
     name: "Brownout",
     description: "Supply rail sagging under load: broad breathing exposure bands with sparse row failures.",
     tags: ["rail-sag", "physics", "brownout", "bands"],

@@ -102,6 +102,19 @@ export const ADVANCED_DEFS = [
     ]
   },
   {
+    group: "Master Clock",
+    key: "masterClock",
+    physics: true,
+    controls: [
+      ["pipeline.masterClock.detune", "Clock Detune", "range", -0.5, 0.5, 0.01],
+      ["pipeline.masterClock.drift", "Clock Drift", "range", 0, 1, 0.01],
+      ["pipeline.masterClock.hLock", "H-Sync Lock", "range", 0, 1, 0.01],
+      ["pipeline.masterClock.shred", "Bayer Shred", "range", 0, 1, 0.01],
+      ["pipeline.masterClock.wbRed", "WB Red Gain", "range", 1, 3.5, 0.01],
+      ["pipeline.masterClock.wbBlue", "WB Blue Gain", "range", 1, 3.5, 0.01]
+    ]
+  },
+  {
     group: "Cheap Camera",
     key: "cheapCamera",
     controls: [
@@ -336,6 +349,10 @@ export const ADVANCED_MODULE_HELP = {
     short: "Shorts and injects ADC data bits like a real logic-chip circuit bend.",
     long: "Bus Bend works on the raw ADC data bus, tapping source bits and driving target bits through a simple filter/comparator path. It creates hard digital bands, threshold streaks, bit-plane inversions, and contention speckle because brightness bits are being forced into the wrong logic states."
   },
+  masterClock: {
+    short: "Reclocks the whole camera so the processor captures the pixel stream at the wrong rate.",
+    long: "Master Clock emulates swapping the crystal oscillator (the LTC1799 mod). The capture rate no longer matches the sensor readout, so content stretches, lines skew, and the picture rolls vertically; the sync circuit catches and loses lock in visible tears, and heavy detune shreds color because the Bayer pattern is sampled out of phase."
+  },
   cheapCamera: {
     short: "Adds low-end camera processing: tiny internal scale, blur, posterization, dither, and harsh sharpening.",
     long: "This stage emulates the compromises of a weak compact sensor pipeline. The image can be softened before processing, resized through a smaller internal buffer, quantized to fewer color steps, dithered, and sharpened into brittle edges."
@@ -453,6 +470,14 @@ export const ADVANCED_CONTROL_HELP = {
   "pipeline.busBend.jitter": "Analog comparator noise; breaks contended-voltage ties into speckle.",
   "pipeline.busBend.wbRed": "Simulated camera red white-balance gain applied after the corrupted raw is developed.",
   "pipeline.busBend.wbBlue": "Simulated camera blue white-balance gain applied after the corrupted raw is developed.",
+
+  "pipeline.masterClock.enabled": "Turns the master-clock reclock bend on or off (wrong capture rate: stretch, skew, roll, sync tears).",
+  "pipeline.masterClock.detune": "How far the swapped oscillator sits from the correct rate. Negative underclocks, positive overclocks; small values skew, large values roll and shred color.",
+  "pipeline.masterClock.drift": "Slow wobble of the clock rate: wavy tape-style skew that breathes instead of holding a straight lean.",
+  "pipeline.masterClock.hLock": "How strongly the sync circuit pulls lines back into phase. High values hold the picture with occasional snap tears; low values let it roll freely.",
+  "pipeline.masterClock.shred": "Fraction of rows whose sample clock slips at pixel level: those lines capture the color mosaic out of phase and develop into colored static.",
+  "pipeline.masterClock.wbRed": "Simulated camera red white-balance gain applied when the bent raw is developed.",
+  "pipeline.masterClock.wbBlue": "Simulated camera blue white-balance gain applied when the bent raw is developed.",
 
   "pipeline.cheapCamera.enabled": "Turns the cheap camera degradation stage on or off.",
   "pipeline.cheapCamera.internalScale": "Downscales internally before upscaling; lower values make chunkier pixels and stronger low-end camera artifacts.",
@@ -649,6 +674,15 @@ function defaultPipeline() {
       pot: 0.5,
       injectStrength: 0.55,
       jitter: 0.08,
+      wbRed: 2,
+      wbBlue: 1.5
+    },
+    masterClock: {
+      enabled: false,
+      detune: 0.08,
+      drift: 0.3,
+      hLock: 0.6,
+      shred: 0.2,
       wbRed: 2,
       wbBlue: 1.5
     },

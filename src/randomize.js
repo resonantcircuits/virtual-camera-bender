@@ -10,7 +10,7 @@ const MODES = {
 
 export const RANDOM_FAMILIES = [
   ["global", "Global", "Build a whole new camera: re-rolls all macros and modules, new name and seed"],
-  ["physics", "Physics", "Re-roll the physics rail only: charge-transfer clock, analog front end, supply rail, and data-bus circuits — keeps the rest"],
+  ["physics", "Physics", "Re-roll the physics rail only: charge-transfer clock, analog front end, supply rail, data bus, and master clock — keeps the rest"],
   ["color", "Color", "Re-roll color only: palette, hue/channel bends, gradient wash, WB hunting — keeps the rest"],
   ["melt", "Melt", "Re-roll smear and pixel-sort drips — keeps the rest"],
   ["burn", "Burn", "Re-roll exposure clipping, contour rings, and edge fringes — keeps the rest"],
@@ -45,10 +45,9 @@ function intensity(mode, rng, low, high) {
 }
 
 export const MODULE_RANDOMIZERS = {
-  // The physics modules (ccdClock, afeBend, railSag, busBend) never join the
-  // stylized-only global rolls as background guests — they lead a build or
-  // sit it out (see randomizeGlobal), and have their own Physics family
-  // button.
+  // The physics modules (PHYSICS_MODULES below) never join the stylized-only
+  // global rolls as background guests — they lead a build or sit it out (see
+  // randomizeGlobal), and have their own Physics family button.
   ccdClock(preset, mode, rng) {
     const ccd = preset.pipeline.ccdClock;
     ccd.enabled = true;
@@ -91,6 +90,19 @@ export const MODULE_RANDOMIZERS = {
     sag.failures = rng() < 0.78 ? intensity(mode, rng, 0.2, 0.85) : 0;
     sag.wbRed = randomRange(1.6, 2.4, rng);
     sag.wbBlue = randomRange(1.2, 1.9, rng);
+  },
+  masterClock(preset, mode, rng) {
+    const clk = preset.pipeline.masterClock;
+    clk.enabled = true;
+    // Small detunes dominate: the module lives at "skewed and rolling", the
+    // total sync collapse end stays a deliberate preset/manual choice.
+    const magnitude = intensity(mode, rng, 0.04, 0.38);
+    clk.detune = rng() < 0.5 ? -magnitude : magnitude;
+    clk.drift = rng() < 0.7 ? randomRange(0.1, 0.65, rng) : 0;
+    clk.hLock = randomRange(0.25, 0.9, rng);
+    clk.shred = rng() < 0.6 ? randomRange(0.05, 0.5, rng) : 0;
+    clk.wbRed = randomRange(1.6, 2.4, rng);
+    clk.wbBlue = randomRange(1.2, 1.9, rng);
   },
   busBend(preset, mode, rng) {
     const bend = preset.pipeline.busBend;
@@ -455,8 +467,12 @@ function randomizeGlobal(preset, mode, rng) {
 
 // The rail's modules in signal order, with the damping applied when circuits
 // stack — two full-strength physics bends erase the subject entirely.
-const PHYSICS_MODULES = ["ccdClock", "afeBend", "railSag", "busBend"];
+const PHYSICS_MODULES = ["ccdClock", "afeBend", "railSag", "busBend", "masterClock"];
 const PHYSICS_DAMPERS = {
+  masterClock(clk) {
+    clk.detune *= 0.55;
+    clk.drift *= 0.6;
+  },
   ccdClock(ccd) {
     ccd.transferLoss *= 0.7;
     ccd.vSkip *= 0.6;
