@@ -180,6 +180,8 @@ The Classic Edit panel is outside the damage randomization model: macros and glo
 
 All draws are fresh values within the mode's intensity band — never cumulative — so repeated presses wander instead of ratcheting toward maximum damage.
 
+Preset Lab (`preset-lab.html`) is a separate discovery surface using the same randomizers and render worker: pick a folder of test images, generate a 100-preset batch at ~300px thumbnails, review each preset across every image, mark keepers, edit name/description/tags, and export the kept set as a paste-ready JS module for later built-in integration.
+
 Random modes:
 
 - `Bent`: balanced and usable

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Preset Lab · Virtual Camera Bender</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="./docs/assets/favicon-32.png?v=2">
+    <link rel="shortcut icon" type="image/png" href="./docs/assets/favicon-32.png?v=2">
+    <link rel="stylesheet" href="./styles.css">
+    <script type="module" src="./src/preset-lab.js"></script>
+  </head>
+  <body>
+    <div class="lab-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <span class="brand-kicker">VCB-01</span>
+          <h1>Preset Lab</h1>
+        </div>
+        <div class="topbar-actions">
+          <button id="pickFolderButton" class="command-button is-primary" type="button">Pick Image Folder</button>
+          <button id="generateBatchButton" class="command-button is-primary" type="button">Generate Batch</button>
+          <button id="exportKeptButton" class="command-button" type="button" disabled>Export Kept JS</button>
+          <button id="copyKeptButton" class="command-button" type="button" disabled>Copy Kept Entries</button>
+          <a class="command-button lab-main-link" href="./index.html">Main App</a>
+        </div>
+      </header>
+
+      <main class="lab-workspace">
+        <aside class="panel lab-controls-panel">
+          <section class="panel-section">
+            <h2>Batch</h2>
+            <label class="control-row lab-control-row">
+              <span>Presets</span>
+              <input id="batchSizeInput" type="number" min="1" max="500" step="1" value="100">
+            </label>
+            <label class="control-row lab-control-row">
+              <span>Render Size</span>
+              <input id="renderSizeInput" type="number" min="120" max="900" step="10" value="300">
+            </label>
+            <label class="format-select is-wide">
+              <span>Mode</span>
+              <select id="labRandomMode"></select>
+            </label>
+            <p id="labImageStatus" class="hint">No image folder selected.</p>
+            <p id="labBatchStatus" class="hint">Pick a folder, then generate a batch.</p>
+          </section>
+
+          <section class="panel-section">
+            <h2>Randomizers</h2>
+            <p class="hint">Batches cycle through the checked randomizers.</p>
+            <div id="labFamilyList" class="lab-family-list"></div>
+          </section>
+
+          <section class="panel-section">
+            <h2>Selection</h2>
+            <div class="lab-stats">
+              <span id="labPresetCount">0 presets</span>
+              <span id="labRenderCount">0 renders</span>
+              <span id="labKeptCount">0 kept</span>
+            </div>
+            <button id="clearKeptButton" class="command-button is-block" type="button" disabled>Clear Kept</button>
+          </section>
+        </aside>
+
+        <section class="lab-results-panel">
+          <div class="lab-results-header">
+            <h2>Generated Presets</h2>
+            <span id="labStatusText">IDLE</span>
+          </div>
+          <div id="labEmptyState" class="lab-empty-state">
+            <strong>NO BATCH</strong>
+            <span>Pick an image folder and generate 100 presets.</span>
+          </div>
+          <div id="labGrid" class="lab-grid"></div>
+        </section>
+      </main>
+    </div>
+
+    <input id="folderInput" type="file" accept="image/*" webkitdirectory multiple hidden>
+  </body>
+</html>

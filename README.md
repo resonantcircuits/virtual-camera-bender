@@ -8,13 +8,14 @@ The project is inspired by early 2000s consumer digital cameras pushed into fail
 
 ## Current State
 
-The still-image editor is working: image upload (click or drag-and-drop), live preview, 53 built-in camera presets with live thumbnails, macro and per-module controls, classic editing adjustments, family/global/per-module randomizers, undo/redo, A/B comparison, JSON preset save/load, original-resolution export (PNG/WebP/JPEG), and a headless CLI renderer that shares the same engine.
+The still-image editor is working: image upload (click or drag-and-drop), live preview, 53 built-in camera presets with live thumbnails, macro and per-module controls, classic editing adjustments, family/global/per-module randomizers, undo/redo, A/B comparison, JSON preset save/load, original-resolution export (PNG/WebP/JPEG), and a headless CLI renderer that shares the same engine. A separate Preset Lab page can batch-generate random presets against a folder of test images and export selected results as paste-ready JS.
 
 Video is supported image-first: load a clip in the app to design the look on a contact sheet of its frames (no in-app playback or encoding), tune temporal behavior (locked/hold/flicker seeds, parameter drift, frame ghosting), then render with the CLI (`render-video`, ffmpeg-backed, parallel workers).
 
 Repository layout:
 
 - `index.html`, `styles.css`: static web app shell (no build step).
+- `preset-lab.html`: batch preset generator and review surface for finding stronger built-in candidates.
 - `src/engine-core.js`: the pure image-processing pipeline, shared by the web app, the render worker, and the CLI.
 - `src/render-worker.js`: Web Worker that runs the pipeline off the main thread.
 - `src/presets.js`: preset schema defaults, macro-to-pipeline mapping, control definitions.
@@ -39,6 +40,8 @@ npm run serve
 
 Then open `http://localhost:8787`.
 
+Preset Lab is served from the same static server at `http://localhost:8787/preset-lab.html`.
+
 ## Engine Modules
 
 The still-image pipeline currently chains these modules (all preset-controlled):
@@ -53,6 +56,7 @@ physics rail (one shared raw round trip: inverse ISP → 12-bit Bayer raw → en
 - **Per-module randomize, reset, solo & bypass** — each module group in the right-side panels has a dice button (re-roll only that module's parameters, keeping the seed), an `R` reset button (restore schema defaults), an `S` solo button, and a lamp button (quick enable/disable). The dice respects the Randomize mode selected in the left panel.
 - **Panel-level off/reset** — each module panel has `ALL OFF` and `RESET ALL` actions for quick comparison or returning a whole panel to schema defaults.
 - **Classic Edit panel** — ordinary photo adjustments at the end of the chain, kept separate from emulation modules and left untouched by macro/global/family randomize.
+- **Preset Lab** — separate batch UI for folder-based test-image sweeps, keep/reject review, name/description/tag editing, and JS export of selected presets.
 - **Live preset thumbnails** — the preset list previews every built-in camera on the currently loaded image.
 - **Ghost image** — the Buffer Ghost module blends a stale frame into blocks of the image: a shifted copy of the photo by default, or any second image via the `LOAD` button in its Stylized Circuit panel (`--ghost <image>` in the CLI).
 
