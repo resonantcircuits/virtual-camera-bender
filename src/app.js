@@ -2,6 +2,7 @@ import { processCircuitBendImageData } from "./engine-core.js";
 import {
   ADVANCED_CONTROL_HELP,
   ADVANCED_DEFS,
+  ADVANCED_MODULE_HELP,
   applyMacrosToPipeline,
   clonePreset,
   MACRO_DEFS,
@@ -65,6 +66,8 @@ const state = {
   frozenModules: new Set(),
   freezeSeed: false,
   openGroups: new Set(),
+  moduleHelpKey: null,
+  expandedModuleHelp: new Set(),
   activePresetIndex: 0,
   pendingSnapshot: null,
   thumbsPending: false,
@@ -1086,11 +1089,49 @@ function panelAllOff(event, physics, statusLabel) {
   updateStatus(statusLabel);
 }
 
+function createModuleHelpPanel(group, help, expanded) {
+  const panel = document.createElement("div");
+  panel.className = "module-help";
+  panel.id = `module-help-${group.key}`;
+
+  const shortText = document.createElement("p");
+  shortText.className = "module-help-short";
+  shortText.textContent = help.short;
+  panel.append(shortText);
+
+  if (help.long) {
+    const longText = document.createElement("p");
+    longText.className = "module-help-long";
+    longText.hidden = !expanded;
+    longText.textContent = help.long;
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "module-help-toggle";
+    toggle.textContent = expanded ? "Less" : "More";
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (expanded) state.expandedModuleHelp.delete(group.key);
+      else state.expandedModuleHelp.add(group.key);
+      renderAdvancedControls();
+    });
+
+    panel.append(longText, toggle);
+  }
+
+  return panel;
+}
+
 function renderAdvancedControls() {
   dom.advancedControls.innerHTML = "";
   dom.physicsControls.innerHTML = "";
   ADVANCED_DEFS.forEach((group) => {
     const moduleFrozen = state.frozenModules.has(group.key);
+    const moduleHelp = ADVANCED_MODULE_HELP[group.key];
+    const helpOpen = Boolean(moduleHelp) && state.moduleHelpKey === group.key;
+    const helpExpanded = state.expandedModuleHelp.has(group.key);
     const details = document.createElement("details");
     details.className = "advanced-group";
     details.dataset.moduleKey = group.key;
@@ -1099,10 +1140,13 @@ function renderAdvancedControls() {
       details.classList.toggle("is-solo", state.soloModule === group.key);
       details.classList.toggle("is-dimmed", state.soloModule !== group.key);
     }
-    details.open = state.openGroups.has(group.group);
+    details.open = state.openGroups.has(group.group) || helpOpen;
     details.addEventListener("toggle", () => {
       if (details.open) state.openGroups.add(group.group);
-      else state.openGroups.delete(group.group);
+      else {
+        state.openGroups.delete(group.group);
+        if (state.moduleHelpKey === group.key) state.moduleHelpKey = null;
+      }
     });
 
     const summary = document.createElement("summary");
@@ -1116,6 +1160,7 @@ function renderAdvancedControls() {
         <button type="button" class="lock-button" title="${moduleFrozen ? "Module frozen during randomize" : "Freeze this module during randomize"}" aria-label="${moduleFrozen ? "Unfreeze" : "Freeze"} ${group.group}" aria-pressed="${moduleFrozen}">${lockIconSvg(moduleFrozen)}</button>
         <button type="button" class="dice-button" title="Randomize this module (uses Randomize mode)">R</button>
         <button type="button" class="solo-button" title="Solo this module">S</button>
+        <button type="button" class="info-button ${helpOpen ? "is-active" : ""}" title="Explain ${group.group}" aria-label="Explain ${group.group}" aria-expanded="${helpOpen}" aria-controls="module-help-${group.key}">i</button>
         <button type="button" class="group-lamp" title="${lampHelp}"></button>
       </span>
     `;
@@ -1151,6 +1196,25 @@ function renderAdvancedControls() {
       event.stopPropagation();
       toggleSolo(group.key, group.group);
     });
+
+    const infoButton = summary.querySelector(".info-button");
+    if (infoButton) {
+      infoButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (helpOpen) {
+          state.moduleHelpKey = null;
+        } else {
+          state.moduleHelpKey = group.key;
+          state.openGroups.add(group.group);
+        }
+        renderAdvancedControls();
+      });
+    }
+
+    if (moduleHelp && helpOpen) {
+      details.append(createModuleHelpPanel(group, moduleHelp, helpExpanded));
+    }
 
     const lamp = summary.querySelector(".group-lamp");
     const refreshLamp = () => {

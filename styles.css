@@ -563,15 +563,24 @@ summary {
   padding: 6px 10px;
 }
 
+.advanced-group summary > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .summary-tools {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .solo-button,
 .dice-button,
-.lock-button {
+.lock-button,
+.info-button {
   width: 20px;
   height: 20px;
   display: grid;
@@ -584,6 +593,10 @@ summary {
   font-size: 0.62rem;
   font-weight: 700;
   cursor: pointer;
+}
+
+.info-button {
+  font-style: italic;
 }
 
 .lock-button:hover {
@@ -601,6 +614,11 @@ summary {
   color: var(--green);
 }
 
+.info-button:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
 .solo-button.is-active {
   border-color: var(--amber);
   background: #33260d;
@@ -609,6 +627,12 @@ summary {
 
 .lock-button.is-active,
 .advanced-group.is-frozen .lock-button {
+  border-color: var(--cyan);
+  background: #0d2b33;
+  color: var(--cyan);
+}
+
+.info-button.is-active {
   border-color: var(--cyan);
   background: #0d2b33;
   color: var(--cyan);
@@ -647,6 +671,42 @@ summary {
 .group-lamp.is-on {
   background: var(--green);
   box-shadow: 0 0 6px rgba(141, 255, 122, 0.75);
+}
+
+.module-help {
+  padding: 8px 10px 9px;
+  border-bottom: 1px solid rgba(75, 74, 62, 0.55);
+  background: rgba(9, 9, 8, 0.45);
+}
+
+.module-help p {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 400;
+  line-height: 1.45;
+  text-transform: none;
+}
+
+.module-help-long {
+  margin-top: 6px !important;
+  color: var(--muted) !important;
+}
+
+.module-help-toggle {
+  margin-top: 7px;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel-strong);
+  color: var(--cyan);
+  font-size: 0.62rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.module-help-toggle:hover {
+  border-color: var(--cyan);
 }
 
 .advanced-group.is-solo {

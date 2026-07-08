@@ -1128,5 +1128,53 @@ export const BUILT_IN_PRESETS = [
       busBend: { enabled: true, sourceMask: 2048, targetMask: 1024, fn: "bypass", pot: 0.7 },
       dctCrunch: { enabled: true, quality: 0.78, chromaSubsample: 0.4, generations: 1 }
     }
+  }),
+  createPreset({
+    name: "Brownout",
+    description: "Supply rail sagging under load: broad breathing exposure bands with sparse row failures.",
+    tags: ["rail-sag", "physics", "brownout", "bands"],
+    seed: 71263,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      railSag: { enabled: true, sag: 0.62, flicker: 0.25, spikes: 0.35, failures: 0.3 },
+      dctCrunch: { enabled: true, quality: 0.74, chromaSubsample: 0.4, generations: 1 }
+    },
+    temporal: { driftAmount: 0.16, driftSpeed: 0.4 }
+  }),
+  createPreset({
+    name: "A540 Melt",
+    description: "Vertical transfer clocks failing mid-readout: paint-drip melts, luminance streaks, stalled row stretches.",
+    tags: ["ccd-clock", "physics", "melt", "streaks"],
+    seed: 27551,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      ccdClock: { enabled: true, transferLoss: 0.45, vSkip: 0.5, hShear: 0, bloom: 0.35 },
+      dctCrunch: { enabled: true, quality: 0.74, chromaSubsample: 0.4, generations: 1 }
+    },
+    temporal: { driftAmount: 0.15, driftSpeed: 0.35 }
+  }),
+  createPreset({
+    name: "A530 Warp",
+    description: "Horizontal register glitches: sheared scanline bands, Bayer phase tears, rainbow fringes.",
+    tags: ["ccd-clock", "physics", "shear", "phase"],
+    seed: 41893,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      ccdClock: { enabled: true, transferLoss: 0.12, vSkip: 0.22, hShear: 0.6, bloom: 0 },
+      dctCrunch: { enabled: true, quality: 0.74, chromaSubsample: 0.4, generations: 1 }
+    },
+    temporal: { driftAmount: 0.12, driftSpeed: 0.45 }
+  }),
+  createPreset({
+    name: "Chromatic Sieve",
+    description: "ADC latch-up under a failing rail: stuck-code color bands, static rows, black dropouts.",
+    tags: ["rail-sag", "physics", "latch-up", "dropout"],
+    seed: 52061,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      railSag: { enabled: true, sag: 0.5, flicker: 0.55, spikes: 0.5, failures: 0.85 },
+      dctCrunch: { enabled: true, quality: 0.7, chromaSubsample: 0.45, generations: 1 }
+    },
+    temporal: { driftAmount: 0.12, driftSpeed: 0.5 }
   })
 ];

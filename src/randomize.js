@@ -10,7 +10,7 @@ const MODES = {
 
 export const RANDOM_FAMILIES = [
   ["global", "Global", "Build a whole new camera: re-rolls all macros and modules, new name and seed"],
-  ["physics", "Physics", "Re-roll the physics rail only: analog front end and data-bus bend circuits — keeps the rest"],
+  ["physics", "Physics", "Re-roll the physics rail only: charge-transfer clock, analog front end, supply rail, and data-bus circuits — keeps the rest"],
   ["color", "Color", "Re-roll color only: palette, hue/channel bends, gradient wash, WB hunting — keeps the rest"],
   ["melt", "Melt", "Re-roll smear and pixel-sort drips — keeps the rest"],
   ["burn", "Burn", "Re-roll exposure clipping, contour rings, and edge fringes — keeps the rest"],
@@ -45,9 +45,22 @@ function intensity(mode, rng, low, high) {
 }
 
 export const MODULE_RANDOMIZERS = {
-  // The physics modules (afeBend, busBend) never join the stylized-only
-  // global rolls as background guests — they lead a build or sit it out
-  // (see randomizeGlobal), and have their own Physics family button.
+  // The physics modules (ccdClock, afeBend, railSag, busBend) never join the
+  // stylized-only global rolls as background guests — they lead a build or
+  // sit it out (see randomizeGlobal), and have their own Physics family
+  // button.
+  ccdClock(preset, mode, rng) {
+    const ccd = preset.pipeline.ccdClock;
+    ccd.enabled = true;
+    // One transfer fault leads each roll; melt over everything turns to soup.
+    const coupling = rng();
+    ccd.transferLoss = coupling < 0.45 ? intensity(mode, rng, 0.3, 0.95) : rng() < 0.5 ? randomRange(0.05, 0.3, rng) : 0;
+    ccd.vSkip = coupling >= 0.45 && coupling < 0.75 ? intensity(mode, rng, 0.25, 0.8) : rng() < 0.3 ? randomRange(0.05, 0.3, rng) : 0;
+    ccd.hShear = coupling >= 0.75 ? intensity(mode, rng, 0.3, 0.9) : rng() < 0.3 ? randomRange(0.05, 0.35, rng) : 0;
+    ccd.bloom = rng() < 0.35 ? intensity(mode, rng, 0.15, 0.7) : 0;
+    ccd.wbRed = randomRange(1.6, 2.4, rng);
+    ccd.wbBlue = randomRange(1.2, 1.9, rng);
+  },
   afeBend(preset, mode, rng) {
     const afe = preset.pipeline.afeBend;
     afe.enabled = true;
@@ -66,6 +79,18 @@ export const MODULE_RANDOMIZERS = {
     else if (afe.inject === 0 && rng() < 0.25) afe.inject = intensity(mode, rng, 0.08, 0.25);
     afe.wbRed = randomRange(1.6, 2.4, rng);
     afe.wbBlue = randomRange(1.2, 1.9, rng);
+  },
+  railSag(preset, mode, rng) {
+    const sag = preset.pipeline.railSag;
+    sag.enabled = true;
+    sag.sag = intensity(mode, rng, 0.25, 0.9);
+    sag.flicker = randomRange(0.1, 0.7, rng);
+    sag.spikes = rng() < 0.6 ? randomRange(0.1, 0.6, rng) : 0;
+    // Occasional failure-free rolls keep the pure breathing-band look in the
+    // pool; most rolls let rows die.
+    sag.failures = rng() < 0.78 ? intensity(mode, rng, 0.2, 0.85) : 0;
+    sag.wbRed = randomRange(1.6, 2.4, rng);
+    sag.wbBlue = randomRange(1.2, 1.9, rng);
   },
   busBend(preset, mode, rng) {
     const bend = preset.pipeline.busBend;
@@ -422,36 +447,59 @@ function randomizeGlobal(preset, mode, rng) {
   else pipeline.chromaShift.enabled = false;
 
   // The global roll owns the physics rail decision either way.
-  pipeline.afeBend.enabled = false;
-  pipeline.busBend.enabled = false;
+  PHYSICS_MODULES.forEach((key) => {
+    pipeline[key].enabled = false;
+  });
   if (physicsLed || fullStack) rollPhysicsRail(preset, mode, rng);
 }
 
-// Roll the physics rail: usually one circuit leads, occasionally both stack
-// (in signal order, analog front end before the data bus). Stacked circuits
-// are damped — two full-strength physics bends erase the subject entirely.
-function rollPhysicsRail(preset, mode, rng) {
-  const roll = rng();
-  if (roll < 0.18) {
-    MODULE_RANDOMIZERS.afeBend(preset, mode, rng);
-    MODULE_RANDOMIZERS.busBend(preset, mode, rng);
-    const afe = preset.pipeline.afeBend;
-    const bus = preset.pipeline.busBend;
+// The rail's modules in signal order, with the damping applied when circuits
+// stack — two full-strength physics bends erase the subject entirely.
+const PHYSICS_MODULES = ["ccdClock", "afeBend", "railSag", "busBend"];
+const PHYSICS_DAMPERS = {
+  ccdClock(ccd) {
+    ccd.transferLoss *= 0.7;
+    ccd.vSkip *= 0.6;
+    ccd.hShear *= 0.6;
+    ccd.bloom *= 0.7;
+  },
+  afeBend(afe) {
     afe.inject *= 0.45;
     afe.gainMod *= 0.45;
     afe.cdsAmount *= 0.5;
+  },
+  railSag(sag) {
+    sag.sag *= 0.7;
+    sag.failures *= 0.6;
+  },
+  busBend(bus) {
     bus.injectStrength *= 0.7;
     bus.pot = clamp(bus.pot, 0.25, 1);
-  } else if (roll < 0.58) {
-    MODULE_RANDOMIZERS.afeBend(preset, mode, rng);
+  }
+};
+
+// Roll the physics rail: usually one circuit leads, occasionally two stack
+// (application order is fixed by the rail regardless of roll order).
+function rollPhysicsRail(preset, mode, rng) {
+  if (rng() < 0.16) {
+    const first = randomInt(0, PHYSICS_MODULES.length - 1, rng);
+    let second = randomInt(0, PHYSICS_MODULES.length - 2, rng);
+    if (second >= first) second += 1;
+    [first, second].forEach((index) => {
+      const key = PHYSICS_MODULES[index];
+      MODULE_RANDOMIZERS[key](preset, mode, rng);
+      PHYSICS_DAMPERS[key](preset.pipeline[key]);
+    });
   } else {
-    MODULE_RANDOMIZERS.busBend(preset, mode, rng);
+    const key = PHYSICS_MODULES[randomInt(0, PHYSICS_MODULES.length - 1, rng)];
+    MODULE_RANDOMIZERS[key](preset, mode, rng);
   }
 }
 
 function randomizePhysics(preset, mode, rng) {
-  preset.pipeline.afeBend.enabled = false;
-  preset.pipeline.busBend.enabled = false;
+  PHYSICS_MODULES.forEach((key) => {
+    preset.pipeline[key].enabled = false;
+  });
   rollPhysicsRail(preset, mode, rng);
 }
 

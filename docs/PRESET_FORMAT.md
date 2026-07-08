@@ -37,6 +37,15 @@ The schema below matches the current implementation (`src/presets.js`). It is st
     "ghostFrame": 0
   },
   "pipeline": {
+    "ccdClock": {
+      "enabled": false,
+      "transferLoss": 0.35,
+      "vSkip": 0.2,
+      "hShear": 0.25,
+      "bloom": 0.2,
+      "wbRed": 2.0,
+      "wbBlue": 1.5
+    },
     "afeBend": {
       "enabled": false,
       "wave": "sine",
@@ -47,6 +56,15 @@ The schema below matches the current implementation (`src/presets.js`). It is st
       "wobble": 0.1,
       "cdsAmount": 0.0,
       "cdsSkew": 0.3,
+      "wbRed": 2.0,
+      "wbBlue": 1.5
+    },
+    "railSag": {
+      "enabled": false,
+      "sag": 0.45,
+      "flicker": 0.35,
+      "spikes": 0.25,
+      "failures": 0.35,
       "wbRed": 2.0,
       "wbBlue": 1.5
     },
@@ -235,7 +253,9 @@ The schema below matches the current implementation (`src/presets.js`). It is st
 
 ## Module Reference
 
-- `afeBend`: physics-based analog-front-end bend, first on the physics rail (before `busBend`; the rail shares one raw round trip, see below). Attacks the pixel voltage stream before the ADC: `inject` adds an oscillator into the signal (`wave`: `sine`/`square`/`saw`/`noise`; `freq` is a log sweep in cycles per sensor row, ~0.02-320 — low = rolling horizontal hum bands, high = pixel-clock moire; `skew` tilts the bands by adding phase per row; `wobble` is seeded phase drift). `gainMod` modulates analog gain / ADC reference with the same oscillator (pumping exposure instead of additive bands). `cdsAmount`/`cdsSkew` skew the correlated-double-sampling timing so the reset sample lands on a stale pixel (log 1-48 clocks back): the frame becomes an embossed horizontal derivative with negative trails. `wbRed`/`wbBlue` as in `busBend`. When both physics modules are enabled they share a single inverse/forward ISP pass in signal order (analog -> bus), with WB gains taken from `afeBend`.
+- `ccdClock`: physics-based charge-transfer clock bend, first on the physics rail (the image is still charge packets — before voltages, before bits). `transferLoss`: charge fraction left behind each vertical shift (recursive melt: bright areas wash downward, log-swept from soft bleed to paint drips running most of the frame). `vSkip`: skipped/doubled vertical clock pulses — the readout pointer stalls (stretched repeated rows) or jumps (compressed skips); odd-length stalls flip the Bayer row phase so everything below develops color-swapped. `hShear`: horizontal register glitches shearing bands of rows sideways with wraparound (bimodal thin/thick band statistics; odd offsets flip the Bayer column phase into rainbow fringes). `bloom`: anti-blooming failure — lowers the effective full-well depth so clipped highlights overflow and spill vertical light spikes along the column. Event rates, melt length, and spill reach are normalized to frame height, so looks match across resolutions. `wbRed`/`wbBlue` as in `busBend`.
+- `afeBend`: physics-based analog-front-end bend, second on the physics rail (after `ccdClock`, before `railSag` and `busBend`; the rail shares one raw round trip, see below). Attacks the pixel voltage stream before the ADC: `inject` adds an oscillator into the signal (`wave`: `sine`/`square`/`saw`/`noise`; `freq` is a log sweep in cycles per sensor row, ~0.02-320 — low = rolling horizontal hum bands, high = pixel-clock moire; `skew` tilts the bands by adding phase per row; `wobble` is seeded phase drift). `gainMod` modulates analog gain / ADC reference with the same oscillator (pumping exposure instead of additive bands). `cdsAmount`/`cdsSkew` skew the correlated-double-sampling timing so the reset sample lands on a stale pixel (log 1-48 clocks back): the frame becomes an embossed horizontal derivative with negative trails. `wbRed`/`wbBlue` as in `busBend`. When several physics modules are enabled they share a single inverse/forward ISP pass in signal order (charge -> analog -> supply rail -> bus), with WB gains taken from the first enabled module.
+- `railSag`: physics-based supply-rail bend, third on the physics rail (between `afeBend` and `busBend`). One stochastic rail envelope is walked per readout row: rows that dip below regulation bloom bright (ADC reference droop inflates the codes) and lift their shadows (charge injection on the pedestal); rows that sag into the failure band die outright as self-sustaining events — ADC latch-up (a stuck code pair develops into solid color bands through WB and demosaic), comparator collapse (full-range static), or complete dropout (black). `sag`: how far the rail droops under load; `flicker`: noise roughness of the envelope (low = slow drifting brownout bands, high = jagged row-to-row flicker); `spikes`: sudden load transients that plunge the rail for a few rows and recover, throwing isolated failure bursts even at low `sag`; `failures`: how eagerly sagging rows fail and how thick the failure events run (0 = pure breathing bands, no row ever dies). Band scale and event thickness are normalized to frame height, so looks match across render resolutions. `wbRed`/`wbBlue` as in `busBend`.
 - `busBend`: physics-based ADC data-bus bend (modeled on the PowerShot A520 source/target selector bend), applied first. The image is pushed through an inverse ISP into a 12-bit RGGB Bayer raw stream, replayed clock-by-clock in readout order through a simulated bend circuit, then developed by a forward ISP (black level, WB gains, bilinear demosaic, gamma). `sourceMask`/`targetMask` are integer bitmasks of tapped ADC output bits (source bank reaches D11-D2, target bank D11-D4; multiple pins in a bank short together, pins in both banks merge the source and target nodes). `fn`: `bypass` passes the RC-high-pass-filtered analog edges, `invert` a logic NOT of them, `divide` a flip-flop halving the signal frequency (only interesting when source and target pins overlap — the flip-flop clocks itself off the pins it corrupts). `pot`: the filter pot — low values clamp targets toward ground and pass only sharp edges, high values let multi-scanline streaks through. `targetGnd`: adds the target selector's GND position (drags the target node low). `injectStrength`: how strongly injection wins bus contention; `jitter`: comparator noise (speckle on contended ties); `wbRed`/`wbBlue`: the simulated camera's white-balance gains, which set how corrupted raw explodes into color.
 - `colorBend`: whole-image color surgery — luminance-preserving `hueRotate` (degrees), hard channel reordering (`channelMode`: `gbr`, `brg`, `grb`, `bgr`, `rbg`), per-channel or full inversion (`invert`: `red`/`green`/`blue`/`all`), and `solarize` tone folding.
 - `chromaShift`: spatial RGB mis-registration; red and blue planes shift in opposite directions along `angle`, with optional per-row `wobble`.

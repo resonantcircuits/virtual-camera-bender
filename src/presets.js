@@ -43,6 +43,19 @@ export function defaultTemporal() {
 
 export const ADVANCED_DEFS = [
   {
+    group: "CCD Clock",
+    key: "ccdClock",
+    physics: true,
+    controls: [
+      ["pipeline.ccdClock.transferLoss", "Transfer Loss", "range", 0, 1, 0.01],
+      ["pipeline.ccdClock.vSkip", "V-Pulse Skips", "range", 0, 1, 0.01],
+      ["pipeline.ccdClock.hShear", "H Shear", "range", 0, 1, 0.01],
+      ["pipeline.ccdClock.bloom", "Bloom Spill", "range", 0, 1, 0.01],
+      ["pipeline.ccdClock.wbRed", "WB Red Gain", "range", 1, 3.5, 0.01],
+      ["pipeline.ccdClock.wbBlue", "WB Blue Gain", "range", 1, 3.5, 0.01]
+    ]
+  },
+  {
     group: "AFE Bend",
     key: "afeBend",
     physics: true,
@@ -57,6 +70,19 @@ export const ADVANCED_DEFS = [
       ["pipeline.afeBend.cdsSkew", "CDS Lag", "range", 0, 1, 0.01],
       ["pipeline.afeBend.wbRed", "WB Red Gain", "range", 1, 3.5, 0.01],
       ["pipeline.afeBend.wbBlue", "WB Blue Gain", "range", 1, 3.5, 0.01]
+    ]
+  },
+  {
+    group: "Rail Sag",
+    key: "railSag",
+    physics: true,
+    controls: [
+      ["pipeline.railSag.sag", "Rail Droop", "range", 0, 1, 0.01],
+      ["pipeline.railSag.flicker", "Flicker", "range", 0, 1, 0.01],
+      ["pipeline.railSag.spikes", "Load Spikes", "range", 0, 1, 0.01],
+      ["pipeline.railSag.failures", "Failures", "range", 0, 1, 0.01],
+      ["pipeline.railSag.wbRed", "WB Red Gain", "range", 1, 3.5, 0.01],
+      ["pipeline.railSag.wbBlue", "WB Blue Gain", "range", 1, 3.5, 0.01]
     ]
   },
   {
@@ -293,7 +319,110 @@ export const ADVANCED_DEFS = [
   }
 ];
 
+export const ADVANCED_MODULE_HELP = {
+  ccdClock: {
+    short: "Corrupts the raw CCD charge-transfer timing before the image is developed.",
+    long: "This is a physics-rail effect: rows can stall, skip, shear sideways, or leak highlight charge down the sensor columns. Because it happens in the raw domain, strong settings can also create Bayer phase flips and strange white-balance shifts instead of a simple post-process smear."
+  },
+  afeBend: {
+    short: "Injects oscillator and sampling faults into the camera analog front end.",
+    long: "AFE Bend acts before the ADC, where sensor voltage is amplified, sampled, and converted. It can add hum bands, moire, gain pumping, and stale correlated-double-sampling ghosts that look embossed or trailed because the reset sample is coming from the wrong pixel clock."
+  },
+  railSag: {
+    short: "Simulates supply voltage droop, flicker, spikes, and brownout failures.",
+    long: "Rail Sag makes the camera electronics run under an unstable power rail. Rows brighten, crush, or fail as the rail dips; load spikes can create short failure bursts, and high failure settings can collapse parts of the ADC into stuck colors, static, or black dropout."
+  },
+  busBend: {
+    short: "Shorts and injects ADC data bits like a real logic-chip circuit bend.",
+    long: "Bus Bend works on the raw ADC data bus, tapping source bits and driving target bits through a simple filter/comparator path. It creates hard digital bands, threshold streaks, bit-plane inversions, and contention speckle because brightness bits are being forced into the wrong logic states."
+  },
+  cheapCamera: {
+    short: "Adds low-end camera processing: tiny internal scale, blur, posterization, dither, and harsh sharpening.",
+    long: "This stage emulates the compromises of a weak compact sensor pipeline. The image can be softened before processing, resized through a smaller internal buffer, quantized to fewer color steps, dithered, and sharpened into brittle edges."
+  },
+  syncFault: {
+    short: "Breaks frame timing into horizontal tears, shifts, wobble, and scan drift.",
+    long: "Sync Fault treats the image like a video signal with unstable horizontal or vertical timing. It moves bands sideways, adds rolling phase wobble, and lets the timing error drift so the frame bends instead of staying perfectly rectangular."
+  },
+  bayerFault: {
+    short: "Misreads the Bayer color mosaic before demosaic, producing wrong-color checker and zipper artifacts.",
+    long: "A digital camera sensor only records one color sample at each pixel. Bayer Fault shifts or abuses that sampling phase before reconstruction, so edges pick up zippering and whole regions can resolve into unnatural red/green/blue checker patterns."
+  },
+  bufferGhost: {
+    short: "Mixes a stale frame or second image back into the current image in blocky patches.",
+    long: "Buffer Ghost imitates uncleared frame memory. It can pull from the current source, a loaded ghost image, or video ghost lag, then offset, zoom, interlace, and blend that stale buffer through coherent blocks rather than a smooth overlay."
+  },
+  colorBend: {
+    short: "Performs direct RGB channel surgery: hue rotation, channel swaps, inversion, and solarization.",
+    long: "Color Bend is the broad color wiring module. It can rotate hue, reorder channels, invert selected channels, and fold tones back on themselves with solarization, making it useful for unnatural camera color faults and aggressive palette shifts."
+  },
+  chromaShift: {
+    short: "Offsets color channels away from each other for fringing and unstable row wobble.",
+    long: "Chroma Shift splits RGB channels along a chosen direction and can vary the offset by row. Low settings create lens-like color fringes; high settings feel more like unstable analog color registration."
+  },
+  exposureFault: {
+    short: "Damages gain, shadow crush, highlight clipping, contour bands, and clipped-edge fringing.",
+    long: "Exposure Fault pushes the image through a broken auto-exposure or sensor response curve. It can lift or crush the signal, blow highlights into hard regions, draw contour steps around tonal transitions, and add purple bloom around clipped areas."
+  },
+  awbSeizure: {
+    short: "Creates white-balance and auto-exposure hunting bands across the frame.",
+    long: "AWB Seizure simulates a camera repeatedly changing its idea of neutral color and exposure while the frame is read. Bands can swing warm/cool and bright/dark, with height and frequency controlling whether the hunt feels broad or frantic."
+  },
+  contourRings: {
+    short: "Turns brightness ranges into graphic contour bands and false-color rings.",
+    long: "Contour Rings maps luminance into repeated bands, like a broken tone curve or posterized exposure response. Sharpness, scale, tonal bias, and color bleed decide whether it reads as subtle sensor banding or heavy topographic color rings."
+  },
+  falseColor: {
+    short: "Remaps tones into synthetic camera palettes with posterization and optional channel warping.",
+    long: "False Color replaces natural color with generated palettes after reducing or smoothing tonal steps. It is useful for thermal-looking mappings, toy-camera palettes, and harsh digital color modes that still follow the image's brightness structure."
+  },
+  gradientWash: {
+    short: "Lays position-based palette bands over the image, with optional luminance preservation and wobble.",
+    long: "Gradient Wash is a spatial color overlay rather than a tonal remap. It sweeps palette bands across the frame at an angle, can preserve the original lightness, and can wobble the bands with noise for less perfect, more damaged color drift."
+  },
+  pixelSort: {
+    short: "Sorts vertical runs of pixels triggered by brightness or darkness thresholds.",
+    long: "Pixel Sort finds local runs that cross the selected trigger and replaces them with sorted color values. Window size and max run keep the sorting constrained, while direction and threshold decide whether streaks fall from highlights, shadows, or dense local bands."
+  },
+  edgeBurn: {
+    short: "Detects edges, darkens outlines, and burns colored halos into high-contrast details.",
+    long: "Edge Burn exaggerates transitions in the source image. It can draw dark compact-camera outlines first, then add colored halos over detected edges, which makes texture, silhouettes, and compression-like damage feel more electrically overdriven."
+  },
+  verticalSmear: {
+    short: "Creates CCD-style vertical streaks from highlights, curtains, edge bias, and column instability.",
+    long: "Vertical Smear models readout charge leaking down sensor columns. Bright areas can trail vertically with controllable decay, spread, length, and contrast; curtain controls add independent falling streaks so the effect can move beyond highlight-only smear."
+  },
+  sensorNoise: {
+    short: "Adds grain, color noise, striping, hot pixels, dead columns, and stuck sensor clusters.",
+    long: "Sensor Noise combines random noise with fixed-pattern defects. It can bias noise into shadows, colorize it, add row/column striping, and place persistent hot or dead sensor defects that stay tied to image coordinates."
+  },
+  ampGlow: {
+    short: "Adds thermal amplifier glow from a corner of the sensor.",
+    long: "Amp Glow imitates heat or electronics leakage near the sensor edge. Strength controls brightness, corner selects the source, hue moves from cooler purple into hot orange, and spread controls how far the glow creeps into the frame."
+  },
+  memoryFault: {
+    short: "Adds memory-card and buffer corruption: interlace, shifted blocks, repeated rows, and scanline dropout.",
+    long: "Memory Fault happens after the image exists as rows and blocks. It can mix fields, displace rectangular blocks, repeat nearby scanlines, and drop or darken scanlines, so it reads more like storage or transfer damage than sensor physics."
+  },
+  dctCrunch: {
+    short: "Corrupts JPEG-style DCT blocks with compression, chroma loss, DC drift, scrambled detail, and repeated macroblocks.",
+    long: "DCT Crunch pushes the image through block-compression logic. Lower quality and chroma subsampling make normal codec damage, while DC drift, AC scramble, block repeat, and multiple generations turn it into unstable macroblock corruption."
+  },
+  osdOverlay: {
+    short: "Draws compact-camera UI artifacts such as dates, REC marks, HUD icons, and glitched text.",
+    long: "OSD Overlay adds the camera's own display layer after the image damage. It can stamp dates, battery and recording marks, focus brackets, and corrupted glyphs, with scale and color matching old consumer camera overlays."
+  }
+};
+
 export const ADVANCED_CONTROL_HELP = {
+  "pipeline.ccdClock.enabled": "Turns the charge-transfer clock bend on or off (melt, row stalls, shear bands, bloom spikes at the sensor itself).",
+  "pipeline.ccdClock.transferLoss": "Charge left behind each vertical shift: bright areas wash downward, from soft bleed to paint-like drips that run most of the frame.",
+  "pipeline.ccdClock.vSkip": "Skipped or doubled vertical clock pulses: readout stalls (stretched repeated rows) or jumps (compressed skips). Odd-length stalls flip the Bayer phase and color-swap everything below.",
+  "pipeline.ccdClock.hShear": "Horizontal register glitches: bands of rows shear sideways with wraparound; odd offsets add rainbow demosaic fringes.",
+  "pipeline.ccdClock.bloom": "Anti-blooming failure: lowers the full-well depth so clipped highlights overflow and spill vertical light spikes up and down the column.",
+  "pipeline.ccdClock.wbRed": "Simulated camera red white-balance gain applied when the bent raw is developed.",
+  "pipeline.ccdClock.wbBlue": "Simulated camera blue white-balance gain applied when the bent raw is developed.",
+
   "pipeline.afeBend.enabled": "Turns the analog-front-end bend on or off (oscillator injection, gain wobble, CDS ghosting before the ADC).",
   "pipeline.afeBend.wave": "Oscillator shape injected into the analog path: sine hums, square slams, saw sweeps, noise is sample-and-hold static.",
   "pipeline.afeBend.freq": "Oscillator frequency in cycles per sensor row (log sweep): low = rolling horizontal hum bands, high = moire against the pixel clock.",
@@ -305,6 +434,14 @@ export const ADVANCED_CONTROL_HELP = {
   "pipeline.afeBend.cdsSkew": "How stale the CDS reset sample is, in clocks (log 1-48): trail length of the emboss ghost.",
   "pipeline.afeBend.wbRed": "Simulated camera red white-balance gain applied when the bent raw is developed.",
   "pipeline.afeBend.wbBlue": "Simulated camera blue white-balance gain applied when the bent raw is developed.",
+
+  "pipeline.railSag.enabled": "Turns the supply-rail bend on or off (voltage droop, load spikes, and brownout row failures at the ADC).",
+  "pipeline.railSag.sag": "How far the supply rail droops under load. Rows that dip below regulation bloom bright and lift their shadows before failing outright.",
+  "pipeline.railSag.flicker": "Rail noise roughness: low is slow drifting brownout bands, high is jagged row-to-row flicker.",
+  "pipeline.railSag.spikes": "Sudden load transients that plunge the rail for a few rows and recover — isolated failure bursts even on an otherwise healthy rail.",
+  "pipeline.railSag.failures": "How eagerly sagging rows fail outright: ADC latch-up (stuck-code color bands), comparator collapse (static), or full dropout (black).",
+  "pipeline.railSag.wbRed": "Simulated camera red white-balance gain applied when the bent raw is developed.",
+  "pipeline.railSag.wbBlue": "Simulated camera blue white-balance gain applied when the bent raw is developed.",
 
   "pipeline.busBend.enabled": "Turns the physics-based ADC data-bus bend on or off.",
   "pipeline.busBend.sourceMask": "DIP switches tapping ADC output bits D11 (brightness MSB) down to D2. Multiple switches short those bits together.",
@@ -472,6 +609,15 @@ function defaultMacros() {
 
 function defaultPipeline() {
   return {
+    ccdClock: {
+      enabled: false,
+      transferLoss: 0.35,
+      vSkip: 0.2,
+      hShear: 0.25,
+      bloom: 0.2,
+      wbRed: 2,
+      wbBlue: 1.5
+    },
     afeBend: {
       enabled: false,
       wave: "sine",
@@ -482,6 +628,15 @@ function defaultPipeline() {
       wobble: 0.1,
       cdsAmount: 0,
       cdsSkew: 0.3,
+      wbRed: 2,
+      wbBlue: 1.5
+    },
+    railSag: {
+      enabled: false,
+      sag: 0.45,
+      flicker: 0.35,
+      spikes: 0.25,
+      failures: 0.35,
       wbRed: 2,
       wbBlue: 1.5
     },

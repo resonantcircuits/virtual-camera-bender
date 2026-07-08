@@ -328,7 +328,7 @@ Phase 6 proved that simulating the actual circuit beats approximating its look. 
 
 ```text
 charge domain -> analog domain -> ADC data bus -> memory -> codec
-(ccdClock)      (afeBend, done)  (busBend, done)  (addressBus) (jpegStream)
+(ccdClock, done) (afeBend, done) (busBend, done)  (addressBus) (jpegStream)
 ```
 
 **0. Shared raw-domain harness (`src/raw-domain.js`) — done 2026-07-07**
@@ -342,8 +342,9 @@ The pixel stream before the ADC is a continuous voltage; this is where the class
 - *CDS timing skew*: correlated double sampling with the reset sample landing on a stale pixel (`signal[n] − amount·(signal[n−lag] − black)`) — the frame becomes a horizontal-derivative emboss with negative trails; lag on a log sweep of 1–48 clocks.
 Where busBend is harsh and posterized, this module is liquid: smooth interference physics, colored by WB like everything raw-domain.
 
-**2. `ccdClock` — charge-transfer clock bend (charge domain)**
+**2. `ccdClock` — charge-transfer clock bend (charge domain) — done 2026-07-08**
 Before there are bits or even voltages, the image is charge packets marched by multi-phase transfer clocks (V1/V2 row clocks, H1/H2 register clocks). Model the sensor as charge buckets and corrupt the transfer schedule: skipped V pulses (row repeats + charge accumulation), doubled pulses (row skips), partial transfer efficiency (a fraction of charge left behind each shift → *physical* vertical smear, unlike the painterly `verticalSmear`), inter-well mixing, and H-register glitches for per-row horizontal shear. Geometric melt — the NOYSTOISE look, and the A520 author's own "future work" item.
+Shipped as `src/ccd-clock.js`, first on the rail. Four mechanisms in charge domain (raw minus pedestal, always ≥ 0): anti-blooming failure (lowered full-well depth; overflow spills up/down the column, drained at a limited rate so spikes decay exponentially — knob sweeps from sharp light spikes to full smear pillars), leaky vertical transfer (melt coefficient log-swept in decay length ~1–500 normalized rows, compensated per row as γ^rowRate), V-pulse stall/jump events (a stall of odd length flips the Bayer row phase and color-swaps everything below — physically real, kept), and H-register shear bands (bimodal thin/thick thickness per the reference doc's slice statistics, offsets to ±20% width, wraparound, rainbow fringes from odd offsets). Validated: idle bit-identical, melt/spike scale matches 720px↔6240px, flat-field drip direction and length match the reference IIR, 38-frame video clean. Built-in presets (phenotype pack begins): `A540 Melt`, `A530 Warp` (46 total).
 
 **3. `addressBus` — frame-buffer address-line bend (memory domain)**
 `memoryFault` is painterly; the physical version shorts or sticks *address lines* on the SDRAM, so memory aliases in exact powers of two: mirrored tiles, interleaved row pairs, ping-ponged halves — crystalline deterministic repetition, nothing like random block damage. Cheap to simulate (remap read addresses through a corrupted-bit function) and very distinct.
@@ -352,6 +353,46 @@ Before there are bits or even voltages, the image is charge packets marched by m
 `dctCrunch` damages coefficients; real corrupt JPEGs damage the *Huffman bitstream*, so everything after a flipped bit decodes wrong until the next restart marker — the classic cascading shear-and-hue-slide. Needs a small sequential JPEG encoder/decoder pair (encode with restart markers, flip seeded bits, tolerant decode). Largest effort of the four; consider last.
 
 Build order by distinctness-per-effort: **afeBend → ccdClock → addressBus → jpegStream**. Each lands with the standard integration checklist (Phase 5) plus a physics-validation gate: CLI contact sheets, identity round-trip clean when idle, and at least one seeded config matching a documented real-bend behavior.
+
+### Phase 8: More Physics Bends — the Deep-Research Harvest (ideated 2026-07-08)
+
+Source: `docs/CIRCUIT-BEND-REFERENCE.md`, a deep-research survey of documented hardware camera bends (PowerShot A520/A530/A540/A590/G2, FinePix S9000, Praktica DC42, Kodak C310, Sony DSC-V1, and more). Triaged against the rail:
+
+- **Confirms shipped work.** Its bit-collision model (`b_n' = b_m' = b_n ∧ b_m`), NAND inversion, flip-flop divide-by-two recursion, and RC high-pass with `α = RC/(RC+Ts)` are exactly what `busBend` simulates — ours with more circuit fidelity (bus contention, one-clock feedback). Its 555-timer/LFO injection and audio-into-video bends are `afeBend`'s oscillator; its melt IIR (`P(y) = (1−γ)P_raw + γP(y−1)`) is `ccdClock`'s partial-transfer effect, still to build.
+- **Refines Phase 7.** The HClock section contributes measurable statistics for `ccdClock`'s H-register glitches: bimodal slice heights (2–3 px bands vs 8–20 px blocks), shifts up to ±20% of width with wraparound. Adopt those as validation targets — but *not* the 70/15/15 outcome coin-flips; the dropout and rail-color ("chromatic sieve" / ADC latch-up) slices get a physical cause in `railSag` below. The doc's GPU-shader implementation is not adopted: the CPU worker rail is fast enough and models causes, not looks.
+- **Genuinely new** — the modules and features below, all riding the existing raw-domain rail.
+
+The rail grows at both ends: optics before charge, power and master clock underneath everything.
+
+```text
+optics -> charge domain -> analog domain -> ADC data bus -> memory -> codec
+(irCut)   (ccdClock, P7)   (afeBend ✓)     (busBend ✓)     (addressBus, P7) (jpegStream, P7)
+          └────────────── masterClock warps the timing of all of it ──────────────┘
+          └────────────── railSag sags the supply under all of it ────────────────┘
+```
+
+**1. `railSag` — supply-rail bend (power domain) — done 2026-07-08**
+The doc's troubleshooting section (voltage sags, latch-ups, logic locks) is the physical cause behind the glitch statistics every approximation hand-rolls. Model one slow stochastic supply envelope `V(t)` sampled per readout row (seeded random walk with recovery pull toward nominal, plus load spikes): above the sag threshold it modulates ADC reference and black pedestal (exposure breathes, shadows lift); in the sag band, per-row failures fire with probability shaped by the deficit — ADC latch-up (row saturates to a rail color: the "chromatic sieve"), comparator collapse (row of high-frequency static: the "logic lock"), full dropout (black row); deep sags cluster failures into runs because the envelope, not a coin, has memory. Cheap (per-row envelope + per-pixel gain), extremely distinct, and it retro-powers other modules: `busBend`/`afeBend` can later read the same envelope so bends deepen when the rail droops, which is exactly how real bent cameras behave near brownout.
+Shipped as `src/rail-sag.js`, second on the rail (analog → supply → bus). Implementation notes: the walk is driven by low-passed noise (amplitude-compensated so `sag` holds depth while `flicker` only reshapes the spectrum) and all envelope rates are normalized to a 960-row frame, so band scale and failure thickness are resolution-independent; failures are self-sustaining events with a drawn duration in normalized rows (latch-up holds until the supply resets — no per-row dice); latch-up sticks a *code pair* (interleaved AFE sample stages), which is what develops into solid colored bands through WB and demosaic. Validated: idle module round-trips bit-identical, band/failure scale matches between 720px and 6240px renders, compounds with busBend on the shared rail, 27 fps video at 480px. Built-in presets: `Brownout`, `Chromatic Sieve` (44 total).
+
+**2. `masterClock` — system-clock reclock bend (timing domain)**
+The LTC1799 reclocking mod: replace the master oscillator and everything downstream derives wrong timing at once. Distinct from `ccdClock` (which corrupts individual transfer pulses): this is a continuous *ratio* error between pixel clock and sensor cycle, modeled as resampling the raw stream — a clock-ratio param stretches/compresses readout along the scan (cumulative horizontal drift, the phase-error integral `θe(t) = ∫δc(τ)dτ` with a seeded drift term), rows that overrun their line budget tear and carry remainder phase into the next row (incomplete line transfers), and sustained ratio error accumulates into vertical roll. Past a critical overclock threshold, sync breakdown: rolls accelerate, phase drift goes chaotic, and the frame degrades toward the `railSag` failure vocabulary. One knob from "subtle VHS-ish skew" to "total sync collapse" — geometric, where everything else on the rail is tonal.
+
+**3. `busBend` v2 — patch bay, soft shorts, corrosion**
+Three doc-sourced extensions to the shipped module: (a) *series resistance* — real benders put 20–100 Ω in the patch line; a `resistance` param softens the hard drive-fight short into a weighted average with partial comparator uncertainty, opening a continuum between clean and fully shorted buses; (b) *common effects bus* — multiple source pins onto one shared node so composite multi-pin collisions resolve together (the DC42 cumulative-corruption look) instead of pairwise; (c) *corrosion map* — see item 6.
+
+**4. `irCut` — IR-cut filter removal (optical domain)**
+The DSC-V1 magnetic filter bypass: not corruption but a spectral mod, and the rail's first pre-charge module. In linear domain before mosaic: a channel-crosstalk matrix leaks a synthesized IR plane (red-weighted luminance with lifted shadows — hot things glow regardless of color) into all three channels, red most; WB then fights it, giving the classic full-spectrum pink-white foliage and translucent dark fabrics; a soft red-channel bloom models sensor IR halation. Extends the instrument's range beyond glitch into the dreamy end — pairs beautifully *under* the corruption modules since a bent full-spectrum camera is a real object people build.
+
+**5. Audio-reactive bending (app + temporal, not a module)**
+The doc's amplified-mic-into-clock bend. The engine stays browser-free: modulation is just per-frame param values, which the temporal engine already delivers. App side: mic amplitude → `afeBend.inject`/`freq` (and later `railSag` load) in live preview. CLI side: `render-video --audio <file>` extracts an amplitude envelope and feeds the same params, so corruption bands pulse with the soundtrack. Prerequisite: an `duty` param on `afeBend`'s square wave (the doc modulates duty cycle, `D(t) = D_base + κ·clamp(A_audio)`), a tiny v1.1 extension worth doing regardless.
+
+**6. Corrosion map — the virtual chassis (meta-feature)**
+Solder bridges age and boards corrode: a persistent, seeded per-"camera body" fault layer — a handful of permanent soft shorts and resistive leaks (biases injected into `busBend`/`railSag` configs) that survive across sessions until a "board cleanup" action wipes them. Turns the app from a filter into an instrument with a history; purely additive state layered on existing params, no engine changes. Design open: where the chassis lives (localStorage vs preset-adjacent file) and whether corrosion accrues with use.
+
+Also: a **phenotype preset pack** — one seeded preset per documented camera in the reference database (`S9000 Tear`, `A540 Melt`, `DC42 Night Solarize`, `EasyShare Freeze`, `V1 Full Spectrum`, …), each landing with the module that enables its documented look. These double as the physics-validation gates.
+
+Build order interleaved with the Phase 7 remainder, by distinctness-per-effort: **railSag (done 2026-07-08) → ccdClock (P7, done 2026-07-08) → masterClock → busBend v2 → irCut → addressBus (P7) → audio-reactive → corrosion map → jpegStream (P7)**. Same integration checklist and physics-validation gate as Phase 7.
 
 ## Decisions Made (formerly Open Decisions)
 
