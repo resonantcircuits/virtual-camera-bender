@@ -43,6 +43,19 @@ export function defaultTemporal() {
 
 export const ADVANCED_DEFS = [
   {
+    group: "IR Cut",
+    key: "irCut",
+    physics: true,
+    controls: [
+      ["pipeline.irCut.strength", "Filter Pull", "range", 0, 1, 0.01],
+      ["pipeline.irCut.spectrum", "Red Bias", "range", 0, 1, 0.01],
+      ["pipeline.irCut.wood", "Foliage Glow", "range", 0, 1, 0.01],
+      ["pipeline.irCut.haze", "Halation", "range", 0, 1, 0.01],
+      ["pipeline.irCut.wbRed", "WB Red Gain", "range", 1, 3.5, 0.01],
+      ["pipeline.irCut.wbBlue", "WB Blue Gain", "range", 1, 3.5, 0.01]
+    ]
+  },
+  {
     group: "CCD Clock",
     key: "ccdClock",
     physics: true,
@@ -335,6 +348,10 @@ export const ADVANCED_DEFS = [
 ];
 
 export const ADVANCED_MODULE_HELP = {
+  irCut: {
+    short: "Pulls the IR-cut filter so full-spectrum light reaches the sensor.",
+    long: "IR Cut is the classic filter-removal mod: near-infrared floods every color channel, so foliage glows white-pink (the Wood effect), blue skies go dark and liquid, and highlights haze softly because IR focuses behind the sensor plane. It is a mood rather than a glitch — and it stacks under the other physics bends the way a converted camera would."
+  },
   ccdClock: {
     short: "Corrupts the raw CCD charge-transfer timing before the image is developed.",
     long: "This is a physics-rail effect: rows can stall, skip, shear sideways, or leak highlight charge down the sensor columns. Because it happens in the raw domain, strong settings can also create Bayer phase flips and strange white-balance shifts instead of a simple post-process smear."
@@ -434,6 +451,14 @@ export const ADVANCED_MODULE_HELP = {
 };
 
 export const ADVANCED_CONTROL_HELP = {
+  "pipeline.irCut.enabled": "Turns the IR-cut filter removal on or off (full-spectrum light reaching the sensor: glowing foliage, dark skies, soft IR haze).",
+  "pipeline.irCut.strength": "How far the IR-cut filter is pulled out of the optical path: 0 seated, 1 fully removed.",
+  "pipeline.irCut.spectrum": "How unevenly the color filter dyes pass infrared: low is deep NIR where every channel sees it (ghostly white), high leaks mostly into red (pink full-spectrum cast).",
+  "pipeline.irCut.wood": "The Wood effect: how strongly chlorophyll reflects near-infrared. High values make foliage and greenery glow white-pink.",
+  "pipeline.irCut.haze": "IR halation: infrared focuses behind the sensor plane, so the leaked light blooms softly past edges.",
+  "pipeline.irCut.wbRed": "Simulated camera red white-balance gain applied when the full-spectrum raw is developed.",
+  "pipeline.irCut.wbBlue": "Simulated camera blue white-balance gain applied when the full-spectrum raw is developed.",
+
   "pipeline.ccdClock.enabled": "Turns the charge-transfer clock bend on or off (melt, row stalls, shear bands, bloom spikes at the sensor itself).",
   "pipeline.ccdClock.transferLoss": "Charge left behind each vertical shift: bright areas wash downward, from soft bleed to paint-like drips that run most of the frame.",
   "pipeline.ccdClock.vSkip": "Skipped or doubled vertical clock pulses: readout stalls (stretched repeated rows) or jumps (compressed skips). Odd-length stalls flip the Bayer phase and color-swap everything below.",
@@ -638,6 +663,15 @@ function defaultMacros() {
 
 function defaultPipeline() {
   return {
+    irCut: {
+      enabled: false,
+      strength: 0.6,
+      spectrum: 0.6,
+      wood: 0.5,
+      haze: 0.35,
+      wbRed: 2,
+      wbBlue: 1.5
+    },
     ccdClock: {
       enabled: false,
       transferLoss: 0.35,

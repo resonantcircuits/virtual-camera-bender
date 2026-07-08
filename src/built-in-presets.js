@@ -1130,6 +1130,30 @@ export const BUILT_IN_PRESETS = [
     }
   }),
   createPreset({
+    name: "V1 Full Spectrum",
+    description: "IR-cut filter bypassed: pink-white glowing foliage, lavender skies, soft infrared haze.",
+    tags: ["ir-cut", "physics", "full-spectrum", "infrared"],
+    seed: 30103,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      irCut: { enabled: true, strength: 0.75, spectrum: 0.7, wood: 0.7, haze: 0.35 },
+      dctCrunch: { enabled: true, quality: 0.76, chromaSubsample: 0.4, generations: 1 }
+    },
+    temporal: { driftAmount: 0.08, driftSpeed: 0.3 }
+  }),
+  createPreset({
+    name: "Chlorophyll Ghost",
+    description: "Deep near-infrared with grass-set white balance: ghost-white foliage in a pale monochrome world.",
+    tags: ["ir-cut", "physics", "infrared", "wood-effect"],
+    seed: 30109,
+    macros: { bend: 0, colorFault: 0, melt: 0, burn: 0, noise: 0, cheapness: 0, chaos: 0 },
+    pipeline: {
+      irCut: { enabled: true, strength: 0.95, spectrum: 0.08, wood: 0.75, haze: 0.3, wbRed: 1, wbBlue: 1 },
+      dctCrunch: { enabled: true, quality: 0.76, chromaSubsample: 0.4, generations: 1 }
+    },
+    temporal: { driftAmount: 0.08, driftSpeed: 0.3 }
+  }),
+  createPreset({
     name: "DC42 Night Solarize",
     description: "Every tapped pin colliding on one common bus: nocturnal luminance noise and solarized rainbow skies.",
     tags: ["bus-bend", "physics", "common-bus", "solarize"],

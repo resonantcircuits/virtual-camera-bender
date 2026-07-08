@@ -1,5 +1,6 @@
 import { clamp, fbmNoise, fract, hashSigned, hashUnit, lerp, smoothstep } from "./utils.js";
 import { imageToRaw, rawToImage, wbGains } from "./raw-domain.js";
+import { irCutActive, applyIrCutRaw } from "./ir-cut.js";
 import { ccdClockActive, applyCcdClockRaw } from "./ccd-clock.js";
 import { afeBendActive, applyAfeBendRaw } from "./afe-bend.js";
 import { railSagActive, applyRailSagRaw } from "./rail-sag.js";
@@ -138,17 +139,19 @@ export function processCircuitBendImageData(image, preset, resources = {}, optio
 // The physics rail runs first: circuit-level bends corrupt the sensor signal
 // before any of the camera's (or our) image processing exists. One raw round
 // trip covers every enabled physics module, in true signal order
-// (charge transfer -> analog front end -> supply rail at the ADC -> ADC data
-// bus -> DSP capture framing), so their damage compounds physically.
+// (optics -> charge transfer -> analog front end -> supply rail at the ADC ->
+// ADC data bus -> DSP capture framing), so their damage compounds physically.
 function applyPhysicsRail(image, pipeline, seed, liveSeed) {
+  const irOn = irCutActive(pipeline.irCut);
   const ccdOn = ccdClockActive(pipeline.ccdClock);
   const afeOn = afeBendActive(pipeline.afeBend);
   const sagOn = railSagActive(pipeline.railSag);
   const busOn = busBendActive(pipeline.busBend);
   const clkOn = masterClockActive(pipeline.masterClock);
-  if (!ccdOn && !afeOn && !sagOn && !busOn && !clkOn) return;
-  const wb = wbGains(
-    ccdOn
+  if (!irOn && !ccdOn && !afeOn && !sagOn && !busOn && !clkOn) return;
+  const wbSource = irOn
+    ? pipeline.irCut
+    : ccdOn
       ? pipeline.ccdClock
       : afeOn
         ? pipeline.afeBend
@@ -156,9 +159,10 @@ function applyPhysicsRail(image, pipeline, seed, liveSeed) {
           ? pipeline.railSag
           : busOn
             ? pipeline.busBend
-            : pipeline.masterClock,
-  );
+            : pipeline.masterClock;
+  const wb = wbGains(wbSource);
   const raw = imageToRaw(image, wb);
+  if (irOn) applyIrCutRaw(raw, image.width, image.height, pipeline.irCut);
   if (ccdOn) applyCcdClockRaw(raw, image.width, image.height, pipeline.ccdClock, seed);
   if (afeOn) applyAfeBendRaw(raw, image.width, image.height, pipeline.afeBend, seed);
   if (sagOn) applyRailSagRaw(raw, image.width, image.height, pipeline.railSag, seed, liveSeed);

@@ -10,7 +10,7 @@ const MODES = {
 
 export const RANDOM_FAMILIES = [
   ["global", "Global", "Build a whole new camera: re-rolls all macros and modules, new name and seed"],
-  ["physics", "Physics", "Re-roll the physics rail only: charge-transfer clock, analog front end, supply rail, data bus, and master clock — keeps the rest"],
+  ["physics", "Physics", "Re-roll the physics rail only: IR filter, charge-transfer clock, analog front end, supply rail, data bus, and master clock — keeps the rest"],
   ["color", "Color", "Re-roll color only: palette, hue/channel bends, gradient wash, WB hunting — keeps the rest"],
   ["melt", "Melt", "Re-roll smear and pixel-sort drips — keeps the rest"],
   ["burn", "Burn", "Re-roll exposure clipping, contour rings, and edge fringes — keeps the rest"],
@@ -48,6 +48,18 @@ export const MODULE_RANDOMIZERS = {
   // The physics modules (PHYSICS_MODULES below) never join the stylized-only
   // global rolls as background guests — they lead a build or sit it out (see
   // randomizeGlobal), and have their own Physics family button.
+  irCut(preset, mode, rng) {
+    const ir = preset.pipeline.irCut;
+    ir.enabled = true;
+    ir.strength = intensity(mode, rng, 0.35, 0.95);
+    ir.spectrum = randomRange(0.15, 0.95, rng);
+    ir.wood = randomRange(0.2, 0.9, rng);
+    ir.haze = rng() < 0.7 ? randomRange(0.1, 0.7, rng) : 0;
+    // Full-spectrum shooters set strange custom WB; allow low red gains that
+    // tip the develop toward swapped aerochrome-ish palettes.
+    ir.wbRed = randomRange(1.2, 2.4, rng);
+    ir.wbBlue = randomRange(1.2, 2.2, rng);
+  },
   ccdClock(preset, mode, rng) {
     const ccd = preset.pipeline.ccdClock;
     ccd.enabled = true;
@@ -469,8 +481,12 @@ function randomizeGlobal(preset, mode, rng) {
 
 // The rail's modules in signal order, with the damping applied when circuits
 // stack — two full-strength physics bends erase the subject entirely.
-const PHYSICS_MODULES = ["ccdClock", "afeBend", "railSag", "busBend", "masterClock"];
+const PHYSICS_MODULES = ["irCut", "ccdClock", "afeBend", "railSag", "busBend", "masterClock"];
 const PHYSICS_DAMPERS = {
+  irCut(ir) {
+    ir.strength *= 0.75;
+    ir.haze *= 0.7;
+  },
   masterClock(clk) {
     clk.detune *= 0.55;
     clk.drift *= 0.6;
