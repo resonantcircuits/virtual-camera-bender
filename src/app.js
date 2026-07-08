@@ -100,8 +100,10 @@ const dom = {
   macroControls: document.querySelector("#macroControls"),
   advancedControls: document.querySelector("#advancedControls"),
   physicsControls: document.querySelector("#physicsControls"),
+  classicEditControls: document.querySelector("#classicEditControls"),
   physicsAllOffButton: document.querySelector("#physicsAllOffButton"),
   stylizedAllOffButton: document.querySelector("#stylizedAllOffButton"),
+  classicEditAllOffButton: document.querySelector("#classicEditAllOffButton"),
   randomFamilyList: document.querySelector("#randomFamilyList"),
   randomMode: document.querySelector("#randomMode"),
   presetName: document.querySelector("#presetName"),
@@ -293,8 +295,9 @@ function bindEvents() {
     if (event.target === dom.videoDialog) dom.videoDialog.close();
   });
   dom.copyCommandButton.addEventListener("click", copyRenderCommand);
-  dom.physicsAllOffButton.addEventListener("click", (event) => panelAllOff(event, true, "PHYSICS RAIL OFF"));
-  dom.stylizedAllOffButton.addEventListener("click", (event) => panelAllOff(event, false, "STYLIZED CIRCUIT OFF"));
+  dom.physicsAllOffButton.addEventListener("click", (event) => panelAllOff(event, "physics", "PHYSICS RAIL OFF"));
+  dom.stylizedAllOffButton.addEventListener("click", (event) => panelAllOff(event, "stylized", "STYLIZED CIRCUIT OFF"));
+  dom.classicEditAllOffButton.addEventListener("click", (event) => panelAllOff(event, "classicEdit", "CLASSIC EDIT OFF"));
 
   dom.galleryFilter.addEventListener("input", applyGalleryFilter);
   dom.galleryFilter.addEventListener("keydown", (event) => {
@@ -952,7 +955,7 @@ function toggleModuleFreeze(moduleKey, groupName) {
 }
 
 function flashModuleLock(moduleKey) {
-  // Module groups live in either circuit panel (physics rail or stylized).
+  // Module groups live in one of the right-side panels.
   const button = document.querySelector(`.advanced-group[data-module-key="${moduleKey}"] .lock-button`);
   if (!button) return;
   button.classList.remove("is-flashing");
@@ -1073,20 +1076,26 @@ function renderMacroControls() {
   });
 }
 
-// ALL OFF in a circuit panel header: switch off every module in that panel
-// (physics rail or stylized) without touching their other settings.
-function panelAllOff(event, physics, statusLabel) {
+// ALL OFF in a panel header: switch off every module in that panel without
+// touching its other settings.
+function panelAllOff(event, panel, statusLabel) {
   // The button lives inside a <summary>; don't toggle the dropdown with it.
   event.preventDefault();
   event.stopPropagation();
   pushHistory(snapshotPreset());
   ADVANCED_DEFS.forEach((group) => {
-    if (Boolean(group.physics) !== physics) return;
+    if (groupPanel(group) !== panel) return;
     setAtPath(state.preset, `pipeline.${group.key}.enabled`, false);
   });
   renderAdvancedControls();
   scheduleRender();
   updateStatus(statusLabel);
+}
+
+function groupPanel(group) {
+  if (group.physics) return "physics";
+  if (group.classicEdit) return "classicEdit";
+  return "stylized";
 }
 
 function createModuleHelpPanel(group, help, expanded) {
@@ -1127,6 +1136,7 @@ function createModuleHelpPanel(group, help, expanded) {
 function renderAdvancedControls() {
   dom.advancedControls.innerHTML = "";
   dom.physicsControls.innerHTML = "";
+  dom.classicEditControls.innerHTML = "";
   ADVANCED_DEFS.forEach((group) => {
     const moduleFrozen = state.frozenModules.has(group.key);
     const moduleHelp = ADVANCED_MODULE_HELP[group.key];
@@ -1354,7 +1364,10 @@ function renderAdvancedControls() {
       details.append(row);
     });
 
-    (group.physics ? dom.physicsControls : dom.advancedControls).append(details);
+    const panel = groupPanel(group);
+    if (panel === "physics") dom.physicsControls.append(details);
+    else if (panel === "classicEdit") dom.classicEditControls.append(details);
+    else dom.advancedControls.append(details);
   });
 }
 

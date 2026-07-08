@@ -272,6 +272,18 @@ The schema below matches the current implementation (`src/presets.js`). It is st
       "scale": 0.5,
       "color": "orange"
     },
+    "basicAdjustments": {
+      "enabled": true,
+      "brightness": 0.0,
+      "contrast": 0.0,
+      "saturation": 0.0,
+      "vibrance": 0.0,
+      "temperature": 0.0,
+      "tint": 0.0,
+      "gamma": 1.0,
+      "shadows": 0.0,
+      "highlights": 0.0
+    },
     "output": {
       "exportScale": 1.0,
       "format": "png",
@@ -306,6 +318,7 @@ The schema below matches the current implementation (`src/presets.js`). It is st
 - `ampGlow`: thermal amplifier glow, applied after sensorNoise. A grainy radial glow creeping in from one corner (`corner`: `seeded` lets the seed pick, or `top-left`/`top-right`/`bottom-left`/`bottom-right`). `hue` blends the tint from purple (0) to hot orange (1); `spread` sets how far it reaches. Most visible on dark frames.
 - `dctCrunch`: JPEG/DCT corruption on 8x8 blocks in YCbCr, applied late. `quality`: 1 = clean, 0 = pure block mosaic. `chromaSubsample`: force chroma toward quarter resolution while luma stays sharp. `dcDrift`: accumulating DC offset along block-scan order — color slides block-by-block into wrong hues. `acScramble`: zero/shuffle/inject AC coefficients in seeded block patches. `blockRepeat`: macroblock stutter (held blocks repeat in scan order). `generations` (1-6): re-saves the frame N times with a fresh seed and drifting parameters per pass, so damage compounds like a JPEG opened and saved repeatedly.
 - `osdOverlay`: camera UI burn-in drawn last from an embedded 5x7 bitmap font. `datestamp`: seeded orange corner date (`'03 1 16` style). `hudIcons`: REC dot, ISO readout, battery, focus brackets. `glitchText`: 0-1 glyph corruption (wrong glyphs, tears, doubling). `color`: `orange`, `green`, or `white`.
+- `basicAdjustments`: Classic Edit controls applied at the end of the chain after all emulation and OSD work. This is not a camera-damage module and macros/random families do not touch it. `brightness`, `contrast`, `saturation`, `vibrance`, `temperature`, `tint`, `shadows`, and `highlights` use -1..1 centered ranges; `gamma` uses 0.5..2 with 1 neutral.
 
 Palettes for `falseColor.mode` and `gradientWash.mode`: `solarized-ccd`, `thermal-bleach`, `pink-blue`, `toxic-green`, `rainbow`, `acid-sunset`, `infrared`, `candy-shop`, `poison-dart`.
 

@@ -363,6 +363,20 @@ export const MODULE_RANDOMIZERS = {
     osd.glitchText = rng() > 0.4 ? intensity(mode, rng, 0.05, 0.8) : 0;
     osd.scale = randomRange(0.3, 0.7, rng);
     osd.color = ["orange", "orange", "green", "white"][randomInt(0, 3, rng)];
+  },
+  basicAdjustments(preset, mode, rng) {
+    const adjust = preset.pipeline.basicAdjustments;
+    const reach = clamp(mode.max, 0.35, 1);
+    adjust.enabled = true;
+    adjust.brightness = randomRange(-0.22, 0.22, rng) * reach;
+    adjust.contrast = randomRange(-0.28, 0.42, rng) * reach;
+    adjust.saturation = randomRange(-0.32, 0.42, rng) * reach;
+    adjust.vibrance = randomRange(-0.22, 0.45, rng) * reach;
+    adjust.temperature = randomRange(-0.28, 0.28, rng) * reach;
+    adjust.tint = randomRange(-0.18, 0.18, rng) * reach;
+    adjust.gamma = randomRange(1 - 0.22 * reach, 1 + 0.22 * reach, rng);
+    adjust.shadows = randomRange(-0.3, 0.34, rng) * reach;
+    adjust.highlights = randomRange(-0.34, 0.28, rng) * reach;
   }
 };
 

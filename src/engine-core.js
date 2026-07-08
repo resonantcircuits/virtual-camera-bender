@@ -134,6 +134,7 @@ export function processCircuitBendImageData(image, preset, resources = {}, optio
   applyDctCrunch(image, pipeline.dctCrunch, seed);
   applyFinalCrunch(image, pipeline);
   applyOsdOverlay(image, pipeline.osdOverlay, seed);
+  applyBasicAdjustments(image, pipeline.basicAdjustments);
   return image;
 }
 
@@ -1531,6 +1532,102 @@ function applyFinalCrunch(image, pipeline) {
         data[index + channel] = clampByte(center + (center - neighbor) * amount * 2.5);
       }
     }
+  }
+}
+
+function applyBasicAdjustments(image, config) {
+  if (!config?.enabled) return;
+  const brightness = clamp(config.brightness ?? 0, -1, 1);
+  const contrastControl = clamp(config.contrast ?? 0, -1, 1);
+  const saturationControl = clamp(config.saturation ?? 0, -1, 1);
+  const vibrance = clamp(config.vibrance ?? 0, -1, 1);
+  const temperature = clamp(config.temperature ?? 0, -1, 1);
+  const tint = clamp(config.tint ?? 0, -1, 1);
+  const gamma = clamp(config.gamma ?? 1, 0.5, 2);
+  const shadows = clamp(config.shadows ?? 0, -1, 1);
+  const highlights = clamp(config.highlights ?? 0, -1, 1);
+  const neutral =
+    Math.abs(brightness) < 0.0001 &&
+    Math.abs(contrastControl) < 0.0001 &&
+    Math.abs(saturationControl) < 0.0001 &&
+    Math.abs(vibrance) < 0.0001 &&
+    Math.abs(temperature) < 0.0001 &&
+    Math.abs(tint) < 0.0001 &&
+    Math.abs(gamma - 1) < 0.0001 &&
+    Math.abs(shadows) < 0.0001 &&
+    Math.abs(highlights) < 0.0001;
+  if (neutral) return;
+
+  const { data } = image;
+  const contrast = contrastControl >= 0 ? 1 + contrastControl * 1.75 : 1 + contrastControl * 0.9;
+  const saturation = saturationControl >= 0 ? 1 + saturationControl * 1.75 : 1 + saturationControl;
+  const gammaPower = 1 / gamma;
+  const tempShift = temperature * 0.18;
+  const tintShift = tint * 0.14;
+
+  for (let index = 0; index < data.length; index += 4) {
+    let r = data[index] / 255;
+    let g = data[index + 1] / 255;
+    let b = data[index + 2] / 255;
+
+    r += brightness * 0.35;
+    g += brightness * 0.35;
+    b += brightness * 0.35;
+
+    r = (r - 0.5) * contrast + 0.5;
+    g = (g - 0.5) * contrast + 0.5;
+    b = (b - 0.5) * contrast + 0.5;
+
+    let lum = luma(r, g, b);
+    const shadowMask = 1 - smoothstep(0.08, 0.58, lum);
+    const highlightMask = smoothstep(0.42, 0.92, lum);
+    if (Math.abs(shadows) > 0.0001) {
+      const amount = shadows * shadowMask;
+      if (amount > 0) {
+        r += (1 - r) * amount * 0.45;
+        g += (1 - g) * amount * 0.45;
+        b += (1 - b) * amount * 0.45;
+      } else {
+        r += r * amount * 0.55;
+        g += g * amount * 0.55;
+        b += b * amount * 0.55;
+      }
+    }
+    if (Math.abs(highlights) > 0.0001) {
+      const amount = highlights * highlightMask;
+      if (amount > 0) {
+        r += (1 - r) * amount * 0.38;
+        g += (1 - g) * amount * 0.38;
+        b += (1 - b) * amount * 0.38;
+      } else {
+        r += r * amount * 0.52;
+        g += g * amount * 0.52;
+        b += b * amount * 0.52;
+      }
+    }
+
+    r = Math.pow(clamp(r), gammaPower);
+    g = Math.pow(clamp(g), gammaPower);
+    b = Math.pow(clamp(b), gammaPower);
+
+    r *= 1 + tempShift + tintShift * 0.55;
+    g *= 1 - Math.abs(tempShift) * 0.12 - tintShift;
+    b *= 1 - tempShift + tintShift * 0.55;
+
+    lum = luma(r, g, b);
+    const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+    const vibranceFactor =
+      vibrance >= 0
+        ? 1 + vibrance * (1 - clamp(chroma)) * 1.45
+        : 1 + vibrance * (0.65 + clamp(chroma) * 0.35);
+    const colorFactor = Math.max(0, saturation * vibranceFactor);
+    r = lum + (r - lum) * colorFactor;
+    g = lum + (g - lum) * colorFactor;
+    b = lum + (b - lum) * colorFactor;
+
+    data[index] = clampByte(r * 255);
+    data[index + 1] = clampByte(g * 255);
+    data[index + 2] = clampByte(b * 255);
   }
 }
 

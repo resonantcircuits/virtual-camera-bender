@@ -137,6 +137,7 @@ Input image
 -> DCT crunch (JPEG quantization, DC drift, AC scramble, block stutter, chroma subsampling, N-generation re-save)
 -> final bit crush + dither + sharpen
 -> OSD overlay (datestamp + HUD burn-in)
+-> basic adjustments (plain brightness, contrast, saturation, color balance, gamma, shadows/highlights)
 -> export
 ```
 
@@ -160,7 +161,7 @@ Original-resolution export is the default. The preview uses a lower internal res
 Video mode (implemented) applies the same engine per frame with temporal scheduling in `src/temporal.js`, shared verbatim by the app preview and the CLI:
 
 - **Two seed tiers.** The structural seed follows `temporal.mode` — `locked` (frozen damage), `hold` (re-rolls every ~`holdFrames` frames, hold lengths jittered ±40%), `flicker` (per frame). The live seed changes every frame regardless and drives only noise textures (sensor grain, speckle, hot pixels, amp-glow grain) via an optional `liveSeed` render option — so locked damage still shimmers like a live sensor instead of reading as a static overlay. Fixed-pattern striping and dead columns/clusters stay structural, like real stuck hardware.
-- **Parameter drift.** `driftAmount`/`driftSpeed` wander every enabled module's continuous params around their preset values on smooth seeded noise tracks (±30% of each control's range at full drift; integer-stepped params excluded to avoid pops). Drift runs off the base seed, so tracks stay continuous across hold-mode seed jumps.
+- **Parameter drift.** `driftAmount`/`driftSpeed` wander every enabled damage module's continuous params around their preset values on smooth seeded noise tracks (±30% of each control's range at full drift; integer-stepped params excluded to avoid pops). Classic Edit controls are excluded so correction stays stable. Drift runs off the base seed, so tracks stay continuous across hold-mode seed jumps.
 - **Frame ghosting.** `temporal.ghostFrame: N` feeds bufferGhost the input frame N back (ring buffer in the render loop) — genuine stale-buffer trails instead of the self-frame approximation.
 - **App as design surface.** Loading a video extracts 25 evenly spaced frames into a full-screen contact sheet (`V`), each rendered through the current camera at its true frame index (including its ghost companion frame when ghost lag is set). Clicking a frame makes it the working image carrying its frame index, so the whole still-image editor previews exactly what the CLI renders for that frame. A Temporal panel edits the block; Copy Render Command emits the CLI line. Frame indices in the app come from a measured fps estimate (requestVideoFrameCallback deltas, snapped to common rates); the CLI uses the container's true rate.
 - **CLI renderer.** `render-video` streams rawvideo through two ffmpeg pipes (no temp frame files), renders frames on a worker_threads pool (`--jobs`, default cores−1, output written in order — byte-identical results at any job count), preserves source fps and audio (stream copy), encodes H.264/yuv420p (`--crf`, default 18), and supports `--start`/`--duration` trims plus `--max-dimension` for cheap test renders.
@@ -171,7 +172,9 @@ Randomization happens at three levels (all implemented in `src/randomize.js`):
 
 - global randomize: builds a whole new camera — fresh macros, a fresh pick of active modules, new name and seed. Each roll mutes some damage channels so results have distinct characters instead of everything firing at once. The physics rail participates as archetypes, not background guests: ~65% of builds are stylized-only, ~25% physics-led (one rail circuit rolls, occasionally both, with stylized macros scaled way down so the circuit look reads), ~10% stack both at full strength.
 - family randomizers (`Physics`, `Color`, `Melt`, `Burn`, `Noise`, `Cheap`, `Memory`): re-roll one damage domain with fresh draws, leave the rest untouched. Families are *domains*, not modules — future physics modules (ccdClock, addressBus, jpegStream) join the Physics family and the per-module dice rather than adding buttons.
-- per-module dice (dice button in each circuit-panel group header): re-roll one module's parameters while keeping the global seed, so everything else renders identically.
+- per-module dice (dice button in each right-side module header): re-roll one module's parameters while keeping the global seed, so everything else renders identically.
+
+The Classic Edit panel is outside the damage randomization model: macros and global/family rolls leave it alone. Its Basic Adjustments dice button can still produce a restrained grade when wanted.
 
 All draws are fresh values within the mode's intensity band — never cumulative — so repeated presses wander instead of ratcheting toward maximum damage.
 
@@ -254,6 +257,7 @@ Three more added with the final Phase 5 analog-fault modules (2026-07-06):
 - original-resolution export via the render worker — done
 - viewport-locked desktop layout with scrolling side panels — done
 - undo/redo, per-module solo/bypass/randomize, in-app help — done
+- Classic Edit photo-adjustment panel — done
 - automated regression tests wired into CI — open (engine and UI are currently exercised by ad-hoc scripts)
 
 ### Phase 4: Video And CLI — mostly done
@@ -273,7 +277,7 @@ Priority order by impact-per-effort was: **1) DCT corruption, 2) OSD/datestamp, 
 The most recognizable missing digital-camera glitch; reference image 23 (mountain quadrants; the original spec said 22 but the numbering was off by one) is this family. Implemented late-pipeline (after memoryFault, before finalCrunch): 8x8 blocks per YCbCr plane through a separable orthonormal DCT, then coefficient damage: JPEG-style quantization (`quality`, frequency-weighted steps), `acScramble` (zero/shuffle/inject AC coefficients in fbm-gated block patches), `dcDrift` (random-walk DC offset along block-scan order, walk rate scaled by total block count so the slide spans the frame at any resolution, chroma wandering further than luma, rare hard jumps for quadrant-style breaks), `blockRepeat` (held-macroblock stutter, patch-gated), `chromaSubsample` (2x2 chroma averaging while luma stays sharp). Macro coupling: cheapness drives enable/quality/chromaSubsample, chaos adds acScramble/blockRepeat; dcDrift stays preset-driven. Built-in preset: `Codec Rot`.
 
 **2. `osdOverlay` — camera UI burn-in — done**
-Orange corner datestamp (seeded `'03 1 16` style), REC dot, ISO readout, battery icon, and focus brackets drawn as the final pipeline stage from an embedded 5x7 bitmap font, straight into ImageData (worker + CLI safe), with a drop shadow, size scaled by image dimension. `glitchText` swaps glyphs, tears baselines, and doubles the overlay. Params: `datestamp`, `hudIcons`, `glitchText`, `scale`, `color` (orange/green/white). No macro coupling and excluded from global randomize (set dressing — it only turns on by hand, via its module dice, or a preset). Built-in preset: `Tourist Compact '03`.
+Orange corner datestamp (seeded `'03 1 16` style), REC dot, ISO readout, battery icon, and focus brackets drawn as a late output-overlay stage from an embedded 5x7 bitmap font, straight into ImageData (worker + CLI safe), with a drop shadow, size scaled by image dimension. `glitchText` swaps glyphs, tears baselines, and doubles the overlay. Params: `datestamp`, `hudIcons`, `glitchText`, `scale`, `color` (orange/green/white). No macro coupling and excluded from global randomize (set dressing — it only turns on by hand, via its module dice, or a preset). Built-in preset: `Tourist Compact '03`.
 
 **3. `syncFault` — sync tear + rolling-shutter wobble — done**
 Applied right after cheapCamera. (a) frame wrap: below each seeded tear row the frame shifts sideways and wraps, with a 2-6 row corrupted transition band (stuttered cells, split chroma, specks); (b) rolling wobble: per-row sine displacement with progressive phase and fbm phase drift plus amplitude envelope so verticals wander. Params: `tearCount`, `tearShift`, `wobbleAmount`, `wobbleFrequency`, `drift`. Macro coupling: chaos > 0.62 enables tears/wobble. Built-in preset: `Hold Vertical`.

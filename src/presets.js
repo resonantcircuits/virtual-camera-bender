@@ -358,6 +358,23 @@ export const ADVANCED_DEFS = [
       ["pipeline.osdOverlay.scale", "Scale", "range", 0, 1, 0.01],
       ["pipeline.osdOverlay.color", "Color", "select", ["orange", "green", "white"]]
     ]
+  },
+  {
+    group: "Basic Adjustments",
+    key: "basicAdjustments",
+    classicEdit: true,
+    noDrift: true,
+    controls: [
+      ["pipeline.basicAdjustments.brightness", "Brightness", "range", -1, 1, 0.01],
+      ["pipeline.basicAdjustments.contrast", "Contrast", "range", -1, 1, 0.01],
+      ["pipeline.basicAdjustments.saturation", "Saturation", "range", -1, 1, 0.01],
+      ["pipeline.basicAdjustments.vibrance", "Vibrance", "range", -1, 1, 0.01],
+      ["pipeline.basicAdjustments.temperature", "Temperature", "range", -1, 1, 0.01],
+      ["pipeline.basicAdjustments.tint", "Tint", "range", -1, 1, 0.01],
+      ["pipeline.basicAdjustments.gamma", "Gamma", "range", 0.5, 2, 0.01],
+      ["pipeline.basicAdjustments.shadows", "Shadows", "range", -1, 1, 0.01],
+      ["pipeline.basicAdjustments.highlights", "Highlights", "range", -1, 1, 0.01]
+    ]
   }
 ];
 
@@ -465,6 +482,10 @@ export const ADVANCED_MODULE_HELP = {
   osdOverlay: {
     short: "Draws compact-camera UI artifacts such as dates, REC marks, HUD icons, and glitched text.",
     long: "OSD Overlay adds the camera's own display layer after the image damage. It can stamp dates, battery and recording marks, focus brackets, and corrupted glyphs, with scale and color matching old consumer camera overlays."
+  },
+  basicAdjustments: {
+    short: "Applies ordinary photo-editing adjustments after the full camera chain.",
+    long: "Basic Adjustments is deliberately not an emulation module. It runs at the very end as a practical classic editing pass for brightness, contrast, saturation, color temperature, tint, gamma, shadows, and highlights. Macros and random families leave it alone so you can polish the finished result."
   }
 };
 
@@ -673,7 +694,18 @@ export const ADVANCED_CONTROL_HELP = {
   "pipeline.osdOverlay.hudIcons": "Draws REC, ISO, battery, and focus marks.",
   "pipeline.osdOverlay.glitchText": "Corrupts OSD glyphs and offsets duplicate text.",
   "pipeline.osdOverlay.scale": "Controls OSD pixel size relative to the image.",
-  "pipeline.osdOverlay.color": "Chooses the OSD overlay color."
+  "pipeline.osdOverlay.color": "Chooses the OSD overlay color.",
+
+  "pipeline.basicAdjustments.enabled": "Turns classic photo adjustments on or off. This is plain editing, not camera damage.",
+  "pipeline.basicAdjustments.brightness": "Raises or lowers the final image brightness after every effect has rendered.",
+  "pipeline.basicAdjustments.contrast": "Expands or compresses contrast around mid-gray in the finished image.",
+  "pipeline.basicAdjustments.saturation": "Globally reduces color toward grayscale or boosts color intensity.",
+  "pipeline.basicAdjustments.vibrance": "Boosts muted colors more than already-saturated ones, or gently mutes color when negative.",
+  "pipeline.basicAdjustments.temperature": "Warms the result toward red/yellow or cools it toward blue.",
+  "pipeline.basicAdjustments.tint": "Pushes the result toward magenta when positive or green when negative.",
+  "pipeline.basicAdjustments.gamma": "Adjusts midtone brightness without moving pure black and white as much.",
+  "pipeline.basicAdjustments.shadows": "Lifts or deepens the darker parts of the finished image.",
+  "pipeline.basicAdjustments.highlights": "Recovers or brightens the lighter parts of the finished image."
 };
 
 function defaultMacros() {
@@ -924,6 +956,18 @@ function defaultPipeline() {
       glitchText: 0,
       scale: 0.5,
       color: "white"
+    },
+    basicAdjustments: {
+      enabled: true,
+      brightness: 0,
+      contrast: 0,
+      saturation: 0,
+      vibrance: 0,
+      temperature: 0,
+      tint: 0,
+      gamma: 1,
+      shadows: 0,
+      highlights: 0
     },
     output: {
       exportScale: 1,

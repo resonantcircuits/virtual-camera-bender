@@ -45,11 +45,13 @@ export function temporalSeeds(preset, frameIndex) {
   return { seed: structural, liveSeed: base + LIVE_STRIDE * (frameIndex + 1) };
 }
 
-// Params eligible for drift: every continuous range control in the advanced
-// panel. Integer-stepped params (bitDepth, phaseError, generations, …) are
-// excluded — they would pop between discrete states instead of wandering.
+// Params eligible for drift: continuous range controls in the damage panels.
+// Integer-stepped params (bitDepth, phaseError, generations, …) are excluded
+// because they would pop; noDrift panels are stable output correction.
 const DRIFTABLE = ADVANCED_DEFS.flatMap((group) =>
-  group.controls
+  group.noDrift
+    ? []
+    : group.controls
     .filter(([, , type, , , step]) => type === "range" && step < 1)
     .map(([path, , , min, max]) => ({
       path,
