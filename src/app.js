@@ -139,6 +139,8 @@ const dom = {
   videoGrid: document.querySelector("#videoGrid"),
   temporalSection: document.querySelector("#temporalSection"),
   temporalControls: document.querySelector("#temporalControls"),
+  videoQuality: document.querySelector("#videoQuality"),
+  commandShell: document.querySelector("#commandShell"),
   copyCommandButton: document.querySelector("#copyCommandButton")
 };
 
@@ -157,6 +159,7 @@ let thumbSource = null;
 init();
 
 function init() {
+  setDefaultCommandShell();
   worker = setupWorker();
   renderGalleryGrid();
   renderPresetList();
@@ -166,6 +169,11 @@ function init() {
   applyPreviewView();
   updateHistoryButtons();
   updateStatus("NO SIGNAL");
+}
+
+function setDefaultCommandShell() {
+  const platform = navigator.userAgentData?.platform || navigator.platform || "";
+  if (/win/i.test(platform)) dom.commandShell.value = "powershell";
 }
 
 function setupWorker() {
@@ -1799,15 +1807,29 @@ async function refreshVideoSheet() {
 function buildCliCommand() {
   const input = state.video?.name || "input.mp4";
   const output = `${input.replace(/\.[^.]+$/, "")}-bent.mp4`;
-  const presetFile = `${safeFilename(state.preset.name)}.vcb-preset.json`;
-  return `node src/cli.js render-video "${input}" "${output}" --preset "${presetFile}"`;
+  const quote = (value) => quoteCommandArgument(value, dom.commandShell.value);
+  return [
+    "node src/cli.js render-video",
+    quote(input),
+    quote(output),
+    "--preset-json",
+    quote(JSON.stringify(state.preset)),
+    "--quality",
+    quote(dom.videoQuality.value)
+  ].join(" ");
+}
+
+function quoteCommandArgument(value, shell) {
+  const text = String(value);
+  if (shell === "powershell") return `'${text.replace(/'/g, "''")}'`;
+  return `'${text.replace(/'/g, "'\"'\"'")}'`;
 }
 
 async function copyRenderCommand() {
   const command = buildCliCommand();
   try {
     await navigator.clipboard.writeText(command);
-    updateStatus("COMMAND COPIED · SAVE PRESET NEXT TO THE VIDEO");
+    updateStatus("COMMAND COPIED · PRESET EMBEDDED");
   } catch {
     window.prompt("Render command", command);
   }

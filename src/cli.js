@@ -11,6 +11,11 @@ import { prepareTemporalFrame } from "./temporal.js";
 import { fitWithin, setAtPath } from "./utils.js";
 
 const args = process.argv.slice(2);
+const VIDEO_QUALITY_CRF = {
+  small: 28,
+  balanced: 23,
+  high: 18
+};
 
 main().catch((error) => {
   fail(error?.stack || String(error));
@@ -249,7 +254,15 @@ function spawnEncoder(options, width, height, meta) {
   if (options.duration != null) encodeArgs.push("-t", String(options.duration));
   encodeArgs.push("-i", options.input, "-map", "0:v");
   if (meta.hasAudio) encodeArgs.push("-map", "1:a?", "-c:a", "copy");
-  encodeArgs.push("-c:v", "libx264", "-crf", String(options.crf ?? 18), "-pix_fmt", "yuv420p", "-shortest");
+  encodeArgs.push(
+    "-c:v",
+    "libx264",
+    "-crf",
+    String(options.crf ?? VIDEO_QUALITY_CRF[options.quality]),
+    "-pix_fmt",
+    "yuv420p",
+    "-shortest"
+  );
   if (isMovContainer) encodeArgs.push("-movflags", "+faststart");
   encodeArgs.push(options.output);
   mkdirSync(dirname(options.output), { recursive: true });
@@ -272,10 +285,11 @@ function spawnStreaming(binary, spawnArgs, stdio) {
 }
 
 // Reassembles the decoder's byte stream into frame-sized buffers. Each
-// buffer is standalone (allocUnsafe above the pool threshold), so it can be
-// transferred to a worker without detaching anything shared.
+// buffer is standalone, so it can be transferred to a worker without
+// detaching anything shared. allocUnsafeSlow also keeps tiny test renders
+// out of Node's shared Buffer pool.
 async function* readFrames(stream, frameSize) {
-  let frame = Buffer.allocUnsafe(frameSize);
+  let frame = Buffer.allocUnsafeSlow(frameSize);
   let offset = 0;
   for await (const chunk of stream) {
     let position = 0;
@@ -286,7 +300,7 @@ async function* readFrames(stream, frameSize) {
       position += take;
       if (offset === frameSize) {
         yield frame;
-        frame = Buffer.allocUnsafe(frameSize);
+        frame = Buffer.allocUnsafeSlow(frameSize);
         offset = 0;
       }
     }
@@ -413,6 +427,7 @@ function parseArgs(argv) {
     input: null,
     output: null,
     presetPath: null,
+    presetJson: null,
     builtin: BUILT_IN_PRESETS[0].name,
     maxDimension: null,
     ghostPath: null,
@@ -420,6 +435,7 @@ function parseArgs(argv) {
     start: null,
     duration: null,
     crf: null,
+    quality: "balanced",
     sets: [],
     macros: []
   };
@@ -429,6 +445,8 @@ function parseArgs(argv) {
     const arg = argv[index];
     if (arg === "--preset") {
       options.presetPath = argv[++index];
+    } else if (arg === "--preset-json") {
+      options.presetJson = argv[++index];
     } else if (arg === "--builtin") {
       options.builtin = argv[++index];
     } else if (arg === "--max-dimension") {
@@ -443,6 +461,8 @@ function parseArgs(argv) {
       options.duration = Number(argv[++index]);
     } else if (arg === "--crf") {
       options.crf = Number(argv[++index]);
+    } else if (arg === "--quality") {
+      options.quality = argv[++index]?.toLowerCase();
     } else if (arg === "--set") {
       options.sets.push(splitAssignment(argv[++index], "--set"));
     } else if (arg === "--macro") {
@@ -467,6 +487,12 @@ function parseArgs(argv) {
   if (!Number.isFinite(options.start) || options.start <= 0) options.start = null;
   if (!Number.isFinite(options.duration) || options.duration <= 0) options.duration = null;
   if (!Number.isFinite(options.crf) || options.crf < 0) options.crf = null;
+  if (!Object.hasOwn(VIDEO_QUALITY_CRF, options.quality)) {
+    fail(`Unknown video quality: ${options.quality}. Use small, balanced, or high.`);
+  }
+  if (options.presetPath && options.presetJson !== null) {
+    fail("Use either --preset or --preset-json, not both.");
+  }
   return options;
 }
 
@@ -491,6 +517,14 @@ function parseValue(value) {
 }
 
 function loadPreset(options) {
+  if (options.presetJson !== null) {
+    try {
+      return normalizePreset(JSON.parse(options.presetJson));
+    } catch (error) {
+      fail(`Could not parse --preset-json: ${error.message}`);
+    }
+  }
+
   if (options.presetPath) {
     return normalizePreset(JSON.parse(readFileSync(resolve(options.presetPath), "utf8")));
   }
@@ -618,6 +652,7 @@ Usage:
 Options:
   --builtin <name>            Built-in preset name. Default: Bent CCD-03
   --preset <file.json>        Preset JSON file to load
+  --preset-json <json>        Complete preset as an inline JSON string
   --max-dimension <pixels>    Resize input before processing for test renders
   --ghost <image>             Second image used by the bufferGhost module
   --macro key=value           Override a macro before rendering
@@ -628,7 +663,9 @@ Video options (render-video only):
   --jobs <n>                  Parallel render workers. Default: CPU cores - 1
   --start <seconds>           Trim: start offset into the input
   --duration <seconds>        Trim: how many seconds to render
-  --crf <n>                   x264 quality (lower = better). Default: 18
+  --quality <small|balanced|high>
+                              Output size/quality preset. Default: balanced (CRF 23)
+  --crf <n>                   Exact x264 CRF (lower = better; overrides --quality)
 
 Video temporal behavior comes from the preset's "temporal" block:
   mode (locked|hold|flicker), holdFrames, driftAmount, driftSpeed, ghostFrame.
@@ -640,7 +677,7 @@ Examples:
   node src/cli.js render test-images/XT307819.jpeg out.png --builtin "Overheated Sensor" --max-dimension 1600
   node src/cli.js render input.jpg out.png --set pipeline.verticalSmear.length=1 --set pipeline.verticalSmear.decay=0.997
   node src/cli.js render-video clip.mp4 bent.mp4 --preset my-camera.vcb-preset.json --set temporal.mode=hold --set temporal.driftAmount=0.4
-  node src/cli.js render-video clip.mp4 test.mp4 --builtin "Codec Rot" --start 2 --duration 3 --max-dimension 960
+  node src/cli.js render-video clip.mp4 test.mp4 --builtin "Codec Rot" --quality small --start 2 --duration 3 --max-dimension 960
 `);
 }
 

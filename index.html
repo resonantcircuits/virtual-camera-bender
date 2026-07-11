@@ -109,6 +109,22 @@
             <h2>Temporal · Video</h2>
             <p class="hint">How the damage behaves across frames. Previewed live on the working frame and the Frames sheet; rendered by the CLI.</p>
             <div id="temporalControls" class="control-stack"></div>
+            <label class="format-select">
+              <span>Render Quality</span>
+              <select id="videoQuality" title="Balanced is a good default; choose Smaller to reduce the output file size.">
+                <option value="small">Smaller file</option>
+                <option value="balanced" selected>Balanced</option>
+                <option value="high">High quality</option>
+              </select>
+            </label>
+            <label class="format-select">
+              <span>Paste into</span>
+              <select id="commandShell" title="Formats the copied command for your terminal.">
+                <option value="posix">Mac / Linux Terminal</option>
+                <option value="powershell">Windows PowerShell</option>
+              </select>
+            </label>
+            <p class="hint">The copied command includes this camera as inline JSON, so no preset file needs to be saved.</p>
             <button id="copyCommandButton" class="command-button is-block" type="button" title="Copy the CLI command that renders this video with the current camera">Copy Render Command</button>
           </section>
 
@@ -207,7 +223,7 @@
           <h3>Video</h3>
           <p>Loading a video opens the <strong>Frames</strong> contact sheet (<kbd>V</kbd>): 25 evenly spaced frames rendered through the current camera. Click a frame to make it the working image — every editor tool then works on that frame exactly as it will render in the final video.</p>
           <p>The <strong>Temporal</strong> panel controls behavior across frames. <strong>Seed Mode</strong>: <em>locked</em> keeps all damage frozen in place, <em>hold</em> re-rolls it every ~N frames (camcorder stutter), <em>flicker</em> re-rolls every frame. Sensor grain and speckle always shimmer per frame regardless — only the structural damage obeys the mode. <strong>Drift</strong> makes module parameters wander slowly so the look evolves. <strong>Ghost Lag</strong> feeds the Buffer Ghost module the frame N back — real stale-buffer trails (enable Buffer Ghost to see it).</p>
-          <p>The app never encodes video. <strong>Copy Render Command</strong> gives you the CLI line; save your preset next to the video and run it with ffmpeg installed: <code>node src/cli.js render-video in.mp4 out.mp4 --preset camera.json</code>.</p>
+          <p>The app never encodes video. <strong>Copy Render Command</strong> gives you an OS-formatted CLI line with the current camera embedded, so no preset file is needed. Choose Smaller File, Balanced, or High Quality before copying, then run it with ffmpeg installed.</p>
         </section>
         <section>
           <h3>Presets and Session State</h3>

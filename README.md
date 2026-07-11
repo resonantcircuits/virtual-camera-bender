@@ -83,11 +83,11 @@ node src/cli.js render input.jpg output.png --builtin "IR Bloom"
 node src/cli.js render input.jpg output.png --preset my-camera.vcb-preset.json --set pipeline.pixelSort.strength=0.9
 node src/cli.js render input.jpg output.png --builtin "Double Buffer" --ghost other-frame.jpg
 node src/cli.js render-video clip.mp4 bent.mp4 --preset my-camera.vcb-preset.json
-node src/cli.js render-video clip.mp4 test.mp4 --builtin "Codec Rot" --start 4 --duration 2 --max-dimension 960
+node src/cli.js render-video clip.mp4 test.mp4 --builtin "Codec Rot" --quality small --start 4 --duration 2 --max-dimension 960
 node src/cli.js list-presets
 ```
 
-`render-video` processes every frame through the engine in parallel worker threads (`--jobs`, default cores−1), preserves the source frame rate, stream-copies audio, and encodes H.264 (`--crf`, default 18). Temporal behavior comes from the preset's `temporal` block and can be overridden inline, e.g. `--set temporal.mode=hold --set temporal.driftAmount=0.4`. Frame indices are deterministic: the same input, preset, and options produce byte-identical output regardless of `--jobs`.
+`render-video` processes every frame through the engine in parallel worker threads (`--jobs`, default cores−1), preserves the source frame rate, stream-copies audio, and encodes H.264. The default `--quality balanced` uses CRF 23 for practical output sizes; use `small` (CRF 28), `high` (CRF 18), or exact `--crf <n>` when needed. `--preset-json '<json>'` accepts a complete preset without a separate file, which is what the app's Copy Render Command action emits. Temporal behavior comes from the preset's `temporal` block and can be overridden inline, e.g. `--set temporal.mode=hold --set temporal.driftAmount=0.4`. Frame indices are deterministic: the same input, preset, and options produce byte-identical output regardless of `--jobs`.
 
 ## Roadmap
 
