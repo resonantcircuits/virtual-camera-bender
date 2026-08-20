@@ -5,6 +5,7 @@ import {
   ADVANCED_MODULE_HELP,
   applyMacrosToPipeline,
   clonePreset,
+  createPreset,
   defaultPipeline,
   MACRO_DEFS,
   normalizePreset,
@@ -13,6 +14,8 @@ import {
 import { BUILT_IN_PRESETS } from "./built-in-presets.js";
 import { RANDOM_FAMILIES, RANDOM_MODES, randomizeModule, randomizePreset } from "./randomize.js";
 import { prepareTemporalFrame } from "./temporal.js";
+import { initTooltips, setTooltipsEnabled, tooltipsEnabled } from "./tooltip.js";
+import { maybeStartTour, startTour } from "./tour.js";
 import {
   clamp,
   clone,
@@ -45,7 +48,7 @@ const state = {
   ghostName: "",
   ghostPreview: null,
   ghostThumb: null,
-  preset: clonePreset(BUILT_IN_PRESETS[0]),
+  preset: cleanSlatePreset(),
   renderQueued: false,
   isRendering: false,
   lastRender: null,
@@ -67,10 +70,10 @@ const state = {
   soloModule: null,
   frozenModules: new Set(),
   freezeSeed: false,
-  openGroups: new Set(),
+  // "Basic" starts expanded: it is the only module in Classic Adjustments.
+  openGroups: new Set(["Basic"]),
   moduleHelpKey: null,
-  expandedModuleHelp: new Set(),
-  activePresetIndex: 0,
+  activePresetIndex: -1,
   pendingSnapshot: null,
   thumbsPending: false,
   // Video mode: the loaded clip and which of its frames is the working image.
@@ -125,6 +128,7 @@ const dom = {
   helpButton: document.querySelector("#helpButton"),
   helpDialog: document.querySelector("#helpDialog"),
   helpClose: document.querySelector("#helpClose"),
+  helpTourButton: document.querySelector("#helpTourButton"),
   galleryButton: document.querySelector("#galleryButton"),
   galleryDialog: document.querySelector("#galleryDialog"),
   galleryClose: document.querySelector("#galleryClose"),
@@ -141,7 +145,14 @@ const dom = {
   temporalControls: document.querySelector("#temporalControls"),
   videoQuality: document.querySelector("#videoQuality"),
   commandShell: document.querySelector("#commandShell"),
-  copyCommandButton: document.querySelector("#copyCommandButton")
+  copyCommandButton: document.querySelector("#copyCommandButton"),
+  emptyLoadButton: document.querySelector("#emptyLoadButton"),
+  sampleImageButton: document.querySelector("#sampleImageButton"),
+  tooltipToggle: document.querySelector("#tooltipToggle"),
+  saveDialog: document.querySelector("#saveDialog"),
+  saveCancelButton: document.querySelector("#saveCancelButton"),
+  saveConfirmButton: document.querySelector("#saveConfirmButton"),
+  resetAllModulesButton: document.querySelector("#resetAllModulesButton")
 };
 
 const thumbCanvases = [];
@@ -166,9 +177,11 @@ function init() {
   renderRandomControls();
   renderControls();
   bindEvents();
+  initTooltips();
   applyPreviewView();
   updateHistoryButtons();
   updateStatus("NO SIGNAL");
+  maybeStartTour();
 }
 
 function setDefaultCommandShell() {
@@ -234,8 +247,18 @@ function handleWorkerError(type, jobId, error) {
 
 function bindEvents() {
   dom.loadImageButton.addEventListener("click", () => dom.imageInput.click());
+  dom.emptyLoadButton.addEventListener("click", () => dom.imageInput.click());
+  dom.sampleImageButton.addEventListener("click", loadSampleImage);
   dom.loadPresetButton.addEventListener("click", () => dom.presetInput.click());
-  dom.savePresetButton.addEventListener("click", savePreset);
+  dom.savePresetButton.addEventListener("click", openSaveDialog);
+  dom.saveCancelButton.addEventListener("click", () => dom.saveDialog.close());
+  dom.saveConfirmButton.addEventListener("click", async () => {
+    dom.saveDialog.close();
+    await savePreset();
+  });
+  dom.saveDialog.addEventListener("click", (event) => {
+    if (event.target === dom.saveDialog) dom.saveDialog.close();
+  });
   dom.exportButton.addEventListener("click", exportImage);
   dom.undoButton.addEventListener("click", undo);
   dom.redoButton.addEventListener("click", redo);
@@ -293,6 +316,20 @@ function bindEvents() {
 
   dom.helpButton.addEventListener("click", () => dom.helpDialog.showModal());
   dom.helpClose.addEventListener("click", () => dom.helpDialog.close());
+  dom.helpTourButton.addEventListener("click", () => {
+    dom.helpDialog.close();
+    startTour();
+  });
+  const refreshTooltipToggle = () => {
+    dom.tooltipToggle.classList.toggle("is-active", tooltipsEnabled());
+    dom.tooltipToggle.setAttribute("aria-pressed", String(tooltipsEnabled()));
+  };
+  refreshTooltipToggle();
+  dom.tooltipToggle.addEventListener("click", () => {
+    setTooltipsEnabled(!tooltipsEnabled());
+    refreshTooltipToggle();
+    updateStatus(tooltipsEnabled() ? "TOOLTIPS ON" : "TOOLTIPS OFF");
+  });
   dom.helpDialog.addEventListener("click", (event) => {
     if (event.target === dom.helpDialog) dom.helpDialog.close();
   });
@@ -308,12 +345,13 @@ function bindEvents() {
     if (event.target === dom.videoDialog) dom.videoDialog.close();
   });
   dom.copyCommandButton.addEventListener("click", copyRenderCommand);
-  dom.physicsAllOffButton.addEventListener("click", (event) => panelAllOff(event, "physics", "PHYSICS RAIL OFF"));
-  dom.physicsResetAllButton.addEventListener("click", (event) => panelResetAll(event, "physics", "PHYSICS RAIL RESET"));
-  dom.stylizedAllOffButton.addEventListener("click", (event) => panelAllOff(event, "stylized", "STYLIZED CIRCUIT OFF"));
-  dom.stylizedResetAllButton.addEventListener("click", (event) => panelResetAll(event, "stylized", "STYLIZED CIRCUIT RESET"));
-  dom.classicEditAllOffButton.addEventListener("click", (event) => panelAllOff(event, "classicEdit", "CLASSIC EDIT OFF"));
-  dom.classicEditResetAllButton.addEventListener("click", (event) => panelResetAll(event, "classicEdit", "CLASSIC EDIT RESET"));
+  dom.physicsAllOffButton.addEventListener("click", (event) => panelAllOff(event, "physics", "SENSOR EFFECTS OFF"));
+  dom.physicsResetAllButton.addEventListener("click", (event) => panelResetAll(event, "physics", "SENSOR EFFECTS RESET"));
+  dom.stylizedAllOffButton.addEventListener("click", (event) => panelAllOff(event, "stylized", "IMAGE EFFECTS OFF"));
+  dom.stylizedResetAllButton.addEventListener("click", (event) => panelResetAll(event, "stylized", "IMAGE EFFECTS RESET"));
+  dom.classicEditAllOffButton.addEventListener("click", (event) => panelAllOff(event, "classicEdit", "CLASSIC ADJUSTMENTS OFF"));
+  dom.resetAllModulesButton.addEventListener("click", resetAllModules);
+  dom.classicEditResetAllButton.addEventListener("click", (event) => panelResetAll(event, "classicEdit", "CLASSIC ADJUSTMENTS RESET"));
 
   dom.galleryFilter.addEventListener("input", applyGalleryFilter);
   dom.galleryFilter.addEventListener("keydown", (event) => {
@@ -347,6 +385,8 @@ function bindEvents() {
 
   window.addEventListener("keydown", (event) => {
     if (isTypingTarget(event.target)) return;
+    // While the save dialog is up, only its own fields and Esc apply.
+    if (dom.saveDialog.open) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
       event.preventDefault();
       if (event.shiftKey) redo();
@@ -380,10 +420,12 @@ function bindEvents() {
     if (event.key === "s" || event.key === "S") toggleSplitMode();
     if (event.key === "r" || event.key === "R") {
       pushHistory(snapshotPreset());
-      state.preset = randomizePreset(state.preset, "global", dom.randomMode.value);
+      state.preset = randomizePresetWithLocks("global", dom.randomMode.value);
       setActivePreset(-1);
       renderControls();
+      if (state.frozenModules.size) flashFrozenModuleLocks();
       scheduleRender();
+      updateStatus(`NEW CAMERA BUILT${state.frozenModules.size ? " · LOCKS HELD" : ""}`);
     }
   });
   window.addEventListener("keyup", (event) => {
@@ -792,6 +834,7 @@ function renderPresetList() {
     const text = document.createElement("span");
     text.className = "preset-text";
     text.innerHTML = `<span>${preset.name}</span><small>${preset.tags.join(" / ")}</small>`;
+    if (preset.description) button.title = preset.description;
     button.append(thumb, text);
     button.addEventListener("click", () => applyBuiltInPreset(index));
     thumbCanvases.push(thumb);
@@ -906,7 +949,7 @@ function renderRandomControls() {
     option.value = value;
     option.textContent = label;
     option.title = description || "";
-    if (value === "bent") option.selected = true;
+    if (value === "damaged") option.selected = true;
     dom.randomMode.append(option);
   });
   const syncModeTooltip = () => {
@@ -917,11 +960,27 @@ function renderRandomControls() {
   dom.randomMode.addEventListener("change", syncModeTooltip);
 
   dom.randomFamilyList.innerHTML = "";
-  RANDOM_FAMILIES.forEach(([family, label, description]) => {
+  RANDOM_FAMILIES.forEach(([family, label, description, subtitle]) => {
+    // Header separating the whole-camera roll from the per-domain buttons.
+    if (family === "physics") {
+      const subheader = document.createElement("span");
+      subheader.className = "random-subheader";
+      subheader.textContent = "Re-roll One Damage Type";
+      subheader.title = "Each button re-rolls only that kind of damage on the current camera — the rest stays put.";
+      dom.randomFamilyList.append(subheader);
+    }
     const button = document.createElement("button");
     button.type = "button";
-    button.className = family === "global" ? "command-button is-primary" : "command-button";
-    button.textContent = label;
+    button.className = family === "global" ? "command-button random-button is-global" : "command-button random-button";
+    const labelSpan = document.createElement("span");
+    labelSpan.textContent = label;
+    button.append(labelSpan);
+    if (subtitle) {
+      const subSpan = document.createElement("span");
+      subSpan.className = "random-sub";
+      subSpan.textContent = subtitle;
+      button.append(subSpan);
+    }
     button.title = description || "";
     button.addEventListener("click", () => {
       pushHistory(snapshotPreset());
@@ -930,7 +989,8 @@ function renderRandomControls() {
       renderControls();
       if (state.frozenModules.size) flashFrozenModuleLocks();
       scheduleRender();
-      updateStatus(`${label.toUpperCase()} RANDOMIZED${state.frozenModules.size ? " · LOCKS HELD" : ""}`);
+      const statusLabel = family === "global" ? "NEW CAMERA BUILT" : `${label.toUpperCase()} RANDOMIZED`;
+      updateStatus(`${statusLabel}${state.frozenModules.size ? " · LOCKS HELD" : ""}`);
     });
     dom.randomFamilyList.append(button);
   });
@@ -1065,11 +1125,15 @@ function renderTemporalControls() {
 }
 
 function renderMacroControls() {
+  // The macro sliders are commented out of the HTML for now (the dial→look
+  // mapping needs a rework); macros still drive randomize under the hood.
+  if (!dom.macroControls) return;
   dom.macroControls.innerHTML = "";
-  MACRO_DEFS.forEach(([key, label]) => {
+  MACRO_DEFS.forEach(([key, label, description]) => {
     const value = Number(state.preset.macros[key] || 0);
     const row = document.createElement("label");
     row.className = "control-row";
+    if (description) row.title = description;
     row.innerHTML = `
       <span>${label}</span>
       <input type="range" min="0" max="1" step="0.01" value="${value}">
@@ -1129,7 +1193,9 @@ function groupPanel(group) {
   return "stylized";
 }
 
-function createModuleHelpPanel(group, help, expanded) {
+// The short text doubles as the module-name tooltip; the info button opens
+// the full notes in one go.
+function createModuleHelpPanel(group, help) {
   const panel = document.createElement("div");
   panel.className = "module-help";
   panel.id = `module-help-${group.key}`;
@@ -1142,23 +1208,8 @@ function createModuleHelpPanel(group, help, expanded) {
   if (help.long) {
     const longText = document.createElement("p");
     longText.className = "module-help-long";
-    longText.hidden = !expanded;
     longText.textContent = help.long;
-
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "module-help-toggle";
-    toggle.textContent = expanded ? "Less" : "More";
-    toggle.setAttribute("aria-expanded", String(expanded));
-    toggle.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (expanded) state.expandedModuleHelp.delete(group.key);
-      else state.expandedModuleHelp.add(group.key);
-      renderAdvancedControls();
-    });
-
-    panel.append(longText, toggle);
+    panel.append(longText);
   }
 
   return panel;
@@ -1172,7 +1223,6 @@ function renderAdvancedControls() {
     const moduleFrozen = state.frozenModules.has(group.key);
     const moduleHelp = ADVANCED_MODULE_HELP[group.key];
     const helpOpen = Boolean(moduleHelp) && state.moduleHelpKey === group.key;
-    const helpExpanded = state.expandedModuleHelp.has(group.key);
     const details = document.createElement("details");
     details.className = "advanced-group";
     details.dataset.moduleKey = group.key;
@@ -1194,16 +1244,15 @@ function renderAdvancedControls() {
     // Every pipeline module has an `enabled` flag; the lamp is its only UI
     // (there is no "Enabled" row inside the group).
     const enabledPath = `pipeline.${group.key}.enabled`;
-    const lampHelp = ADVANCED_CONTROL_HELP[enabledPath] || "Toggle module on/off";
     summary.innerHTML = `
-      <span>${group.group}</span>
+      <button type="button" class="group-lamp" title="Switch this module on or off"></button>
+      <span class="module-name">${group.group}</span>
       <span class="summary-tools">
         <button type="button" class="lock-button" title="${moduleFrozen ? "Module frozen during randomize" : "Freeze this module during randomize"}" aria-label="${moduleFrozen ? "Unfreeze" : "Freeze"} ${group.group}" aria-pressed="${moduleFrozen}">${lockIconSvg(moduleFrozen)}</button>
         <button type="button" class="dice-button" title="Randomize this module (uses Randomize mode)" aria-label="Randomize ${group.group}">${diceIconSvg()}</button>
-        <button type="button" class="reset-button" title="Reset this module to defaults" aria-label="Reset ${group.group} to defaults">R</button>
-        <button type="button" class="solo-button" title="Solo this module">S</button>
+        <button type="button" class="reset-button" title="Reset this module to defaults" aria-label="Reset ${group.group} to defaults">${resetIconSvg()}</button>
+        <button type="button" class="solo-button" title="Solo this module — view only its effect" aria-label="Solo ${group.group}">${eyeIconSvg()}</button>
         <button type="button" class="info-button ${helpOpen ? "is-active" : ""}" title="Explain ${group.group}" aria-label="Explain ${group.group}" aria-expanded="${helpOpen}" aria-controls="module-help-${group.key}">i</button>
-        <button type="button" class="group-lamp" title="${lampHelp}"></button>
       </span>
     `;
     details.append(summary);
@@ -1261,8 +1310,13 @@ function renderAdvancedControls() {
       });
     }
 
+    // The one-line description lives on the module name as a tooltip.
+    if (moduleHelp?.short) {
+      summary.querySelector(".module-name").title = moduleHelp.short;
+    }
+
     if (moduleHelp && helpOpen) {
-      details.append(createModuleHelpPanel(group, moduleHelp, helpExpanded));
+      details.append(createModuleHelpPanel(group, moduleHelp));
     }
 
     const lamp = summary.querySelector(".group-lamp");
@@ -1281,6 +1335,14 @@ function renderAdvancedControls() {
       scheduleRender();
     });
 
+    // Tweaking any parameter switches the module on — otherwise the change
+    // appears to do nothing.
+    const ensureEnabled = () => {
+      if (!enabledPath || getAtPath(state.preset, enabledPath)) return;
+      setAtPath(state.preset, enabledPath, true);
+      refreshLamp();
+    };
+
     group.controls.forEach(([path, label, type, min, max, step]) => {
       const value = getAtPath(state.preset, path);
       const row = document.createElement("label");
@@ -1298,6 +1360,7 @@ function renderAdvancedControls() {
         input.addEventListener("change", () => {
           pushHistory(snapshotPreset());
           setAtPath(state.preset, path, input.checked);
+          ensureEnabled();
           refreshLamp();
           scheduleRender();
         });
@@ -1354,6 +1417,7 @@ function renderAdvancedControls() {
             const next = ((getAtPath(state.preset, path) | 0) ^ (1 << bit)) >>> 0;
             setAtPath(state.preset, path, next);
             button.classList.toggle("is-on", Boolean(next & (1 << bit)));
+            ensureEnabled();
             scheduleRender();
           });
         });
@@ -1376,6 +1440,7 @@ function renderAdvancedControls() {
         select.addEventListener("change", () => {
           pushHistory(snapshotPreset());
           setAtPath(state.preset, path, select.value);
+          ensureEnabled();
           scheduleRender();
         });
       } else {
@@ -1396,6 +1461,7 @@ function renderAdvancedControls() {
           const numericValue = step >= 1 ? Math.round(Number(input.value)) : Number(input.value);
           setAtPath(state.preset, path, numericValue);
           output.textContent = formatControlValue(numericValue);
+          ensureEnabled();
           scheduleRender();
         });
       }
@@ -1408,6 +1474,36 @@ function renderAdvancedControls() {
     else if (panel === "classicEdit") dom.classicEditControls.append(details);
     else dom.advancedControls.append(details);
   });
+}
+
+// The app opens on a clean slate: no preset applied and every module off, so
+// a freshly loaded image shows untouched until the user picks a camera.
+// (createPreset applies the default macros to the pipeline, so the pipeline
+// is rebuilt from pure defaults before disabling.)
+function cleanSlatePreset() {
+  const preset = createPreset({
+    name: "Untitled Camera",
+    seed: Math.floor(Math.random() * 2147483647)
+  });
+  preset.pipeline = defaultPipeline();
+  ADVANCED_DEFS.forEach((group) => {
+    setAtPath(preset, `pipeline.${group.key}.enabled`, false);
+  });
+  return preset;
+}
+
+// Clean slate: every module back to defaults AND switched off, so the image
+// returns to the untouched source (several defaults ship enabled).
+function resetAllModules() {
+  pushHistory(snapshotPreset());
+  ADVANCED_DEFS.forEach((group) => {
+    const defaults = DEFAULT_PIPELINE[group.key];
+    if (defaults) state.preset.pipeline[group.key] = clone(defaults);
+    setAtPath(state.preset, `pipeline.${group.key}.enabled`, false);
+  });
+  renderAdvancedControls();
+  scheduleRender();
+  updateStatus("ALL MODULES RESET · CLEAN SLATE");
 }
 
 function resetModuleToDefaults(moduleKey, groupName) {
@@ -1429,6 +1525,25 @@ function isVideoFile(file) {
 function loadMediaFile(file) {
   if (isVideoFile(file)) loadVideoFile(file);
   else loadImageFile(file);
+}
+
+// Bundled sample photos live in samples/; the folder's manifest.json lists
+// the filenames so the set can be curated without touching code.
+async function loadSampleImage() {
+  updateStatus("LOADING SAMPLE");
+  try {
+    const manifest = await (await fetch("./samples/manifest.json", { cache: "no-cache" })).json();
+    const names = Array.isArray(manifest) ? manifest : manifest.images;
+    if (!names?.length) throw new Error("empty sample manifest");
+    const name = names[Math.floor(Math.random() * names.length)];
+    const response = await fetch(`./samples/${name}`);
+    if (!response.ok) throw new Error(`sample fetch failed: ${response.status}`);
+    const blob = await response.blob();
+    loadMediaFile(new File([blob], name, { type: blob.type || "image/jpeg" }));
+  } catch (error) {
+    console.error(error);
+    updateStatus("SAMPLE UNAVAILABLE");
+  }
 }
 
 async function loadImageFile(file) {
@@ -1923,11 +2038,11 @@ function refreshSeedLockButton() {
   dom.seedLockButton.classList.toggle("is-active", state.freezeSeed);
   dom.seedLockButton.setAttribute("aria-pressed", String(state.freezeSeed));
   dom.seedLockButton.title = state.freezeSeed
-    ? "Seed is frozen during randomize"
-    : "Freeze seed during randomize";
+    ? "New random cameras keep the current seed"
+    : "Keep this seed when building a new random camera";
   dom.seedLockButton.setAttribute(
     "aria-label",
-    state.freezeSeed ? "Unfreeze seed during randomize" : "Freeze seed during randomize"
+    state.freezeSeed ? "Let new random cameras change seed" : "Keep seed for new random cameras"
   );
 }
 
@@ -1953,6 +2068,24 @@ function diceIconSvg() {
       <circle cx="12" cy="12" r="1.25" />
       <circle cx="8.5" cy="15.5" r="1.25" />
       <circle cx="15.5" cy="15.5" r="1.25" />
+    </svg>
+  `;
+}
+
+function resetIconSvg() {
+  return `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M4.5 8.5A8.5 8.5 0 1 1 3.5 14" />
+      <path d="M4.5 3.5v5h5" />
+    </svg>
+  `;
+}
+
+function eyeIconSvg() {
+  return `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" />
+      <circle cx="12" cy="12" r="2.6" />
     </svg>
   `;
 }
@@ -2226,6 +2359,13 @@ function renderThumbSet(source, type, canvases) {
 }
 
 // --- Preset save ---
+
+function openSaveDialog() {
+  dom.presetName.value = state.preset.name || "";
+  dom.presetDescription.value = state.preset.description || "";
+  dom.saveDialog.showModal();
+  dom.presetName.select();
+}
 
 async function savePreset() {
   const preset = clonePreset(state.preset);

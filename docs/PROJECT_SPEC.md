@@ -170,24 +170,26 @@ Video mode (implemented) applies the same engine per frame with temporal schedul
 
 Randomization happens at three levels (all implemented in `src/randomize.js`):
 
-- global randomize: builds a whole new camera — fresh macros, a fresh pick of active modules, new name and seed. Each roll mutes some damage channels so results have distinct characters instead of everything firing at once. The physics rail participates as archetypes, not background guests: ~65% of builds are stylized-only, ~25% physics-led (one rail circuit rolls, occasionally both, with stylized macros scaled way down so the circuit look reads), ~10% stack both at full strength.
-- family randomizers (`Physics`, `Color`, `Melt`, `Burn`, `Noise`, `Cheap`, `Memory`): re-roll one damage domain with fresh draws, leave the rest untouched. Families are *domains*, not modules — future physics modules (ccdClock, addressBus, jpegStream) join the Physics family and the per-module dice rather than adding buttons.
+- global randomize: clears the previous damage modules and composes a whole new camera around one of several character archetypes (chromatic burn, liquefied color, failing sensor, low-fi, lost sync, and burn/melt hybrids). It chooses a coherent set of families, active modules, parameters, name, and render seed. Classic Adjustments remain the user's finishing grade; OSD set dressing is switched off rather than randomly added.
+- family randomizers (`Physics`, `Color`, `Melt`, `Burn`, `Noise`, `Cheap`, `Shift`, `Corrupt`): rebuild one explicit, non-overlapping module domain with fresh parameter draws. Unowned modules and the camera's render seed remain byte-for-byte unchanged, so these are true refinement steps. `Shift` owns syncFault + chromaShift; `Corrupt` owns memoryFault + bufferGhost. Physics is capped at three simultaneous circuits because raw-domain bends compound far more aggressively than post effects.
 - per-module dice (dice button in each right-side module header): re-roll one module's parameters while keeping the global seed, so everything else renders identically.
 - per-module reset (`R` button in each right-side module header): restore that module's `defaultPipeline()` block without touching macros, seed, or other modules.
 - panel reset (`RESET ALL` in each right-side panel header): restore every module in that panel from `defaultPipeline()` without touching other panels, macros, or seed.
 
 The Classic Edit panel is outside the damage randomization model: macros and global/family rolls leave it alone. Its Basic dice button can still produce a restrained grade when wanted.
 
-All draws are fresh values within the mode's intensity band — never cumulative — so repeated presses wander instead of ratcheting toward maximum damage.
+Every roll first draws one latent severity inside the selected intensity band. All primary and secondary parameters, fault counts, activation probabilities, and whole-camera density follow that shared value. This keeps Gentle from accidentally combining a weak headline slider with full-strength secondary faults. Draws are fresh rather than cumulative, so repeated presses wander instead of ratcheting toward maximum damage. The vestigial macro block remains preset-compatible but is not used to route randomization.
 
 Preset Lab (`preset-lab.html`) is a separate discovery surface using the same randomizers and render worker: pick a folder of test images, generate a 100-preset batch at ~300px thumbnails, review each preset across every image, mark keepers, edit name/description/tags, and export the kept set as a paste-ready JS module for later built-in integration.
 
-Random modes:
+Random modes (internal ids remain stable for compatibility):
 
-- `Bent`: balanced and usable
-- `Damaged`: fairly destructive, subject still readable
-- `Shorted`: severe and unstable
-- `Explore`: broad random space, may produce unusable results
+- `Gentle` (`bent`): one or two light damage modules globally; source structure and readability stay intact.
+- `Broken` (`damaged`): several medium-strength modules; strong distortion can dominate sections, but the general scene remains.
+- `Wrecked` (`shorted`): a dense high-strength composition intended to use the source as texture/noise for an abstract result.
+- `Explore` (`explore`): draws a coherent latent severity across the entire Gentle-to-Wrecked range, so either restrained or unusable results are valid.
+
+The CLI exposes this model through `--randomize <family[:level]>`, `--intensity`, and deterministic `--random-seed` options for test renders and contact sheets.
 
 Determinism is desirable but not absolute. Presets store seeds and reproduce the same general result, but future engine changes may alter exact pixels.
 

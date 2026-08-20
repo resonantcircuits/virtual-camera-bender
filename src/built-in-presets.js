@@ -448,7 +448,7 @@ export const BUILT_IN_PRESETS = [
   }),
   createPreset({
     name: "Tourist Compact '03",
-    description: "Overcompressed vacation snap with orange datestamp and HUD burn-in.",
+    description: "Overcompressed vacation snap with white datestamp and HUD burn-in.",
     tags: ["osd", "datestamp", "jpeg"],
     seed: 190803,
     macros: {
@@ -465,9 +465,9 @@ export const BUILT_IN_PRESETS = [
         enabled: true,
         datestamp: true,
         hudIcons: true,
-        glitchText: 0.12,
+        glitchText: 0,
         scale: 0.5,
-        color: "orange"
+        color: "white"
       },
       dctCrunch: {
         enabled: true,
@@ -1270,3 +1270,77 @@ export const BUILT_IN_PRESETS = [
     temporal: { driftAmount: 0.12, driftSpeed: 0.5 }
   })
 ];
+
+// Curated display order for the preset list and gallery. The definitions
+// above stay grouped by development history; this list is the storefront:
+// the first dozen show the widest possible range of distinct looks, subtle
+// "plausibly broken" cameras sit mid-list, and presets that read similar at
+// thumbnail size (the magenta-noise family, niche physics variants) come
+// last. Presets missing from this list keep their relative order at the end.
+const PRESET_DISPLAY_ORDER = [
+  // Showcase: one strong example of each damage family.
+  "Acid Lake",
+  "Interlace Crash",
+  "Xerox Heat",
+  "Pixel Melter",
+  "Oil Slick '99",
+  "Codec Rot",
+  "Tourist Compact '03",
+  "Mirror Bank",
+  "Rainbow Bus Tap",
+  "Rainbow Burst",
+  "Candy Snow",
+  "Pocket 4-Bit",
+  "Hold Vertical",
+  // Second wave: still distinct, more specific.
+  "Poison Corridor",
+  "Divide By Two",
+  "Broken Panel",
+  "Negative Bloom",
+  "V1 Full Spectrum",
+  "Ground Loop",
+  "Prism Fever",
+  "Tape Nausea",
+  "Dark Frame Leak",
+  "Deep Fried Upload",
+  "Cheap Menu Solar",
+  "Hue Avalanche",
+  "Chrome Spill",
+  "Reclock Roll",
+  "S9000 Tear",
+  "A530 Warp",
+  "Bent CCD-03",
+  "Dead Flash Compact",
+  // Subtle / plausible: quiet looks that read best on the full image.
+  "Almost Fine",
+  "Loose Sync",
+  "Zipper Mosaic",
+  "Double Buffer",
+  "AWB Panic",
+  "Copy Of A Copy",
+  "Brownout",
+  "Cloud Solarizer",
+  "Chlorophyll Ghost",
+  "Reset Ghost",
+  "Field Echo",
+  // Tail: near-duplicates of earlier looks and niche physics variants.
+  "Chromatic Sieve",
+  "A540 Melt",
+  "DC42 Night Solarize",
+  "Carrier Clash",
+  "Logic Negative",
+  "Night Stalker",
+  "Ember Core",
+  "Gravity Leak",
+  "Overheated Sensor",
+  "IR Bloom",
+  "Memory Card Fever"
+];
+
+BUILT_IN_PRESETS.sort((a, b) => {
+  const rank = (preset) => {
+    const index = PRESET_DISPLAY_ORDER.indexOf(preset.name);
+    return index === -1 ? PRESET_DISPLAY_ORDER.length : index;
+  };
+  return rank(a) - rank(b);
+});

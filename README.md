@@ -20,7 +20,7 @@ Repository layout:
 - `src/render-worker.js`: Web Worker that runs the pipeline off the main thread.
 - `src/presets.js`: preset schema defaults, macro-to-pipeline mapping, control definitions.
 - `src/built-in-presets.js`: the built-in camera preset collection.
-- `src/randomize.js`: random modes, family randomizers, and per-module randomizers.
+- `src/randomize.js`: coherent intensity profiles, whole-camera composition, eight refinement families, and per-module randomizers.
 - `src/app.js`: UI wiring.
 - `src/temporal.js`: video temporal scheduling — per-frame seed modes and parameter drift, shared by app and CLI.
 - `src/cli.js`, `src/dev-server.js`: headless still/video renderer (ffmpeg-backed) and static dev server.
@@ -54,6 +54,7 @@ physics rail (one shared raw round trip: inverse ISP → 12-bit Bayer raw → en
 - **Undo / Redo** — every preset switch, randomize, reroll, and control tweak is tracked (up to 60 steps).
 - **A/B split compare** — toggle Split A/B and drag the divider across the image; hold `C` for a quick full-frame flash of the original.
 - **Per-module randomize, reset, solo & bypass** — each module group in the right-side panels has a dice button (re-roll only that module's parameters, keeping the seed), an `R` reset button (restore schema defaults), an `S` solo button, and a lamp button (quick enable/disable). The dice respects the Randomize mode selected in the left panel.
+- **Random camera + refinements** — New Random Camera composes a fresh damage chain; the eight family buttons (Physics, Color, Melt, Burn, Noise, Cheap, Shift, Corrupt) rebuild only their owned modules and keep every other module and the render seed unchanged.
 - **Panel-level off/reset** — each module panel has `ALL OFF` and `RESET ALL` actions for quick comparison or returning a whole panel to schema defaults.
 - **Classic Edit panel** — ordinary photo adjustments at the end of the chain, kept separate from emulation modules and left untouched by macro/global/family randomize.
 - **Preset Lab** — separate batch UI for folder-based test-image sweeps, keep/reject review, name/description/tag editing, and JS export of selected presets.
@@ -82,12 +83,18 @@ Stills and video render headless (requires `ffmpeg` on PATH):
 node src/cli.js render input.jpg output.png --builtin "IR Bloom"
 node src/cli.js render input.jpg output.png --preset my-camera.vcb-preset.json --set pipeline.pixelSort.strength=0.9
 node src/cli.js render input.jpg output.png --builtin "Double Buffer" --ghost other-frame.jpg
+node src/cli.js render input.jpg output.png --randomize global:broken --random-seed 4219 --max-dimension 960
+node src/cli.js render input.jpg output.png --randomize shift --intensity wrecked --random-seed 88
 node src/cli.js render-video clip.mp4 bent.mp4 --preset my-camera.vcb-preset.json
 node src/cli.js render-video clip.mp4 test.mp4 --builtin "Codec Rot" --quality small --start 4 --duration 2 --max-dimension 960
 node src/cli.js list-presets
 ```
 
 `render-video` processes every frame through the engine in parallel worker threads (`--jobs`, default cores−1), preserves the source frame rate, stream-copies audio, and encodes H.264. The default `--quality balanced` uses CRF 23 for practical output sizes; use `small` (CRF 28), `high` (CRF 18), or exact `--crf <n>` when needed. `--preset-json '<json>'` accepts a complete preset without a separate file, which is what the app's Copy Render Command action emits. Temporal behavior comes from the preset's `temporal` block and can be overridden inline, e.g. `--set temporal.mode=hold --set temporal.driftAmount=0.4`. Frame indices are deterministic: the same input, preset, and options produce byte-identical output regardless of `--jobs`.
+
+`--randomize <family[:level]>` applies the same randomizer used by the UI before rendering. Families are `global`, `physics`, `color`, `melt`, `burn`, `noise`, `cheap`, `shift`, and `memory`; levels accept the UI names `gentle`, `broken`, `wrecked`, and `explore`. `--random-seed` makes parameter selection reproducible, which is useful for contact-sheet tuning.
+
+Run the randomizer invariants with `npm test`.
 
 ## Roadmap
 

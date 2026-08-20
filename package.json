@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "render": "node src/cli.js render",
-    "serve": "node src/dev-server.js 8787"
+    "serve": "node src/dev-server.js 8787",
+    "test": "node --test"
   }
 }

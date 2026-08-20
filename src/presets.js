@@ -2,14 +2,16 @@ import { clamp, clone, mergeDeep } from "./utils.js";
 
 export const APP_VERSION = "0.1.0";
 
+// [key, label, tooltip] — moving a dial re-tunes the module parameters it
+// drives, so it overwrites fine tweaks in that area.
 export const MACRO_DEFS = [
-  ["bend", "Bend"],
-  ["colorFault", "Color Fault"],
-  ["melt", "Melt"],
-  ["burn", "Burn"],
-  ["noise", "Noise"],
-  ["cheapness", "Cheapness"],
-  ["chaos", "Chaos"]
+  ["bend", "Bend", "Broad digital stress: exposure gain, false-color saturation, edge burn, vertical smear response, and cheap-camera sharpening"],
+  ["colorFault", "Color Fault", "False color, contour rings, edge halos, channel damage, and colored sensor noise"],
+  ["melt", "Melt", "Vertical smear, pixel sorting, striping, curtain streaks, and some sync wobble"],
+  ["burn", "Burn", "Exposure clipping, black crush, contour bands and rings, edge burn, and smear trail length"],
+  ["noise", "Noise", "Sensor noise, shadow noise, hot pixels, striping, and cheap-camera dither"],
+  ["cheapness", "Cheapness", "Internal downscale, bit depth, dither, sharpening, JPEG/DCT crunch, and some sensor noise"],
+  ["chaos", "Chaos", "Memory faults, sync tears, buffer ghosting, chroma shift, DCT scramble, and instability mixed into other modules"]
 ];
 
 export const FALSE_COLOR_MODES = [
@@ -485,7 +487,7 @@ export const ADVANCED_MODULE_HELP = {
   },
   basicAdjustments: {
     short: "Applies ordinary photo-editing adjustments after the full camera chain.",
-    long: "Basic is deliberately not an emulation module. It runs at the very end as a practical classic editing pass for brightness, contrast, saturation, color temperature, tint, gamma, shadows, and highlights. Macros and random families leave it alone so you can polish the finished result."
+    long: "Basic is deliberately not an emulation module. It runs at the very end as a practical photo-adjustment pass for brightness, contrast, saturation, color temperature, tint, gamma, shadows, and highlights. Damage dials and randomize leave it alone so you can polish the finished result."
   }
 };
 

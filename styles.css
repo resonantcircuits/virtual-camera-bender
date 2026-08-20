@@ -128,6 +128,22 @@ h3 {
   gap: 8px;
 }
 
+.topbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-group + .topbar-group,
+.topbar-group + .command-button {
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.export-cluster {
+  gap: 10px;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(250px, 300px) minmax(320px, 1fr) minmax(270px, 340px);
@@ -145,7 +161,7 @@ h3 {
 
 .panel-presets {
   display: grid;
-  grid-template-rows: auto minmax(120px, 1fr) auto;
+  grid-template-rows: minmax(200px, 1fr) auto;
   overflow: hidden;
 }
 
@@ -158,9 +174,20 @@ h3 {
   border-bottom: 0;
 }
 
+/* Heading + Gallery button stay pinned; only the camera list scrolls. */
 .preset-gallery-section {
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.preset-gallery-section .preset-list {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  /* flex-basis 0 makes auto rows collapse to the buttons' min-height */
+  grid-auto-rows: max-content;
 }
 
 .panel-section > * + * {
@@ -250,6 +277,7 @@ h3 {
 }
 
 .seed-row input {
+  min-width: 0;
   min-height: 34px;
   padding: 0 9px;
   border: 1px solid var(--line);
@@ -280,6 +308,13 @@ h3 {
   font-size: 0.88rem;
 }
 
+.empty-state-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
 .command-button,
 .preset-button {
   min-height: 34px;
@@ -303,7 +338,9 @@ h3 {
 
 .icon-button svg,
 .lock-button svg,
-.dice-button svg {
+.dice-button svg,
+.reset-button svg,
+.solo-button svg {
   width: 14px;
   height: 14px;
   fill: none;
@@ -311,6 +348,12 @@ h3 {
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.reset-button svg,
+.solo-button svg {
+  width: 12px;
+  height: 12px;
 }
 
 .dice-button circle {
@@ -400,14 +443,76 @@ h3 {
   color: var(--green);
 }
 
+.randomizer-section > * + * {
+  margin-top: 10px;
+}
+
 .random-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .random-grid .command-button:first-child {
   grid-column: 1 / -1;
+}
+
+.random-button {
+  display: grid;
+  gap: 1px;
+  justify-items: center;
+  min-height: 0;
+  padding: 5px 8px;
+}
+
+.random-sub {
+  color: var(--muted);
+  font-size: 0.62rem;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.random-button.is-global {
+  margin-bottom: 4px;
+}
+
+.random-subheader {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.save-dialog {
+  width: min(420px, calc(100vw - 40px));
+  padding: 18px;
+  border: 1px solid var(--line-bright);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 32px 90px rgba(0, 0, 0, 0.8);
+}
+
+.save-dialog::backdrop {
+  background: rgba(5, 5, 4, 0.72);
+}
+
+.save-dialog h2 {
+  color: var(--green);
+}
+
+.save-dialog > * + * {
+  margin-top: 12px;
+}
+
+.save-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .text-field,
@@ -582,7 +687,8 @@ summary {
   padding: 6px 10px;
 }
 
-.advanced-group summary > span:first-child {
+.advanced-group summary .module-name {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -716,22 +822,6 @@ summary {
 .module-help-long {
   margin-top: 6px !important;
   color: var(--muted) !important;
-}
-
-.module-help-toggle {
-  margin-top: 7px;
-  padding: 2px 7px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--panel-strong);
-  color: var(--cyan);
-  font-size: 0.62rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.module-help-toggle:hover {
-  border-color: var(--cyan);
 }
 
 .advanced-group.is-solo {
@@ -906,6 +996,28 @@ summary {
 
 .help-header h2 {
   color: var(--green);
+  margin-right: auto;
+}
+
+#tooltipToggle.is-active {
+  border-color: var(--amber);
+  background: #33260d;
+  color: var(--amber);
+}
+
+.vcb-tooltip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 300px;
+  padding: 6px 9px;
+  border: 1px solid var(--line-bright);
+  border-radius: 4px;
+  background: #11110f;
+  color: var(--text);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  pointer-events: none;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
 }
 
 .help-body {
@@ -1181,6 +1293,20 @@ summary {
 
   .topbar-actions > * {
     flex: 1 1 130px;
+  }
+
+  .topbar-group {
+    flex-wrap: wrap;
+  }
+
+  .topbar-group > * {
+    flex: 1 1 130px;
+  }
+
+  .topbar-group + .topbar-group,
+  .topbar-group + .command-button {
+    padding-left: 0;
+    border-left: 0;
   }
 
   .workspace {
@@ -1507,4 +1633,78 @@ summary {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--green);
+}
+
+/* First-run tour: spotlight overlay + step card (src/tour.js) */
+.tour-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  overflow: hidden;
+}
+
+.tour-layer.is-centered {
+  background: rgba(5, 5, 4, 0.72);
+}
+
+.tour-layer.is-centered .tour-spotlight {
+  display: none;
+}
+
+.tour-spotlight {
+  position: fixed;
+  border: 1px solid var(--line-bright);
+  border-radius: 6px;
+  /* The giant shadow dims everything outside the highlighted section. */
+  box-shadow: 0 0 0 200vmax rgba(5, 5, 4, 0.72);
+  pointer-events: none;
+  transition: left 0.22s ease, top 0.22s ease, width 0.22s ease, height 0.22s ease;
+}
+
+.tour-card {
+  position: fixed;
+  width: min(360px, calc(100vw - 24px));
+  padding: 14px 16px 12px;
+  border: 1px solid var(--line-bright);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.7);
+}
+
+.tour-kicker {
+  display: block;
+  color: var(--amber);
+  font-size: 0.62rem;
+  letter-spacing: 0.2em;
+}
+
+.tour-title {
+  margin: 6px 0 8px;
+  color: var(--green);
+  font-size: 0.95rem;
+}
+
+.tour-body {
+  font-size: 0.76rem;
+  line-height: 1.65;
+}
+
+.tour-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.tour-progress {
+  color: var(--muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+}
+
+.tour-buttons {
+  display: flex;
+  gap: 8px;
 }

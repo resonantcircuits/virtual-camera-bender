@@ -18,61 +18,68 @@
           <h1>Virtual Camera Bender</h1>
         </div>
         <div class="topbar-actions">
-          <button id="loadImageButton" class="command-button is-primary" type="button">Load Media</button>
-          <button id="loadPresetButton" class="command-button" type="button">Load Preset</button>
-          <button id="savePresetButton" class="command-button" type="button">Save Preset</button>
-          <button id="undoButton" class="command-button" type="button" title="Undo (Cmd/Ctrl+Z)" disabled>Undo</button>
-          <button id="redoButton" class="command-button" type="button" title="Redo (Shift+Cmd/Ctrl+Z)" disabled>Redo</button>
-          <label class="format-select">
-            <span>Format</span>
-            <select id="exportFormat">
-              <option value="png">PNG</option>
-              <option value="webp">WebP</option>
-              <option value="jpg">JPEG</option>
-            </select>
-          </label>
-          <label class="format-select">
-            <span>Size</span>
-            <select id="exportSize">
-              <option value="preview">Preview</option>
-              <option value="full">Full</option>
-            </select>
-          </label>
-          <button id="exportButton" class="command-button is-primary" type="button">Export</button>
-          <button id="helpButton" class="command-button" type="button" title="How this thing works (?)">?</button>
+          <div class="topbar-group">
+            <button id="loadImageButton" class="command-button" type="button" title="Load an image or video to bend">Load Media</button>
+          </div>
+          <div class="topbar-group" id="cameraFileGroup">
+            <button id="loadPresetButton" class="command-button" type="button" title="Load a saved camera file">Load Camera</button>
+            <button id="savePresetButton" class="command-button" type="button" title="Save the current camera to a file">Save Camera</button>
+          </div>
+          <div class="topbar-group">
+            <button id="undoButton" class="command-button" type="button" title="Undo (Cmd/Ctrl+Z)" disabled>Undo</button>
+            <button id="redoButton" class="command-button" type="button" title="Redo (Shift+Cmd/Ctrl+Z)" disabled>Redo</button>
+          </div>
+          <div class="topbar-group export-cluster">
+            <label class="format-select">
+              <span>Format</span>
+              <select id="exportFormat">
+                <option value="png">PNG</option>
+                <option value="webp">WebP</option>
+                <option value="jpg">JPEG</option>
+              </select>
+            </label>
+            <label class="format-select">
+              <span>Size</span>
+              <select id="exportSize">
+                <option value="preview">Preview</option>
+                <option value="full">Full</option>
+              </select>
+            </label>
+            <button id="exportButton" class="command-button" type="button" title="Save the bent result as an image file">Export Image</button>
+          </div>
+          <div class="topbar-group">
+            <button id="tooltipToggle" class="command-button" type="button" title="Show quick tooltips when hovering controls" aria-pressed="true">Tooltips</button>
+            <button id="helpButton" class="command-button" type="button" title="How this thing works (?)">?</button>
+          </div>
         </div>
       </header>
 
       <main class="workspace">
         <aside class="panel panel-presets">
-          <section class="panel-section">
-            <h2>Camera</h2>
-            <label class="text-field">
-              <span>Name</span>
-              <input id="presetName" type="text" autocomplete="off">
-            </label>
-            <label class="text-field">
-              <span>Notes</span>
-              <textarea id="presetDescription" rows="3"></textarea>
-            </label>
-          </section>
-
           <section class="panel-section preset-gallery-section">
             <div class="section-heading">
-              <h2>Effects</h2>
-              <button id="galleryButton" class="command-button" type="button" title="Browse all cameras on your image (G)">Gallery</button>
+              <h2>Camera Presets</h2>
+              <button id="galleryButton" class="command-button" type="button" title="Browse all camera presets on your image (G)">Gallery</button>
             </div>
+            <p class="hint">Starting points — click one and make it yours.</p>
             <div id="presetList" class="preset-list"></div>
           </section>
 
           <section class="panel-section randomizer-section">
-            <h2>Randomize</h2>
-            <p class="hint">Bends the current camera — it never resets to a preset. Mode sets intensity; family buttons re-roll one damage domain.</p>
-            <label class="format-select is-wide">
-              <span>Mode</span>
+            <h2 title="Re-rolls the current camera — it never resets your work.">Randomize</h2>
+            <label class="format-select">
+              <span>Intensity</span>
               <select id="randomMode"></select>
             </label>
             <div id="randomFamilyList" class="random-grid"></div>
+            <div class="format-select" title="Where the damage lands. Same settings + same seed = same image.">
+              <span>Seed</span>
+              <div class="seed-row">
+                <input id="seedInput" type="text" inputmode="numeric" autocomplete="off">
+                <button id="rerollButton" class="command-button" type="button" title="New seed, same settings">Reroll</button>
+                <button id="seedLockButton" class="command-button icon-button" type="button" title="Keep this seed when building a new random camera" aria-label="Keep seed for new random cameras" aria-pressed="false"></button>
+              </div>
+            </div>
           </section>
         </aside>
 
@@ -86,24 +93,27 @@
           </div>
           <div id="emptyState" class="empty-state">
             <strong>NO SIGNAL</strong>
-            <span>LOAD IMAGE OR VIDEO · DROP FILE</span>
+            <span>DROP AN IMAGE OR VIDEO ANYWHERE</span>
+            <div class="empty-state-actions">
+              <button id="emptyLoadButton" class="command-button is-primary" type="button">Load Media</button>
+              <button id="sampleImageButton" class="command-button" type="button" title="Load a bundled sample photo to play with">Try a Sample Image</button>
+            </div>
           </div>
         </section>
 
         <aside class="panel">
+          <!-- Damage Dials (macro sliders) hidden for now: with this many
+               modules the dial→look mapping reads as random (e.g. Color Fault
+               often lands on a single stray color), so the macros need a
+               rework before they earn UI space. The engine plumbing
+               (MACRO_DEFS, applyMacrosToPipeline) stays live for randomize.
           <section class="panel-section">
-            <h2>Circuit Seed</h2>
-            <div class="seed-row">
-              <input id="seedInput" type="text" inputmode="numeric" autocomplete="off">
-              <button id="rerollButton" class="command-button" type="button" title="New seed, same settings">Reroll</button>
-              <button id="seedLockButton" class="command-button icon-button" type="button" title="Freeze seed during randomize" aria-label="Freeze seed during randomize" aria-pressed="false"></button>
-            </div>
-          </section>
-
-          <section class="panel-section">
-            <h2>Macro</h2>
+            <h2>Damage Dials</h2>
+            <p class="hint">The big knobs — each one drives several effect modules below.</p>
             <div id="macroControls" class="control-stack"></div>
           </section>
+          -->
+
 
           <section class="panel-section" id="temporalSection" hidden>
             <h2>Temporal · Video</h2>
@@ -124,30 +134,34 @@
                 <option value="powershell">Windows PowerShell</option>
               </select>
             </label>
-            <p class="hint">The copied command includes this camera as inline JSON, so no preset file needs to be saved.</p>
+            <p class="hint">The copied command includes this camera as inline JSON, so no camera file needs to be saved.</p>
             <button id="copyCommandButton" class="command-button is-block" type="button" title="Copy the CLI command that renders this video with the current camera">Copy Render Command</button>
           </section>
 
           <section class="panel-section">
+            <button id="resetAllModulesButton" class="command-button is-block" type="button" title="Reset every module to defaults and switch them all off — start again from the untouched image">Reset All Modules</button>
+          </section>
+
+          <section class="panel-section" id="sensorEffectsSection">
             <details>
-              <summary class="panel-summary"><span>Physics Rail</span><span class="panel-summary-actions"><button id="physicsAllOffButton" class="all-off-button" type="button" title="Switch off every physics module">ALL OFF</button><button id="physicsResetAllButton" class="reset-all-button" type="button" title="Reset every physics module to defaults">RESET ALL</button></span></summary>
-              <p class="hint circuit-note">Simulated bend circuitry on the raw sensor signal (analog front end, ADC data bus). Runs before every module below; macros never touch it.</p>
+              <summary class="panel-summary"><span>Sensor Effects</span><span class="panel-summary-actions"><button id="physicsAllOffButton" class="all-off-button" type="button" title="Switch off every sensor effect">ALL OFF</button><button id="physicsResetAllButton" class="reset-all-button" type="button" title="Reset every sensor effect to defaults">RESET ALL</button></span></summary>
+              <p class="hint circuit-note">Faults inside the camera&rsquo;s electronics, damaging the raw sensor signal before the image even exists. These run before everything below.</p>
               <div id="physicsControls" class="advanced-stack"></div>
             </details>
           </section>
 
-          <section class="panel-section">
+          <section class="panel-section" id="imageEffectsSection">
             <details>
-              <summary class="panel-summary"><span>Stylized Circuit</span><span class="panel-summary-actions"><button id="stylizedAllOffButton" class="all-off-button" type="button" title="Switch off every stylized module">ALL OFF</button><button id="stylizedResetAllButton" class="reset-all-button" type="button" title="Reset every stylized module to defaults">RESET ALL</button></span></summary>
-              <p class="hint circuit-note">Artistic approximations of camera damage — color, melt, burn, noise, memory, codec. The macro dials drive these; fine-tune each module here.</p>
+              <summary class="panel-summary"><span>Image Effects</span><span class="panel-summary-actions"><button id="stylizedAllOffButton" class="all-off-button" type="button" title="Switch off every image effect">ALL OFF</button><button id="stylizedResetAllButton" class="reset-all-button" type="button" title="Reset every image effect to defaults">RESET ALL</button></span></summary>
+              <p class="hint circuit-note">Damage applied to the developed image — color, melt, burn, noise, memory, codec. One effect per module, each with its own controls.</p>
               <div id="advancedControls" class="advanced-stack"></div>
             </details>
           </section>
 
-          <section class="panel-section">
-            <details open>
-              <summary class="panel-summary"><span>Classic Edit</span><span class="panel-summary-actions"><button id="classicEditAllOffButton" class="all-off-button" type="button" title="Switch off every classic editing module">ALL OFF</button><button id="classicEditResetAllButton" class="reset-all-button" type="button" title="Reset every classic editing module to defaults">RESET ALL</button></span></summary>
-              <p class="hint circuit-note">Plain photo adjustments applied at the end of the chain. These are not camera emulation; use them to tune the finished result.</p>
+          <section class="panel-section" id="classicEditSection">
+            <details>
+              <summary class="panel-summary"><span>Classic Adjustments</span><span class="panel-summary-actions"><button id="classicEditAllOffButton" class="all-off-button" type="button" title="Switch off every classic adjustment module">ALL OFF</button><button id="classicEditResetAllButton" class="reset-all-button" type="button" title="Reset every classic adjustment module to defaults">RESET ALL</button></span></summary>
+              <p class="hint circuit-note">Ordinary photo edits applied at the very end of the chain. Not camera emulation &mdash; use them to polish the finished result.</p>
               <div id="classicEditControls" class="advanced-stack"></div>
             </details>
           </section>
@@ -167,26 +181,27 @@
     <dialog id="helpDialog" class="help-dialog">
       <div class="help-header">
         <h2>How Virtual Camera Bender Works</h2>
+        <button id="helpTourButton" class="command-button" type="button" title="Replay the first-run tour of the interface">Replay Tour</button>
         <button id="helpClose" class="command-button" type="button">Close</button>
       </div>
       <div class="help-body">
         <section>
           <h3>The Signal Path</h3>
-          <p>Camera preset &rarr; Macro dials &rarr; Circuit modules &rarr; Image.</p>
+          <p>Camera preset &rarr; Effect modules &rarr; Image.</p>
           <p><strong>Cameras are starting points, not limits.</strong> Clicking one copies its full settings into the editor. From there everything is yours: every slider, randomizer, and module works from the current state, no matter which camera you started with.</p>
-          <p>The <strong>Gallery</strong> (button above the Effects list, or <kbd>G</kbd>) shows every camera rendered live on your loaded image, side by side. Click a card to load that camera.</p>
+          <p>The <strong>Gallery</strong> (button above the Camera Presets list, or <kbd>G</kbd>) shows every camera rendered live on your loaded image, side by side. Click a card to load that camera.</p>
         </section>
         <section>
-          <h3>Macros vs Circuit Panels</h3>
-          <p><strong>Macro dials</strong> are the big knobs. Moving one re-tunes the module parameters underneath it — so they overwrite fine tweaks in that area. Use them to rough in a look.</p>
-          <p><strong>Physics Rail</strong> is different in kind: it simulates real bend circuitry acting on the raw sensor signal (oscillators into the analog path, logic chips on the ADC data bus). It runs before everything else, and macros never touch it — it changes through its own controls, presets, the <strong>Physics</strong> randomize family, its <strong>dice</strong> button, and the physics-led share of Global rolls.</p>
-          <p><strong>Stylized Circuit</strong> is the per-module truth for the plausibility effects: every parameter of every effect. Use it to fine-tune after the macros get you close. Hover a parameter for a short description of what it changes.</p>
-          <p><strong>Classic Edit</strong> is ordinary photo editing after the camera damage is complete: brightness, contrast, saturation, color temperature, and tone cleanup. Macros and random families leave it alone.</p>
-          <p>Each module header has six controls: the <strong>lock</strong> freezes that module during right-side randomize, the <strong>dice</strong> re-rolls just that module, <strong>R</strong> resets it to defaults, <strong>S</strong> solos it so you see only its effect, <strong>i</strong> opens short and long effect notes, and the <strong>lamp</strong> switches it on or off (there is no separate Enabled toggle inside the group).</p>
-          <p><strong>ALL OFF</strong> switches off every module in a panel. <strong>RESET ALL</strong> restores every module in that panel to defaults.</p>
+          <h3>The Module Panels</h3>
+          <p><strong>Sensor Effects</strong> simulates real bend circuitry acting on the raw sensor signal (oscillators into the analog path, logic chips on the ADC data bus). It runs before everything else and changes through its own controls, camera presets, the <strong>Physics</strong> randomize button, its <strong>dice</strong> button, and the hardware-led share of New Random Camera rolls.</p>
+          <p><strong>Image Effects</strong> is where the damage look is built: one module per effect, every parameter exposed. Hover a parameter for a short description of what it changes.</p>
+          <p><strong>Classic Adjustments</strong> is ordinary photo editing after the camera damage is complete: brightness, contrast, saturation, color temperature, and tone cleanup. Randomize leaves it alone.</p>
+          <p>Each module header has six controls. The <strong>lamp</strong> on the left switches the module on or off — and changing any parameter inside a module switches it on automatically. Hover a module name for a one-line description of what it does. On the right: the <strong>lock</strong> freezes that module during randomize, the <strong>dice</strong> re-rolls just that module, the <strong>reset arrow</strong> restores its defaults, the <strong>eye</strong> solos it so you see only its effect, and <strong>i</strong> opens the module&rsquo;s full notes.</p>
+          <p><strong>ALL OFF</strong> switches off every module in a panel. <strong>RESET ALL</strong> restores every module in that panel to defaults. The <strong>Reset All Modules</strong> button above the panels does both everywhere at once — a clean slate showing the untouched image.</p>
         </section>
+        <!-- Damage Dial Bindings: hidden with the macro sliders; restore when macros return.
         <section>
-          <h3>Macro Bindings</h3>
+          <h3>Damage Dial Bindings</h3>
           <p><strong>Bend</strong> pushes broad digital stress: exposure gain, false-color saturation, edge burn, vertical smear response, and cheap-camera sharpening.</p>
           <p><strong>Color Fault</strong> drives false color, contour rings, edge halos, channel damage, and colored sensor noise.</p>
           <p><strong>Melt</strong> drives vertical smear, pixel sorting, striping, curtain streaks, and some sync wobble.</p>
@@ -195,17 +210,18 @@
           <p><strong>Cheapness</strong> drives internal downscale, bit depth, dither, sharpening, JPEG/DCT crunch, and some sensor noise.</p>
           <p><strong>Chaos</strong> drives memory faults, sync tears, buffer ghosting, chroma shift, DCT scramble, and instability mixed into several other modules.</p>
         </section>
+        -->
         <section>
           <h3>Randomize</h3>
-          <p>Randomize always bends the <em>current</em> settings — it never resets to a preset.</p>
-          <p><strong>Mode</strong> sets how hard it hits: <strong>Bent</strong> is gentle, <strong>Damaged</strong> is clearly broken, <strong>Shorted</strong> is violent, <strong>Explore</strong> draws from the full range. The per-module dice use this mode too.</p>
-          <p><strong>Global</strong> builds a whole new camera (new name, new seed, fresh macros, and a fresh pick of which modules are active). Some builds are led by the physics rail with the stylized damage pulled back; a few stack both circuits. The <strong>family buttons</strong> (Physics, Color, Melt, Burn, Noise, Cheap, Memory) re-roll only that damage domain and leave the rest alone — good for keeping a look you like while re-rolling the part you don't.</p>
-          <p>Locked modules in the right-side panels are restored after right-side randomize, including whether they are enabled. Pressing a locked module's <strong>dice</strong> does nothing and flashes the lock. Locks are session-only and are not saved into presets.</p>
+          <p><strong>New Random Camera</strong> starts a fresh damage chain. The smaller refinement buttons work from the <em>current</em> camera and replace only one kind of damage.</p>
+          <p><strong>Intensity</strong> sets how hard it hits: <strong>Gentle</strong> lightly bends a still-readable photograph, <strong>Broken</strong> strongly distorts sections while retaining the general scene, and <strong>Wrecked</strong> builds an abstract image from the source. <strong>Explore</strong> draws one coherent result from that entire range. The per-module dice use this intensity too.</p>
+          <p><strong>New Random Camera</strong> clears the previous damage and composes a whole new camera around a randomly selected character (new name, seed, active modules, and parameters). The eight refinement buttons (Physics, Color, Melt, Burn, Noise, Cheap, Shift, Corrupt) rebuild only their named damage type. They keep every other module and the current render seed fixed, so they are safe ways to refine a promising camera.</p>
+          <p>Locked modules in the right-side panels are restored after randomize, including whether they are enabled. Pressing a locked module's <strong>dice</strong> does nothing and flashes the lock. Locks are session-only and are not saved into camera files.</p>
         </section>
         <section>
           <h3>Seed</h3>
-          <p>The seed steers every random pattern in the render: noise grain, drip positions, block glitches. <strong>Reroll</strong> keeps all your settings but redraws the damage in new places. Same settings + same seed = same image.</p>
-          <p>The seed lock only affects right-side randomize. Manual <strong>Reroll</strong> still changes the seed on purpose. Seed lock is session-only and is not saved into presets.</p>
+          <p>The seed steers every random pattern in the render: noise grain, drip positions, block glitches. <strong>Reroll</strong> keeps all your settings but redraws the damage in new places. Family and module refinements keep it fixed; the lock also makes <strong>New Random Camera</strong> keep it. Same settings + same seed = same image.</p>
+          <p>The seed lock holds the current seed during Randomize. Manual <strong>Reroll</strong> still changes the seed on purpose. Seed lock is session-only and is not saved into camera files.</p>
         </section>
         <section>
           <h3>Comparing</h3>
@@ -223,11 +239,11 @@
           <h3>Video</h3>
           <p>Loading a video opens the <strong>Frames</strong> contact sheet (<kbd>V</kbd>): 25 evenly spaced frames rendered through the current camera. Click a frame to make it the working image — every editor tool then works on that frame exactly as it will render in the final video.</p>
           <p>The <strong>Temporal</strong> panel controls behavior across frames. <strong>Seed Mode</strong>: <em>locked</em> keeps all damage frozen in place, <em>hold</em> re-rolls it every ~N frames (camcorder stutter), <em>flicker</em> re-rolls every frame. Sensor grain and speckle always shimmer per frame regardless — only the structural damage obeys the mode. <strong>Drift</strong> makes module parameters wander slowly so the look evolves. <strong>Ghost Lag</strong> feeds the Buffer Ghost module the frame N back — real stale-buffer trails (enable Buffer Ghost to see it).</p>
-          <p>The app never encodes video. <strong>Copy Render Command</strong> gives you an OS-formatted CLI line with the current camera embedded, so no preset file is needed. Choose Smaller File, Balanced, or High Quality before copying, then run it with ffmpeg installed.</p>
+          <p>The app never encodes video. <strong>Copy Render Command</strong> gives you an OS-formatted CLI line with the current camera embedded, so no camera file is needed. Choose Smaller File, Balanced, or High Quality before copying, then run it with ffmpeg installed.</p>
         </section>
         <section>
-          <h3>Presets and Session State</h3>
-          <p><strong>Save Preset</strong> writes camera settings, seed, macros, module parameters, output format, and export size. It does not save the source photo, ghost source image, module locks, seed lock, undo history, or split/solo view state.</p>
+          <h3>Saved Cameras and Session State</h3>
+          <p><strong>Save Camera</strong> asks for a name and notes, then writes camera settings, seed, module parameters, output format, and export size. It does not save the source photo, ghost source image, module locks, seed lock, undo history, or split/solo view state.</p>
           <p><strong>Buffer Ghost</strong> can use a loaded second image as the stale frame. If no ghost image is loaded, it falls back to the current image.</p>
         </section>
         <section>
@@ -243,6 +259,23 @@
             <kbd>?</kbd> this help
           </p>
         </section>
+      </div>
+    </dialog>
+
+    <dialog id="saveDialog" class="save-dialog">
+      <h2>Save Camera</h2>
+      <p class="hint">Saved with the camera file and shown when browsing presets.</p>
+      <label class="text-field">
+        <span>Name</span>
+        <input id="presetName" type="text" autocomplete="off">
+      </label>
+      <label class="text-field">
+        <span>Notes</span>
+        <textarea id="presetDescription" rows="3" placeholder="What does this camera look like?"></textarea>
+      </label>
+      <div class="save-dialog-actions">
+        <button id="saveCancelButton" class="command-button" type="button">Cancel</button>
+        <button id="saveConfirmButton" class="command-button is-primary" type="button">Save</button>
       </div>
     </dialog>
 

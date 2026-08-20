@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import { applyMacrosToPipeline, clonePreset, normalizePreset } from "./presets.js";
 import { BUILT_IN_PRESETS } from "./built-in-presets.js";
+import { RANDOM_FAMILIES, RANDOM_MODES, randomizePreset } from "./randomize.js";
 import { processCircuitBendImageData } from "./engine-core.js";
 import { prepareTemporalFrame } from "./temporal.js";
 import { fitWithin, setAtPath } from "./utils.js";
@@ -15,6 +16,16 @@ const VIDEO_QUALITY_CRF = {
   small: 28,
   balanced: 23,
   high: 18
+};
+const RANDOM_FAMILY_KEYS = new Set(RANDOM_FAMILIES.map(([key]) => key));
+const RANDOM_MODE_ALIASES = {
+  gentle: "bent",
+  bent: "bent",
+  broken: "damaged",
+  damaged: "damaged",
+  wrecked: "shorted",
+  shorted: "shorted",
+  explore: "explore"
 };
 
 main().catch((error) => {
@@ -395,7 +406,13 @@ function probeVideo(input) {
 // --- Shared option and preset handling ---
 
 function buildPreset(options) {
-  const preset = loadPreset(options);
+  let preset = loadPreset(options);
+
+  if (options.randomizeFamily) {
+    preset = randomizePreset(preset, options.randomizeFamily, options.randomMode, {
+      randomSeed: options.randomSeed
+    });
+  }
 
   for (const [key, value] of options.macros) {
     preset.macros[key] = parseValue(value);
@@ -436,6 +453,9 @@ function parseArgs(argv) {
     duration: null,
     crf: null,
     quality: "balanced",
+    randomizeFamily: null,
+    randomMode: "damaged",
+    randomSeed: null,
     sets: [],
     macros: []
   };
@@ -463,6 +483,12 @@ function parseArgs(argv) {
       options.crf = Number(argv[++index]);
     } else if (arg === "--quality") {
       options.quality = argv[++index]?.toLowerCase();
+    } else if (arg === "--randomize") {
+      parseRandomizeOption(options, argv[++index]);
+    } else if (arg === "--intensity") {
+      options.randomMode = normalizeRandomMode(argv[++index]);
+    } else if (arg === "--random-seed") {
+      options.randomSeed = Number(argv[++index]);
     } else if (arg === "--set") {
       options.sets.push(splitAssignment(argv[++index], "--set"));
     } else if (arg === "--macro") {
@@ -493,7 +519,31 @@ function parseArgs(argv) {
   if (options.presetPath && options.presetJson !== null) {
     fail("Use either --preset or --preset-json, not both.");
   }
+  if (options.randomizeFamily && !RANDOM_FAMILY_KEYS.has(options.randomizeFamily)) {
+    fail(`Unknown randomizer: ${options.randomizeFamily}. Use ${[...RANDOM_FAMILY_KEYS].join(", ")}.`);
+  }
+  if (options.randomSeed !== null && !Number.isFinite(options.randomSeed)) {
+    fail("--random-seed expects a number.");
+  }
+  if (options.randomSeed !== null && !options.randomizeFamily) {
+    fail("--random-seed requires --randomize.");
+  }
   return options;
+}
+
+function parseRandomizeOption(options, value) {
+  const [family, mode] = String(value || "").toLowerCase().split(":");
+  options.randomizeFamily = family;
+  if (mode) options.randomMode = normalizeRandomMode(mode);
+}
+
+function normalizeRandomMode(value) {
+  const mode = RANDOM_MODE_ALIASES[String(value || "").toLowerCase()];
+  if (!mode) {
+    const labels = RANDOM_MODES.map(([, label]) => label.split(" ")[0].toLowerCase());
+    fail(`Unknown randomize intensity: ${value}. Use ${labels.join(", ")}.`);
+  }
+  return mode;
 }
 
 function splitAssignment(value, optionName) {
@@ -655,6 +705,12 @@ Options:
   --preset-json <json>        Complete preset as an inline JSON string
   --max-dimension <pixels>    Resize input before processing for test renders
   --ghost <image>             Second image used by the bufferGhost module
+  --randomize <family[:level]>
+                              Apply a randomizer before rendering. Families:
+                              global, physics, color, melt, burn, noise,
+                              cheap, shift, memory
+  --intensity <level>         gentle, broken, wrecked, or explore
+  --random-seed <n>           Reproduce the same randomizer roll exactly
   --macro key=value           Override a macro before rendering
   --set path=value            Override any preset field after macro mapping
                               (includes temporal.*, e.g. --set temporal.mode=hold)
@@ -676,6 +732,8 @@ Video temporal behavior comes from the preset's "temporal" block:
 Examples:
   node src/cli.js render test-images/XT307819.jpeg out.png --builtin "Overheated Sensor" --max-dimension 1600
   node src/cli.js render input.jpg out.png --set pipeline.verticalSmear.length=1 --set pipeline.verticalSmear.decay=0.997
+  node src/cli.js render input.jpg out.png --randomize global:broken --random-seed 4219 --max-dimension 960
+  node src/cli.js render input.jpg out.png --randomize shift --intensity wrecked --random-seed 88
   node src/cli.js render-video clip.mp4 bent.mp4 --preset my-camera.vcb-preset.json --set temporal.mode=hold --set temporal.driftAmount=0.4
   node src/cli.js render-video clip.mp4 test.mp4 --builtin "Codec Rot" --quality small --start 2 --duration 3 --max-dimension 960
 `);

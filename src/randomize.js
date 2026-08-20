@@ -1,205 +1,312 @@
-import { applyMacrosToPipeline, clonePreset, FALSE_COLOR_MODES } from "./presets.js";
+import { clonePreset, defaultPipeline, FALSE_COLOR_MODES } from "./presets.js";
 import { clamp, createRng, randomInt, randomRange } from "./utils.js";
 
-const MODES = {
-  bent: { min: 0.08, max: 0.5, chaos: 0.35 },
-  damaged: { min: 0.22, max: 0.78, chaos: 0.6 },
-  shorted: { min: 0.45, max: 1, chaos: 0.88 },
-  explore: { min: 0, max: 1, chaos: 1 }
+// Mode ids are kept for preset/UI compatibility. Each roll materializes one
+// latent severity inside the selected band; every parameter in that roll then
+// follows it. This prevents a supposedly gentle camera from combining a low
+// main strength with full-strength secondary damage.
+const MODE_PROFILES = {
+  bent: { min: 0.06, max: 0.22, parameterMin: 0.03, parameterMax: 0.25 },
+  damaged: { min: 0.38, max: 0.66, parameterMin: 0.3, parameterMax: 0.7 },
+  shorted: { min: 0.78, max: 1, parameterMin: 0.72, parameterMax: 1 },
+  explore: { min: 0, max: 1, parameterMin: 0, parameterMax: 1 }
 };
 
+// [key, label, tooltip description, button subtitle]
 export const RANDOM_FAMILIES = [
-  ["global", "Global", "Build a whole new camera: re-rolls all macros and modules, new name and seed"],
-  ["physics", "Physics", "Re-roll the physics rail only: IR filter, charge-transfer clock, analog front end, supply rail, data bus, master clock, and frame-buffer memory — keeps the rest"],
-  ["color", "Color", "Re-roll color only: palette, hue/channel bends, gradient wash, WB hunting — keeps the rest"],
-  ["melt", "Melt", "Re-roll smear and pixel-sort drips — keeps the rest"],
-  ["burn", "Burn", "Re-roll exposure clipping, contour rings, and edge fringes — keeps the rest"],
-  ["noise", "Noise", "Re-roll sensor noise, speckle, dead pixels, and amp glow — keeps the rest"],
-  ["cheap", "Cheap", "Re-roll resolution, bit depth, blur, dither, and JPEG crunch — keeps the rest"],
-  ["memory", "Memory", "Re-roll interlace, block shifts, sync tears, ghost frames, and scanline faults — keeps the rest"]
+  ["global", "New Random Camera", "Build a whole new camera: re-rolls all damage modules, name, and seed", "re-roll everything"],
+  ["physics", "Physics", "Re-roll sensor circuitry only: IR filter, charge-transfer clock, analog front end, supply rail, data bus, master clock, and address bus", "circuit bends"],
+  ["color", "Color", "Re-roll palette and channel damage only: false color, channel bends, gradient wash, and WB hunting", "palette & channels"],
+  ["melt", "Melt", "Re-roll vertical charge smear and pixel-sort drips only", "smear & drips"],
+  ["burn", "Burn", "Re-roll exposure clipping, contour rings, and edge fringes only", "clipping & rings"],
+  ["noise", "Noise", "Re-roll sensor grain, striping, hot/dead pixels, and amp glow only", "grain & speckle"],
+  ["cheap", "Cheap", "Re-roll resolution, bit depth, Bayer damage, blur, dither, and JPEG crunch only", "resolution & JPEG"],
+  ["shift", "Shift", "Re-roll frame timing tears and RGB registration offsets only", "tears & offsets"],
+  ["memory", "Corrupt", "Re-roll buffer and frame-memory corruption only: interlace, block shifts, repeated rows, and ghost frames", "memory faults"]
 ];
 
 export const RANDOM_MODES = [
-  ["bent", "Bent (light)", "Gentle: subtle damage, image stays readable"],
-  ["damaged", "Damaged (medium)", "Medium: clearly broken but structured"],
-  ["shorted", "Shorted (heavy)", "Violent: heavy damage, high intensity"],
-  ["explore", "Explore (unbounded)", "Anything goes: full range from clean to destroyed"]
+  ["bent", "Gentle (light)", "Light bending that preserves the original image structure"],
+  ["damaged", "Broken (medium)", "Strong local distortion while the general structure remains"],
+  ["shorted", "Wrecked (heavy)", "Abstract, destructive damage with little of the source left intact"],
+  ["explore", "Explore (unbounded)", "One coherent roll drawn from the full gentle-to-wrecked range"]
 ];
 
+// Every damage module has one family owner. That makes family randomizers true
+// refinement tools: they can clear and rebuild their own domain without the
+// macro mapper silently changing modules elsewhere.
+export const RANDOM_FAMILY_MODULES = {
+  physics: ["irCut", "ccdClock", "afeBend", "railSag", "busBend", "masterClock", "addressBus"],
+  color: ["falseColor", "colorBend", "gradientWash", "awbSeizure"],
+  melt: ["verticalSmear", "pixelSort"],
+  burn: ["exposureFault", "contourRings", "edgeBurn"],
+  noise: ["sensorNoise", "ampGlow"],
+  cheap: ["cheapCamera", "dctCrunch", "bayerFault"],
+  shift: ["syncFault", "chromaShift"],
+  memory: ["memoryFault", "bufferGhost"]
+};
+
+const FAMILY_WEIGHTS = {
+  physics: [1, 1.15, 1.05, 0.95, 1.15, 1, 1.05],
+  color: [1.35, 1.15, 0.8, 0.7],
+  melt: [1.35, 1],
+  burn: [1.25, 0.9, 1.05],
+  noise: [1.45, 0.7],
+  cheap: [1.3, 1.1, 0.8],
+  shift: [1.25, 1],
+  memory: [1.3, 1]
+};
+
+// Physics modules compound in the raw domain, so three simultaneous circuits
+// are already more destructive than a much larger post-process stack.
+const FAMILY_MAX_ACTIVE = {
+  physics: 3,
+  color: 3,
+  melt: 2,
+  burn: 3,
+  noise: 2,
+  cheap: 3,
+  shift: 2,
+  memory: 2
+};
+
 const EDGE_PALETTE_NAMES = ["cyan", "magenta", "green", "black", "white", "red", "yellow"];
-const FAMILY_TAGS = RANDOM_FAMILIES.map(([family]) => family.toUpperCase());
+const FAMILY_TAGS = RANDOM_FAMILIES.flatMap(([family, label]) => [family.toUpperCase(), label.toUpperCase()]);
+const FAMILY_LABELS = Object.fromEntries(RANDOM_FAMILIES.map(([family, label]) => [family, label]));
 
-// Fresh draw inside the mode's intensity band.
-function value(mode, rng, bias = 0) {
-  return clamp(randomRange(mode.min, mode.max, rng) + bias);
+function resolveMode(modeName, rng) {
+  const name = Object.hasOwn(MODE_PROFILES, modeName) ? modeName : "damaged";
+  const profile = MODE_PROFILES[name];
+  if (name === "explore") {
+    const severity = rng();
+    return {
+      name,
+      severity,
+      parameterMin: 0,
+      parameterMax: 1
+    };
+  }
+  return {
+    name,
+    severity: randomRange(profile.min, profile.max, rng),
+    parameterMin: profile.parameterMin,
+    parameterMax: profile.parameterMax
+  };
 }
 
-// Symmetric wander for secondary macros — never a one-way ratchet.
-function drift(macros, key, span, rng) {
-  macros[key] = clamp(macros[key] + randomRange(-span, span, rng));
+// Interpolate a parameter from its near-clean value to its destructive value.
+// Jitter happens in severity-space, so related controls remain correlated.
+function scaled(mode, rng, clean, destroyed, jitter = 0.1) {
+  const t = clamp(
+    mode.severity + randomRange(-jitter, jitter, rng),
+    mode.parameterMin,
+    mode.parameterMax
+  );
+  return clean + (destroyed - clean) * t;
 }
 
-// Range whose ceiling scales with the mode, so "bent" stays gentle.
-function intensity(mode, rng, low, high) {
-  return randomRange(low, low + (high - low) * clamp(mode.max, 0.35, 1), rng);
+function amount(mode, rng, clean = 0, destroyed = 1, jitter = 0.1) {
+  return clamp(scaled(mode, rng, clean, destroyed, jitter));
+}
+
+function probability(mode, rng, cleanChance, destroyedChance) {
+  return rng() < cleanChance + (destroyedChance - cleanChance) * mode.severity;
+}
+
+function countForSeverity(mode, rng, max, min = 1) {
+  if (max <= min) return min;
+  const exact = min + (max - min) * clamp(mode.severity + randomRange(-0.08, 0.08, rng));
+  const whole = Math.floor(exact);
+  return Math.min(max, whole + (rng() < exact - whole ? 1 : 0));
+}
+
+function shuffled(values, rng) {
+  const result = [...values];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swap = randomInt(0, index, rng);
+    [result[index], result[swap]] = [result[swap], result[index]];
+  }
+  return result;
+}
+
+function weightedSample(keys, weights, count, rng) {
+  const pool = keys.map((key, index) => ({ key, weight: weights[index] ?? 1 }));
+  const selected = [];
+  while (pool.length && selected.length < count) {
+    const total = pool.reduce((sum, item) => sum + item.weight, 0);
+    let roll = rng() * total;
+    let index = 0;
+    for (; index < pool.length - 1; index += 1) {
+      roll -= pool[index].weight;
+      if (roll <= 0) break;
+    }
+    selected.push(pool.splice(index, 1)[0].key);
+  }
+  return selected;
+}
+
+function setWhiteBalance(config, mode, rng) {
+  config.wbRed = scaled(mode, rng, 1.25, 2.55, 0.16);
+  config.wbBlue = scaled(mode, rng, 1.12, 2.05, 0.16);
 }
 
 export const MODULE_RANDOMIZERS = {
-  // The physics modules (PHYSICS_MODULES below) never join the stylized-only
-  // global rolls as background guests — they lead a build or sit it out (see
-  // randomizeGlobal), and have their own Physics family button.
   irCut(preset, mode, rng) {
     const ir = preset.pipeline.irCut;
     ir.enabled = true;
-    ir.strength = intensity(mode, rng, 0.35, 0.95);
+    ir.strength = amount(mode, rng, 0.1, 0.98);
     ir.spectrum = randomRange(0.15, 0.95, rng);
-    ir.wood = randomRange(0.2, 0.9, rng);
-    ir.haze = rng() < 0.7 ? randomRange(0.1, 0.7, rng) : 0;
-    // Full-spectrum shooters set strange custom WB; allow low red gains that
-    // tip the develop toward swapped aerochrome-ish palettes.
-    ir.wbRed = randomRange(1.2, 2.4, rng);
-    ir.wbBlue = randomRange(1.2, 2.2, rng);
+    ir.wood = scaled(mode, rng, 0.2, 0.95, 0.18);
+    ir.haze = probability(mode, rng, 0.2, 0.82) ? amount(mode, rng, 0.02, 0.78) : 0;
+    setWhiteBalance(ir, mode, rng);
   },
+
   ccdClock(preset, mode, rng) {
     const ccd = preset.pipeline.ccdClock;
     ccd.enabled = true;
-    // One transfer fault leads each roll; melt over everything turns to soup.
-    const coupling = rng();
-    ccd.transferLoss = coupling < 0.45 ? intensity(mode, rng, 0.3, 0.95) : rng() < 0.5 ? randomRange(0.05, 0.3, rng) : 0;
-    ccd.vSkip = coupling >= 0.45 && coupling < 0.75 ? intensity(mode, rng, 0.25, 0.8) : rng() < 0.3 ? randomRange(0.05, 0.3, rng) : 0;
-    ccd.hShear = coupling >= 0.75 ? intensity(mode, rng, 0.3, 0.9) : rng() < 0.3 ? randomRange(0.05, 0.35, rng) : 0;
-    ccd.bloom = rng() < 0.35 ? intensity(mode, rng, 0.15, 0.7) : 0;
-    ccd.wbRed = randomRange(1.6, 2.4, rng);
-    ccd.wbBlue = randomRange(1.2, 1.9, rng);
+    ccd.transferLoss = 0;
+    ccd.vSkip = 0;
+    ccd.hShear = 0;
+    ccd.bloom = 0;
+    const faults = shuffled(["transferLoss", "vSkip", "hShear", "bloom"], rng);
+    const count = countForSeverity(mode, rng, 3);
+    for (let index = 0; index < count; index += 1) {
+      const key = faults[index];
+      const ceiling = key === "bloom" ? 0.78 : key === "vSkip" ? 0.86 : 0.95;
+      ccd[key] = amount(mode, rng, 0.035, ceiling);
+    }
+    setWhiteBalance(ccd, mode, rng);
   },
+
   afeBend(preset, mode, rng) {
     const afe = preset.pipeline.afeBend;
     afe.enabled = true;
     afe.wave = ["sine", "sine", "square", "saw", "noise"][randomInt(0, 4, rng)];
     afe.freq = randomRange(0.05, 0.95, rng);
-    afe.skew = rng() > 0.55 ? randomRange(-0.35, 0.35, rng) : 0;
-    afe.wobble = randomRange(0, 0.45, rng);
-    afe.cdsSkew = randomRange(0.05, 0.8, rng);
-    // One coupling leads each roll; stacking all three reliably turns to mush.
-    const coupling = rng();
-    afe.inject = coupling < 0.6 ? intensity(mode, rng, 0.12, 0.6) : 0;
-    afe.gainMod = coupling >= 0.6 && coupling < 0.8 ? intensity(mode, rng, 0.15, 0.65) : 0;
-    afe.cdsAmount = coupling >= 0.8 ? intensity(mode, rng, 0.3, 0.9) : 0;
-    // Occasionally a light secondary coupling rides along.
-    if (afe.inject > 0 && rng() < 0.25) afe.gainMod = intensity(mode, rng, 0.08, 0.3);
-    else if (afe.inject === 0 && rng() < 0.25) afe.inject = intensity(mode, rng, 0.08, 0.25);
-    afe.wbRed = randomRange(1.6, 2.4, rng);
-    afe.wbBlue = randomRange(1.2, 1.9, rng);
+    afe.skew = probability(mode, rng, 0.12, 0.72) ? scaled(mode, rng, 0.02, 0.42) * (rng() < 0.5 ? -1 : 1) : 0;
+    afe.wobble = amount(mode, rng, 0.02, 0.8);
+    afe.cdsSkew = randomRange(0.05, 0.9, rng);
+    afe.inject = 0;
+    afe.gainMod = 0;
+    afe.cdsAmount = 0;
+    const couplings = shuffled(["inject", "gainMod", "cdsAmount"], rng);
+    const count = countForSeverity(mode, rng, 2);
+    for (let index = 0; index < count; index += 1) {
+      const key = couplings[index];
+      const ceiling = key === "cdsAmount" ? 0.92 : 0.68;
+      afe[key] = amount(mode, rng, 0.025, ceiling);
+    }
+    setWhiteBalance(afe, mode, rng);
   },
+
   railSag(preset, mode, rng) {
     const sag = preset.pipeline.railSag;
     sag.enabled = true;
-    sag.sag = intensity(mode, rng, 0.25, 0.9);
-    sag.flicker = randomRange(0.1, 0.7, rng);
-    sag.spikes = rng() < 0.6 ? randomRange(0.1, 0.6, rng) : 0;
-    // Occasional failure-free rolls keep the pure breathing-band look in the
-    // pool; most rolls let rows die.
-    sag.failures = rng() < 0.78 ? intensity(mode, rng, 0.2, 0.85) : 0;
-    sag.wbRed = randomRange(1.6, 2.4, rng);
-    sag.wbBlue = randomRange(1.2, 1.9, rng);
+    sag.sag = amount(mode, rng, 0.08, 0.95);
+    sag.flicker = scaled(mode, rng, 0.08, 0.82, 0.2);
+    sag.spikes = probability(mode, rng, 0.1, 0.75) ? amount(mode, rng, 0.02, 0.72) : 0;
+    sag.failures = probability(mode, rng, 0.04, 0.88) ? amount(mode, rng, 0.015, 0.88) : 0;
+    setWhiteBalance(sag, mode, rng);
   },
-  masterClock(preset, mode, rng) {
-    const clk = preset.pipeline.masterClock;
-    clk.enabled = true;
-    // Small detunes dominate: the module lives at "skewed and rolling", the
-    // total sync collapse end stays a deliberate preset/manual choice.
-    const magnitude = intensity(mode, rng, 0.04, 0.38);
-    clk.detune = rng() < 0.5 ? -magnitude : magnitude;
-    clk.drift = rng() < 0.7 ? randomRange(0.1, 0.65, rng) : 0;
-    clk.hLock = randomRange(0.25, 0.9, rng);
-    clk.shred = rng() < 0.6 ? randomRange(0.05, 0.5, rng) : 0;
-    clk.wbRed = randomRange(1.6, 2.4, rng);
-    clk.wbBlue = randomRange(1.2, 1.9, rng);
-  },
-  addressBus(preset, mode, rng) {
-    const mem = preset.pipeline.addressBus;
-    mem.enabled = true;
-    // One axis leads each roll; both at full strength folds the frame into
-    // unreadable confetti.
-    const coupling = rng();
-    mem.rows = coupling < 0.65 ? intensity(mode, rng, 0.3, 0.9) : rng() < 0.45 ? randomRange(0.1, 0.4, rng) : 0;
-    mem.cols = coupling >= 0.65 ? intensity(mode, rng, 0.3, 0.9) : rng() < 0.45 ? randomRange(0.1, 0.4, rng) : 0;
-    if (mem.rows === 0 && mem.cols === 0) mem.rows = intensity(mode, rng, 0.3, 0.8);
-    mem.scale = randomRange(0.15, 0.9, rng);
-    mem.lowBit = rng() < 0.35 ? randomRange(0.1, 0.6, rng) : 0;
-    // Flaky contacts (tearing bands) are the common look; solid shorts that
-    // fold the whole frame stay a deliberate minority.
-    mem.duty = rng() < 0.7 ? randomRange(0.3, 0.75, rng) : randomRange(0.75, 1, rng);
-    mem.wbRed = randomRange(1.6, 2.4, rng);
-    mem.wbBlue = randomRange(1.2, 1.9, rng);
-  },
+
   busBend(preset, mode, rng) {
     const bend = preset.pipeline.busBend;
-    const pick = (pool, count) => {
-      const bits = [...pool];
-      let mask = 0;
-      for (let i = 0; i < count && bits.length; i += 1) {
-        mask |= 1 << bits.splice(randomInt(0, bits.length - 1, rng), 1)[0];
-      }
-      return mask;
+    const pickMask = (pool, count) => {
+      const bits = shuffled(pool, rng).slice(0, count);
+      return bits.reduce((mask, bit) => mask | (1 << bit), 0);
     };
-    const srcPool = [11, 10, 9, 8, 7, 6, 5, 4, 3, 2];
-    const tgtPool = [11, 10, 9, 8, 7, 6, 5, 4];
+    const sourcePool = [11, 10, 9, 8, 7, 6, 5, 4, 3, 2];
+    const targetPool = [11, 10, 9, 8, 7, 6, 5, 4];
+    const bitCount = countForSeverity(mode, rng, 4);
     bend.enabled = true;
     const fnRoll = rng();
-    bend.fn = fnRoll < 0.45 ? "bypass" : fnRoll < 0.72 ? "invert" : "divide";
-    const reach = Math.max(1, Math.round(1 + mode.max * 2.6));
-    if (bend.fn === "divide" && rng() < 0.75) {
-      // Divide only sings when source and target pins overlap (the flip-flop
-      // clocks itself off the pins it corrupts), so bias hard toward that.
-      const mask = pick(tgtPool, randomInt(2, Math.max(2, reach + 1), rng));
+    bend.fn = fnRoll < 0.48 ? "bypass" : fnRoll < 0.76 ? "invert" : "divide";
+    if (bend.fn === "divide" && rng() < 0.78) {
+      const mask = pickMask(targetPool, Math.max(2, bitCount));
       bend.sourceMask = mask;
       bend.targetMask = mask;
     } else {
-      bend.sourceMask = pick(srcPool, randomInt(1, reach, rng));
-      bend.targetMask = pick(tgtPool, randomInt(1, reach, rng));
+      bend.sourceMask = pickMask(sourcePool, bitCount);
+      bend.targetMask = pickMask(targetPool, Math.max(1, bitCount - (rng() < 0.45 ? 1 : 0)));
     }
-    bend.targetGnd = rng() < 0.15;
-    bend.commonBus = rng() < 0.18;
-    bend.pot = randomRange(0.08, 0.95, rng);
-    bend.resistance = rng() < 0.4 ? randomRange(0.15, 0.8, rng) : 0;
-    bend.injectStrength = randomRange(0.35, 0.8, rng);
-    bend.jitter = randomRange(0.03, 0.2, rng);
-    bend.wbRed = randomRange(1.6, 2.4, rng);
-    bend.wbBlue = randomRange(1.2, 1.9, rng);
+    bend.targetGnd = probability(mode, rng, 0.02, 0.28);
+    bend.commonBus = probability(mode, rng, 0.03, 0.34);
+    bend.pot = randomRange(0.12, 0.92, rng);
+    bend.resistance = probability(mode, rng, 0.85, 0.22) ? scaled(mode, rng, 0.82, 0.12, 0.16) : 0;
+    bend.injectStrength = amount(mode, rng, 0.18, 0.88);
+    bend.jitter = amount(mode, rng, 0.01, 0.28);
+    setWhiteBalance(bend, mode, rng);
   },
+
+  masterClock(preset, mode, rng) {
+    const clock = preset.pipeline.masterClock;
+    clock.enabled = true;
+    const magnitude = scaled(mode, rng, 0.012, 0.42, 0.08);
+    clock.detune = magnitude * (rng() < 0.5 ? -1 : 1);
+    clock.drift = probability(mode, rng, 0.22, 0.86) ? amount(mode, rng, 0.02, 0.88) : 0;
+    clock.hLock = scaled(mode, rng, 0.92, 0.18, 0.16);
+    clock.shred = probability(mode, rng, 0.02, 0.78) ? amount(mode, rng, 0.01, 0.72) : 0;
+    setWhiteBalance(clock, mode, rng);
+  },
+
+  addressBus(preset, mode, rng) {
+    const memory = preset.pipeline.addressBus;
+    memory.enabled = true;
+    const rowLead = rng() < 0.62;
+    const primary = amount(mode, rng, 0.06, 0.92);
+    const secondary = probability(mode, rng, 0.04, 0.72) ? amount(mode, rng, 0.02, 0.72) : 0;
+    memory.rows = rowLead ? primary : secondary;
+    memory.cols = rowLead ? secondary : primary;
+    memory.scale = randomRange(0.12, 0.92, rng);
+    memory.lowBit = probability(mode, rng, 0.03, 0.65) ? amount(mode, rng, 0.02, 0.68) : 0;
+    memory.duty = scaled(mode, rng, 0.28, 0.95, 0.2);
+    setWhiteBalance(memory, mode, rng);
+  },
+
   cheapCamera(preset, mode, rng) {
     const cheap = preset.pipeline.cheapCamera;
     cheap.enabled = true;
-    cheap.internalScale = randomRange(clamp(1 - mode.max * 0.62, 0.32, 0.9), 0.95, rng);
-    cheap.blur = rng() > 0.62 ? intensity(mode, rng, 0.1, 0.8) : 0;
-    cheap.bitDepth = randomInt(Math.max(3, Math.round(8 - mode.max * 5)), 8, rng);
-    cheap.dither = randomRange(0.1, 0.95, rng);
-    cheap.sharpen = intensity(mode, rng, 0.1, 1);
+    cheap.internalScale = scaled(mode, rng, 0.96, 0.28, 0.08);
+    cheap.blur = probability(mode, rng, 0.12, 0.7) ? amount(mode, rng, 0.02, 0.92) : 0;
+    cheap.bitDepth = Math.round(scaled(mode, rng, 8, 3, 0.08));
+    cheap.dither = amount(mode, rng, 0.04, 0.95);
+    cheap.sharpen = amount(mode, rng, 0.08, 1);
   },
+
   colorBend(preset, mode, rng) {
     const bend = preset.pipeline.colorBend;
-    const channelModes = ["none", "none", "gbr", "brg", "grb", "bgr", "rbg"];
-    const invertModes = ["none", "none", "none", "red", "green", "blue", "all"];
     bend.enabled = true;
-    bend.hueRotate = rng() > 0.3 ? randomInt(0, 359, rng) : 0;
-    bend.hueStrength = randomRange(0.5, 1, rng);
-    bend.channelMode = channelModes[randomInt(0, channelModes.length - 1, rng)];
-    bend.channelStrength = randomRange(0.5, 1, rng);
-    bend.invert = invertModes[randomInt(0, invertModes.length - 1, rng)];
-    bend.invertStrength = randomRange(0.6, 1, rng);
-    bend.solarize = rng() > 0.65 ? intensity(mode, rng, 0.1, 0.8) : 0;
-    if (bend.hueRotate === 0 && bend.channelMode === "none" && bend.invert === "none" && bend.solarize === 0) {
-      bend.hueRotate = randomInt(30, 330, rng);
+    bend.hueRotate = 0;
+    bend.channelMode = "none";
+    bend.invert = "none";
+    bend.solarize = 0;
+    const operations = shuffled(["hue", "channel", "invert", "solarize"], rng);
+    const count = countForSeverity(mode, rng, 4);
+    for (let index = 0; index < count; index += 1) {
+      const operation = operations[index];
+      if (operation === "hue") {
+        bend.hueRotate = randomInt(25, 335, rng);
+        bend.hueStrength = amount(mode, rng, 0.08, 1);
+      } else if (operation === "channel") {
+        bend.channelMode = ["gbr", "brg", "grb", "bgr", "rbg"][randomInt(0, 4, rng)];
+        bend.channelStrength = amount(mode, rng, 0.08, 1);
+      } else if (operation === "invert") {
+        bend.invert = ["red", "green", "blue", "all"][randomInt(0, 3, rng)];
+        bend.invertStrength = amount(mode, rng, 0.06, 1);
+      } else {
+        bend.solarize = amount(mode, rng, 0.04, 0.95);
+      }
     }
   },
+
   chromaShift(preset, mode, rng) {
     const chroma = preset.pipeline.chromaShift;
     chroma.enabled = true;
-    chroma.amount = intensity(mode, rng, 0.06, 0.6);
+    chroma.amount = amount(mode, rng, 0.012, 0.72);
     chroma.angle = randomInt(0, 359, rng);
-    chroma.wobble = randomRange(0, 0.7, rng);
+    chroma.wobble = probability(mode, rng, 0.15, 0.88) ? amount(mode, rng, 0.01, 0.9) : 0;
   },
+
   exposureFault(preset, mode, rng) {
     const exposure = preset.pipeline.exposureFault;
     const biases = [
@@ -210,163 +317,195 @@ export const MODULE_RANDOMIZERS = {
       [0.72, 1, 0.18]
     ];
     exposure.enabled = true;
-    exposure.gain = 1 + intensity(mode, rng, 0.05, 1.1);
-    exposure.blackCrush = intensity(mode, rng, 0.05, 0.6);
-    exposure.highlightClip = value(mode, rng, 0.1);
-    exposure.contourBands = randomRange(0.18, 0.94, rng);
-    exposure.fringing = rng() > 0.6 ? intensity(mode, rng, 0.12, 0.8) : 0;
+    exposure.gain = scaled(mode, rng, 1.02, 2.18, 0.1);
+    exposure.blackCrush = amount(mode, rng, 0.015, 0.76);
+    exposure.highlightClip = amount(mode, rng, 0.025, 0.98);
+    exposure.contourBands = amount(mode, rng, 0.03, 0.95);
+    exposure.fringing = probability(mode, rng, 0.08, 0.78) ? amount(mode, rng, 0.01, 0.88) : 0;
     exposure.clipColorBias = biases[randomInt(0, biases.length - 1, rng)];
   },
+
   awbSeizure(preset, mode, rng) {
     const awb = preset.pipeline.awbSeizure;
     awb.enabled = true;
-    awb.wbSwing = intensity(mode, rng, 0.25, 0.95);
-    awb.aeSwing = rng() > 0.35 ? intensity(mode, rng, 0.1, 0.7) : 0;
-    awb.bandHeight = randomRange(0.15, 0.7, rng);
-    awb.frequency = randomRange(0.2, 0.85, rng);
+    awb.wbSwing = amount(mode, rng, 0.035, 0.98);
+    awb.aeSwing = probability(mode, rng, 0.18, 0.82) ? amount(mode, rng, 0.015, 0.76) : 0;
+    awb.bandHeight = scaled(mode, rng, 0.62, 0.1, 0.2);
+    awb.frequency = scaled(mode, rng, 0.18, 0.92, 0.2);
   },
+
   contourRings(preset, mode, rng) {
     const rings = preset.pipeline.contourRings;
     rings.enabled = true;
-    rings.strength = value(mode, rng, 0.05);
-    rings.scale = randomRange(0.25, 1, rng);
-    rings.bandSharpness = randomRange(0.35, 1, rng);
-    rings.tonalBias = randomRange(0.18, 0.9, rng);
-    rings.colorBleed = randomRange(0.22, 0.9, rng);
+    rings.strength = amount(mode, rng, 0.035, 1);
+    rings.scale = randomRange(0.2, 1, rng);
+    rings.bandSharpness = scaled(mode, rng, 0.18, 1, 0.18);
+    rings.tonalBias = randomRange(0.16, 0.92, rng);
+    rings.colorBleed = amount(mode, rng, 0.03, 0.95);
   },
+
   falseColor(preset, mode, rng) {
-    const falseColor = preset.pipeline.falseColor;
-    falseColor.enabled = true;
-    falseColor.mode = FALSE_COLOR_MODES[randomInt(0, FALSE_COLOR_MODES.length - 1, rng)];
-    falseColor.strength = value(mode, rng, 0.15);
-    falseColor.posterizeLevels = randomInt(4, 10, rng);
-    falseColor.smoothness = rng() > 0.45 ? randomRange(0.4, 0.95, rng) : randomRange(0, 0.25, rng);
-    falseColor.channelSwap = randomRange(0, 0.5, rng);
-    falseColor.hueWarp = randomRange(0.05, 1, rng);
-    falseColor.saturation = 1.2 + intensity(mode, rng, 0.1, 1.7);
+    const color = preset.pipeline.falseColor;
+    color.enabled = true;
+    color.mode = FALSE_COLOR_MODES[randomInt(0, FALSE_COLOR_MODES.length - 1, rng)];
+    color.strength = amount(mode, rng, 0.035, 1);
+    color.posterizeLevels = Math.round(scaled(mode, rng, 13, 3, 0.1));
+    color.smoothness = rng() < 0.5 ? randomRange(0, 0.25, rng) : randomRange(0.45, 0.95, rng);
+    color.channelSwap = amount(mode, rng, 0, 0.72);
+    color.hueWarp = amount(mode, rng, 0.02, 1);
+    color.saturation = scaled(mode, rng, 1.05, 2.95, 0.12);
   },
+
   gradientWash(preset, mode, rng) {
     const wash = preset.pipeline.gradientWash;
     wash.enabled = true;
     wash.mode = FALSE_COLOR_MODES[randomInt(0, FALSE_COLOR_MODES.length - 1, rng)];
-    wash.strength = intensity(mode, rng, 0.25, 0.85);
+    wash.strength = amount(mode, rng, 0.04, 0.94);
     wash.angle = randomInt(0, 359, rng);
-    wash.scale = randomRange(0.35, 1, rng);
-    wash.keepLuma = randomRange(0.55, 0.95, rng);
-    wash.wobble = randomRange(0.1, 0.8, rng);
+    wash.scale = randomRange(0.25, 1, rng);
+    wash.keepLuma = scaled(mode, rng, 0.96, 0.32, 0.14);
+    wash.wobble = amount(mode, rng, 0.02, 0.92);
   },
+
   pixelSort(preset, mode, rng) {
     const sort = preset.pipeline.pixelSort;
     sort.enabled = true;
-    sort.strength = value(mode, rng, 0.1);
-    sort.threshold = randomRange(0.28, 0.72, rng);
-    sort.window = randomRange(0.2, 0.7, rng);
-    sort.direction = rng() > 0.75 ? "up" : "down";
-    sort.mode = rng() > 0.8 ? "dark" : "bright";
-    sort.maxRun = intensity(mode, rng, 0.25, 0.95);
+    const reach = amount(mode, rng, 0.015, 1);
+    // Pixel-sort strength selects whole columns rather than blending pixels;
+    // ease its low end so Gentle produces isolated drips, not a barcode.
+    sort.strength = reach ** 1.65;
+    sort.threshold = randomRange(0.24, 0.76, rng);
+    sort.window = scaled(mode, rng, 0.1, 0.9, 0.18);
+    sort.direction = rng() > 0.72 ? "up" : "down";
+    sort.mode = rng() > 0.78 ? "dark" : "bright";
+    sort.maxRun = 0.03 + 0.97 * reach ** 1.45;
   },
+
   edgeBurn(preset, mode, rng) {
     const edge = preset.pipeline.edgeBurn;
     edge.enabled = true;
-    edge.strength = value(mode, rng, 0.05);
-    edge.threshold = randomRange(0.06, 0.3, rng);
-    edge.darkOutline = randomRange(0, 0.8, rng);
-    const count = randomInt(2, 4, rng);
-    const pool = [...EDGE_PALETTE_NAMES];
-    edge.palette = [];
-    for (let i = 0; i < count; i += 1) {
-      edge.palette.push(pool.splice(randomInt(0, pool.length - 1, rng), 1)[0]);
-    }
+    edge.strength = amount(mode, rng, 0.025, 1);
+    edge.threshold = scaled(mode, rng, 0.3, 0.045, 0.16);
+    edge.darkOutline = amount(mode, rng, 0.015, 0.92);
+    const count = countForSeverity(mode, rng, 5, 2);
+    edge.palette = shuffled(EDGE_PALETTE_NAMES, rng).slice(0, count);
   },
+
   verticalSmear(preset, mode, rng) {
     const smear = preset.pipeline.verticalSmear;
     smear.enabled = true;
-    smear.strength = value(mode, rng, 0.1);
-    smear.threshold = randomRange(0.25, 0.7, rng);
-    smear.decay = randomRange(0.88, 0.994, rng);
-    smear.length = intensity(mode, rng, 0.25, 1);
-    smear.spread = randomRange(0.08, 0.62, rng);
-    smear.contrast = randomRange(0.35, 1, rng);
-    smear.curtainStrength = intensity(mode, rng, 0.15, 1);
-    smear.curtainDensity = intensity(mode, rng, 0.15, 0.88);
-    smear.curtainDrop = randomRange(0.3, 1, rng);
-    smear.jitter = randomRange(0.02, 0.78, rng);
-    smear.edgeBias = randomRange(0.35, 1, rng);
+    const reach = amount(mode, rng, 0.015, 1);
+    smear.strength = reach ** 1.35;
+    smear.threshold = scaled(mode, rng, 0.78, 0.18, 0.14);
+    smear.decay = scaled(mode, rng, 0.86, 0.995, 0.08);
+    smear.length = 0.02 + 0.98 * reach ** 1.4;
+    smear.spread = amount(mode, rng, 0.015, 0.75);
+    smear.contrast = amount(mode, rng, 0.08, 1);
+    const curtain = probability(mode, rng, 0.04, 0.82);
+    smear.curtainStrength = curtain ? amount(mode, rng, 0.02, 1) : 0;
+    smear.curtainDensity = curtain ? amount(mode, rng, 0.015, 0.92) : 0;
+    smear.curtainDrop = curtain ? amount(mode, rng, 0.05, 1) : 0;
+    smear.jitter = amount(mode, rng, 0.005, 0.88);
+    smear.edgeBias = scaled(mode, rng, 0.16, 1, 0.16);
   },
+
   sensorNoise(preset, mode, rng) {
     const noise = preset.pipeline.sensorNoise;
     noise.enabled = true;
-    noise.amount = value(mode, rng, -0.05);
-    noise.colorAmount = randomRange(0.42, 1, rng);
-    noise.shadowBias = randomRange(0.2, 0.9, rng);
-    noise.striping = intensity(mode, rng, 0.02, 0.72);
-    noise.hotPixels = intensity(mode, rng, 0.02, 0.42);
-    noise.deadColumns = rng() > 0.68 ? intensity(mode, rng, 0.08, 0.6) : 0;
-    noise.deadClusters = rng() > 0.72 ? intensity(mode, rng, 0.08, 0.5) : 0;
+    noise.amount = amount(mode, rng, 0.012, 0.9);
+    noise.colorAmount = scaled(mode, rng, 0.28, 1, 0.2);
+    noise.shadowBias = randomRange(0.25, 0.92, rng);
+    noise.striping = amount(mode, rng, 0.005, 0.82);
+    noise.hotPixels = amount(mode, rng, 0.002, 0.52);
+    noise.deadColumns = probability(mode, rng, 0.01, 0.72) ? amount(mode, rng, 0.005, 0.72) : 0;
+    noise.deadClusters = probability(mode, rng, 0.01, 0.68) ? amount(mode, rng, 0.005, 0.62) : 0;
+    noise.speckleSize = mode.severity > 0.72 && rng() < 0.45 ? randomInt(2, 4, rng) : 1;
   },
+
   ampGlow(preset, mode, rng) {
     const glow = preset.pipeline.ampGlow;
     glow.enabled = true;
-    glow.strength = intensity(mode, rng, 0.2, 0.9);
+    glow.strength = amount(mode, rng, 0.04, 0.96);
     glow.corner = "seeded";
     glow.hue = rng() > 0.5 ? randomRange(0, 0.35, rng) : randomRange(0.6, 1, rng);
-    glow.spread = randomRange(0.25, 0.85, rng);
+    glow.spread = scaled(mode, rng, 0.28, 0.92, 0.18);
   },
+
   memoryFault(preset, mode, rng) {
     const memory = preset.pipeline.memoryFault;
     memory.enabled = true;
-    memory.interlace = clamp(randomRange(0.08, mode.max * 0.9, rng));
-    memory.blockShift = clamp(randomRange(0.1, mode.max, rng));
-    memory.rowRepeat = clamp(randomRange(0.06, mode.max * 0.82, rng));
-    memory.scanlineDropout = clamp(randomRange(0.04, mode.max * 0.68, rng));
+    memory.interlace = 0;
+    memory.blockShift = 0;
+    memory.rowRepeat = 0;
+    memory.scanlineDropout = 0;
+    const faults = shuffled(["interlace", "blockShift", "rowRepeat", "scanlineDropout"], rng);
+    const ceilings = { interlace: 0.92, blockShift: 1, rowRepeat: 0.9, scanlineDropout: 0.78 };
+    const count = countForSeverity(mode, rng, 4);
+    for (let index = 0; index < count; index += 1) {
+      const key = faults[index];
+      memory[key] = amount(mode, rng, 0.02, ceilings[key]);
+    }
   },
+
   dctCrunch(preset, mode, rng) {
     const dct = preset.pipeline.dctCrunch;
     dct.enabled = true;
-    dct.quality = clamp(1 - intensity(mode, rng, 0.2, 0.95), 0.05, 0.9);
-    dct.chromaSubsample = rng() > 0.3 ? randomRange(0.3, 1, rng) : 0;
-    dct.dcDrift = rng() > 0.5 ? intensity(mode, rng, 0.1, 0.85) : 0;
-    dct.acScramble = rng() > 0.45 ? intensity(mode, rng, 0.05, 0.7) : 0;
-    dct.blockRepeat = rng() > 0.6 ? intensity(mode, rng, 0.05, 0.5) : 0;
-    dct.generations = rng() > 0.75 ? randomInt(2, 5, rng) : 1;
+    dct.quality = scaled(mode, rng, 0.94, 0.045, 0.08);
+    dct.chromaSubsample = probability(mode, rng, 0.25, 0.9) ? amount(mode, rng, 0.04, 1) : 0;
+    dct.dcDrift = 0;
+    dct.acScramble = 0;
+    dct.blockRepeat = 0;
+    const faults = shuffled(["dcDrift", "acScramble", "blockRepeat"], rng);
+    const count = mode.severity < 0.2 ? 0 : countForSeverity(mode, rng, 3, 0);
+    const ceilings = { dcDrift: 0.92, acScramble: 0.82, blockRepeat: 0.68 };
+    for (let index = 0; index < count; index += 1) {
+      const key = faults[index];
+      dct[key] = amount(mode, rng, 0.01, ceilings[key]);
+    }
+    dct.generations = mode.severity > 0.62 && rng() < mode.severity ? randomInt(2, 6, rng) : 1;
   },
+
   bayerFault(preset, mode, rng) {
     const bayer = preset.pipeline.bayerFault;
     bayer.enabled = true;
     bayer.phaseError = randomInt(1, 3, rng);
-    bayer.strength = intensity(mode, rng, 0.3, 1);
-    bayer.zipper = randomRange(0.1, 0.8, rng);
+    bayer.strength = amount(mode, rng, 0.045, 1);
+    bayer.zipper = amount(mode, rng, 0.015, 0.95);
   },
+
   bufferGhost(preset, mode, rng) {
     const ghost = preset.pipeline.bufferGhost;
     ghost.enabled = true;
-    ghost.amount = intensity(mode, rng, 0.2, 0.9);
-    ghost.blockSize = randomRange(0.15, 0.8, rng);
-    ghost.ghostShift = randomRange(0.1, 0.8, rng);
-    ghost.ghostZoom = rng() > 0.5 ? randomRange(0.05, 0.7, rng) : 0;
-    ghost.fieldMode = rng() > 0.72;
+    ghost.amount = amount(mode, rng, 0.025, 0.96);
+    ghost.blockSize = scaled(mode, rng, 0.18, 0.86, 0.22);
+    ghost.ghostShift = amount(mode, rng, 0.02, 0.92);
+    ghost.ghostZoom = probability(mode, rng, 0.08, 0.76) ? amount(mode, rng, 0.01, 0.82) : 0;
+    ghost.fieldMode = probability(mode, rng, 0.04, 0.62);
   },
+
   syncFault(preset, mode, rng) {
     const sync = preset.pipeline.syncFault;
     sync.enabled = true;
-    sync.tearCount = intensity(mode, rng, 0.2, 1);
-    sync.tearShift = randomRange(0.15, 0.85, rng);
-    sync.wobbleAmount = rng() > 0.35 ? intensity(mode, rng, 0.08, 0.7) : 0;
-    sync.wobbleFrequency = randomRange(0.15, 0.85, rng);
-    sync.drift = randomRange(0.1, 0.8, rng);
+    sync.tearCount = amount(mode, rng, 0.025, 1);
+    sync.tearShift = amount(mode, rng, 0.025, 0.94);
+    sync.wobbleAmount = probability(mode, rng, 0.15, 0.9) ? amount(mode, rng, 0.01, 0.84) : 0;
+    sync.wobbleFrequency = randomRange(0.12, 0.9, rng);
+    sync.drift = amount(mode, rng, 0.02, 0.92);
   },
+
   osdOverlay(preset, mode, rng) {
     const osd = preset.pipeline.osdOverlay;
     osd.enabled = true;
     osd.datestamp = rng() > 0.12;
     osd.hudIcons = rng() > 0.45;
-    osd.glitchText = rng() > 0.4 ? intensity(mode, rng, 0.05, 0.8) : 0;
+    osd.glitchText = probability(mode, rng, 0.08, 0.82) ? amount(mode, rng, 0.01, 0.9) : 0;
     osd.scale = randomRange(0.3, 0.7, rng);
     osd.color = ["orange", "orange", "green", "white"][randomInt(0, 3, rng)];
   },
+
   basicAdjustments(preset, mode, rng) {
     const adjust = preset.pipeline.basicAdjustments;
-    const reach = clamp(mode.max, 0.35, 1);
+    const reach = 0.25 + mode.severity * 0.75;
     adjust.enabled = true;
     adjust.brightness = randomRange(-0.22, 0.22, rng) * reach;
     adjust.contrast = randomRange(-0.28, 0.42, rng) * reach;
@@ -380,259 +519,102 @@ export const MODULE_RANDOMIZERS = {
   }
 };
 
-export function randomizeModule(currentPreset, moduleKey, modeName = "damaged") {
+export function randomizeModule(currentPreset, moduleKey, modeName = "damaged", options = {}) {
   const randomizer = MODULE_RANDOMIZERS[moduleKey];
   if (!randomizer) return currentPreset;
   const preset = clonePreset(currentPreset);
-  const mode = MODES[modeName] || MODES.damaged;
-  const rng = createRng(Math.floor(Math.random() * 2147483647));
-  randomizer(preset, mode, rng);
+  const randomSeed = Number.isFinite(options.randomSeed)
+    ? options.randomSeed
+    : Math.floor(Math.random() * 2147483647);
+  const rng = createRng(randomSeed);
+  randomizer(preset, resolveMode(modeName, rng), rng);
   return preset;
 }
 
-export function randomizePreset(currentPreset, family = "global", modeName = "damaged") {
+export function randomizePreset(currentPreset, family = "global", modeName = "damaged", options = {}) {
+  if (family !== "global" && !RANDOM_FAMILY_MODULES[family]) return currentPreset;
   const preset = clonePreset(currentPreset);
-  const mode = MODES[modeName] || MODES.damaged;
-  preset.seed = Math.floor(Math.random() * 2147483647);
-  const rng = createRng(preset.seed);
+  const randomSeed = Number.isFinite(options.randomSeed)
+    ? options.randomSeed
+    : Math.floor(Math.random() * 2147483647);
+  // A refinement roll needs fresh parameter choices without moving seeded
+  // damage in every unrelated module. Only a whole new camera adopts the roll
+  // seed as its render seed.
+  if (family === "global") preset.seed = randomSeed;
+  const rng = createRng(randomSeed);
+  const mode = resolveMode(modeName, rng);
 
-  if (family === "global") {
-    randomizeGlobal(preset, mode, rng);
-  } else if (family === "physics") {
-    randomizePhysics(preset, mode, rng);
-  } else if (family === "color") {
-    randomizeColor(preset, mode, rng);
-  } else if (family === "melt") {
-    randomizeMelt(preset, mode, rng);
-  } else if (family === "burn") {
-    randomizeBurn(preset, mode, rng);
-  } else if (family === "noise") {
-    randomizeNoise(preset, mode, rng);
-  } else if (family === "cheap") {
-    randomizeCheap(preset, mode, rng);
-  } else if (family === "memory") {
-    randomizeMemory(preset, mode, rng);
-  }
+  if (family === "global") randomizeGlobal(preset, mode, rng);
+  else rollFamily(preset, family, mode, rng, { clear: true });
 
   preset.name = family === "global" ? randomCameraName(rng) : tagFamilyName(preset.name, family);
   preset.cameraModel = preset.name;
+  preset.description = "";
   preset.createdAt = new Date().toISOString();
   return preset;
 }
 
-// "Bent CCD-03 COLOR" stays "Bent CCD-03 MELT" on the next press —
-// family tags replace each other instead of piling up.
 function tagFamilyName(name, family) {
   const parts = String(name).trim().split(/\s+/);
-  while (parts.length > 1 && FAMILY_TAGS.includes(parts[parts.length - 1])) {
-    parts.pop();
-  }
-  return `${parts.join(" ")} ${family.toUpperCase()}`;
+  while (parts.length > 1 && FAMILY_TAGS.includes(parts[parts.length - 1])) parts.pop();
+  return `${parts.join(" ")} ${(FAMILY_LABELS[family] || family).toUpperCase()}`;
 }
+
+const ARCHETYPES = [
+  { core: ["color", "burn"], guests: ["melt", "noise", "cheap", "shift", "memory", "physics"] },
+  { core: ["melt", "color"], guests: ["burn", "shift", "noise", "memory", "cheap", "physics"] },
+  { core: ["physics", "noise"], guests: ["shift", "color", "burn", "cheap", "memory", "melt"] },
+  { core: ["cheap", "noise"], guests: ["color", "memory", "shift", "burn", "physics", "melt"] },
+  { core: ["shift", "memory"], guests: ["color", "melt", "cheap", "noise", "physics", "burn"] },
+  { core: ["burn", "melt"], guests: ["color", "noise", "shift", "cheap", "memory", "physics"] }
+];
 
 function randomizeGlobal(preset, mode, rng) {
-  // A new camera sometimes ships with a bent circuit inside: most builds are
-  // stylized-only, some are led by the physics rail (with the stylized damage
-  // pulled back so the circuit look reads), and a few stack both.
-  const physicsRoll = rng();
-  const physicsLed = physicsRoll < 0.25;
-  const fullStack = !physicsLed && physicsRoll < 0.35;
-
-  preset.macros = {
-    bend: value(mode, rng, 0.06),
-    colorFault: value(mode, rng, 0.1),
-    melt: value(mode, rng, -0.04),
-    burn: value(mode, rng, 0.04),
-    noise: value(mode, rng, -0.08),
-    cheapness: value(mode, rng, -0.14),
-    chaos: clamp(randomRange(mode.min * 0.3, mode.chaos, rng))
-  };
-
-  if (physicsLed) {
-    preset.macros.bend *= 0.3;
-    preset.macros.colorFault *= 0.25;
-    preset.macros.melt *= 0.25;
-    preset.macros.burn *= 0.3;
-    preset.macros.chaos *= 0.3;
-    preset.macros.noise *= 0.6;
-    preset.macros.cheapness *= 0.7;
-  }
-
-  // Mute a couple of damage channels so each roll has its own character
-  // instead of every module firing at once.
-  const muteKeys = ["colorFault", "melt", "burn", "noise", "cheapness", "chaos"];
-  const mutes = randomInt(1, 3, rng);
-  for (let i = 0; i < mutes; i += 1) {
-    const key = muteKeys[randomInt(0, muteKeys.length - 1, rng)];
-    preset.macros[key] *= randomRange(0, 0.3, rng);
-  }
-
-  applyMacrosToPipeline(preset);
-
-  // Re-roll flavor only for modules the macros actually enabled.
   const pipeline = preset.pipeline;
-  [
-    "cheapCamera",
-    "exposureFault",
-    "contourRings",
-    "falseColor",
-    "edgeBurn",
-    "pixelSort",
-    "verticalSmear",
-    "sensorNoise",
-    "memoryFault",
-    "dctCrunch",
-    "syncFault",
-    "bufferGhost"
-  ].forEach((key) => {
-    if (pipeline[key].enabled) MODULE_RANDOMIZERS[key](preset, mode, rng);
-  });
-
-  // Character modules are rare guests, not permanent residents.
-  // osdOverlay is deliberately untouched: it only turns on by hand.
-  pipeline.colorBend.enabled = false;
-  pipeline.gradientWash.enabled = false;
-  pipeline.bayerFault.enabled = false;
-  pipeline.ampGlow.enabled = false;
-  pipeline.awbSeizure.enabled = false;
-  if (rng() < 0.35) MODULE_RANDOMIZERS.colorBend(preset, mode, rng);
-  if (rng() < 0.22) MODULE_RANDOMIZERS.gradientWash(preset, mode, rng);
-  if (rng() < 0.15) MODULE_RANDOMIZERS.bayerFault(preset, mode, rng);
-  if (rng() < 0.16) MODULE_RANDOMIZERS.ampGlow(preset, mode, rng);
-  if (rng() < 0.14) MODULE_RANDOMIZERS.awbSeizure(preset, mode, rng);
-  if (rng() < 0.18 + mode.chaos * 0.2) MODULE_RANDOMIZERS.chromaShift(preset, mode, rng);
-  else pipeline.chromaShift.enabled = false;
-
-  // The global roll owns the physics rail decision either way.
-  PHYSICS_MODULES.forEach((key) => {
-    pipeline[key].enabled = false;
-  });
-  if (physicsLed || fullStack) rollPhysicsRail(preset, mode, rng);
-}
-
-// The rail's modules in signal order, with the damping applied when circuits
-// stack — two full-strength physics bends erase the subject entirely.
-const PHYSICS_MODULES = ["irCut", "ccdClock", "afeBend", "railSag", "busBend", "masterClock", "addressBus"];
-const PHYSICS_DAMPERS = {
-  irCut(ir) {
-    ir.strength *= 0.75;
-    ir.haze *= 0.7;
-  },
-  addressBus(mem) {
-    mem.rows *= 0.65;
-    mem.cols *= 0.65;
-    mem.lowBit *= 0.5;
-    mem.duty = Math.min(mem.duty, 0.6);
-  },
-  masterClock(clk) {
-    clk.detune *= 0.55;
-    clk.drift *= 0.6;
-  },
-  ccdClock(ccd) {
-    ccd.transferLoss *= 0.7;
-    ccd.vSkip *= 0.6;
-    ccd.hShear *= 0.6;
-    ccd.bloom *= 0.7;
-  },
-  afeBend(afe) {
-    afe.inject *= 0.45;
-    afe.gainMod *= 0.45;
-    afe.cdsAmount *= 0.5;
-  },
-  railSag(sag) {
-    sag.sag *= 0.7;
-    sag.failures *= 0.6;
-  },
-  busBend(bus) {
-    bus.injectStrength *= 0.7;
-    bus.pot = clamp(bus.pot, 0.25, 1);
+  const defaults = defaultPipeline();
+  for (const modules of Object.values(RANDOM_FAMILY_MODULES)) {
+    for (const key of modules) {
+      pipeline[key] = defaults[key];
+      pipeline[key].enabled = false;
+    }
   }
-};
+  // OSD is set dressing rather than damage, but it should not leak from the
+  // previous camera into a whole-camera roll. Classic adjustments are kept as
+  // the user's finishing grade.
+  pipeline.osdOverlay = defaults.osdOverlay;
 
-// Roll the physics rail: usually one circuit leads, occasionally two stack
-// (application order is fixed by the rail regardless of roll order).
-function rollPhysicsRail(preset, mode, rng) {
-  if (rng() < 0.16) {
-    const first = randomInt(0, PHYSICS_MODULES.length - 1, rng);
-    let second = randomInt(0, PHYSICS_MODULES.length - 2, rng);
-    if (second >= first) second += 1;
-    [first, second].forEach((index) => {
-      const key = PHYSICS_MODULES[index];
-      MODULE_RANDOMIZERS[key](preset, mode, rng);
-      PHYSICS_DAMPERS[key](preset.pipeline[key]);
-    });
-  } else {
-    const key = PHYSICS_MODULES[randomInt(0, PHYSICS_MODULES.length - 1, rng)];
-    MODULE_RANDOMIZERS[key](preset, mode, rng);
+  const archetype = ARCHETYPES[randomInt(0, ARCHETYPES.length - 1, rng)];
+  let target;
+  if (mode.name === "bent") target = randomInt(1, 2, rng);
+  else if (mode.name === "damaged") target = randomInt(3, 4, rng);
+  else if (mode.name === "shorted") target = randomInt(6, 7, rng);
+  else target = clamp(Math.round(1 + mode.severity * 7 + randomRange(-0.45, 0.45, rng)), 1, 8);
+  const families = [];
+  for (const family of archetype.core) {
+    if (families.length < target) families.push(family);
+  }
+  const remaining = shuffled(archetype.guests.filter((family) => !families.includes(family)), rng);
+  while (families.length < target && remaining.length) families.push(remaining.shift());
+
+  for (const family of families) {
+    const max = RANDOM_FAMILY_MODULES[family].length;
+    const globalReach = clamp((mode.severity - 0.28) / 0.72);
+    const desired = 1 + globalReach * (Math.min(max, 3) - 1) * 0.72;
+    const base = Math.floor(desired);
+    const count = Math.min(max, base + (rng() < desired - base ? 1 : 0));
+    rollFamily(preset, family, mode, rng, { clear: false, count });
   }
 }
 
-function randomizePhysics(preset, mode, rng) {
-  PHYSICS_MODULES.forEach((key) => {
-    preset.pipeline[key].enabled = false;
-  });
-  rollPhysicsRail(preset, mode, rng);
-}
-
-function randomizeColor(preset, mode, rng) {
-  preset.macros.colorFault = value(mode, rng, 0.08);
-  drift(preset.macros, "bend", 0.1, rng);
-  applyMacrosToPipeline(preset);
-  MODULE_RANDOMIZERS.falseColor(preset, mode, rng);
-  if (rng() < 0.55) MODULE_RANDOMIZERS.colorBend(preset, mode, rng);
-  else preset.pipeline.colorBend.enabled = false;
-  if (rng() < 0.4) MODULE_RANDOMIZERS.gradientWash(preset, mode, rng);
-  else preset.pipeline.gradientWash.enabled = false;
-  if (rng() < 0.25) MODULE_RANDOMIZERS.awbSeizure(preset, mode, rng);
-  else preset.pipeline.awbSeizure.enabled = false;
-}
-
-function randomizeMelt(preset, mode, rng) {
-  preset.macros.melt = value(mode, rng, 0.08);
-  drift(preset.macros, "burn", 0.08, rng);
-  applyMacrosToPipeline(preset);
-  MODULE_RANDOMIZERS.verticalSmear(preset, mode, rng);
-  if (rng() < 0.7) MODULE_RANDOMIZERS.pixelSort(preset, mode, rng);
-  else preset.pipeline.pixelSort.enabled = false;
-}
-
-function randomizeBurn(preset, mode, rng) {
-  preset.macros.burn = value(mode, rng, 0.1);
-  drift(preset.macros, "colorFault", 0.1, rng);
-  applyMacrosToPipeline(preset);
-  MODULE_RANDOMIZERS.exposureFault(preset, mode, rng);
-  MODULE_RANDOMIZERS.contourRings(preset, mode, rng);
-  MODULE_RANDOMIZERS.edgeBurn(preset, mode, rng);
-}
-
-function randomizeNoise(preset, mode, rng) {
-  preset.macros.noise = value(mode, rng, 0.06);
-  applyMacrosToPipeline(preset);
-  MODULE_RANDOMIZERS.sensorNoise(preset, mode, rng);
-  if (rng() < 0.3) MODULE_RANDOMIZERS.ampGlow(preset, mode, rng);
-  else preset.pipeline.ampGlow.enabled = false;
-}
-
-function randomizeCheap(preset, mode, rng) {
-  preset.macros.cheapness = value(mode, rng, 0.04);
-  applyMacrosToPipeline(preset);
-  MODULE_RANDOMIZERS.cheapCamera(preset, mode, rng);
-  if (rng() < 0.55) MODULE_RANDOMIZERS.dctCrunch(preset, mode, rng);
-  else preset.pipeline.dctCrunch.enabled = false;
-  if (rng() < 0.35) MODULE_RANDOMIZERS.bayerFault(preset, mode, rng);
-  else preset.pipeline.bayerFault.enabled = false;
-}
-
-function randomizeMemory(preset, mode, rng) {
-  preset.macros.chaos = clamp(randomRange(Math.max(0.4, mode.min), mode.chaos, rng));
-  applyMacrosToPipeline(preset);
-  MODULE_RANDOMIZERS.memoryFault(preset, mode, rng);
-  if (rng() < 0.5) MODULE_RANDOMIZERS.chromaShift(preset, mode, rng);
-  else preset.pipeline.chromaShift.enabled = false;
-  if (rng() < 0.45) MODULE_RANDOMIZERS.syncFault(preset, mode, rng);
-  else preset.pipeline.syncFault.enabled = false;
-  if (rng() < 0.4) MODULE_RANDOMIZERS.bufferGhost(preset, mode, rng);
-  else preset.pipeline.bufferGhost.enabled = false;
+function rollFamily(preset, family, mode, rng, { clear = true, count = null } = {}) {
+  const keys = RANDOM_FAMILY_MODULES[family];
+  if (!keys) return;
+  if (clear) {
+    for (const key of keys) preset.pipeline[key].enabled = false;
+  }
+  const moduleCount = count ?? countForSeverity(mode, rng, FAMILY_MAX_ACTIVE[family]);
+  const selected = weightedSample(keys, FAMILY_WEIGHTS[family], moduleCount, rng);
+  for (const key of selected) MODULE_RANDOMIZERS[key](preset, mode, rng);
 }
 
 function randomCameraName(rng) {
