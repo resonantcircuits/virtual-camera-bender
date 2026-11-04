@@ -1,10 +1,10 @@
-node_modules/
-dist/
-build/
-.vite/
-.DS_Store
-*.log
-coverage/
+# Rust
+target/
+# local material, never committed
 data/
 reference-images/
 test-images/
+docs/research/downloads/
+# OS / editor
+.DS_Store
+*.log
