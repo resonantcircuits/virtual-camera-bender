@@ -16,6 +16,43 @@ fn preset_file(name: &str) -> Preset {
     toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+/// The A520 as an identity camera: no tone curve, noise reduction, sharpening,
+/// fixed-pattern noise or vignetting, unit JPEG steps, and a well so deep that shot
+/// noise vanishes.
+fn neutral_camera() -> Camera {
+    let mut camera = camera();
+    let sensor = &mut camera.sensor;
+    sensor.full_well_e *= 1e5;
+    sensor.conv_gain_uv_per_e /= 1e5;
+    sensor.prnu = 0.0;
+    sensor.dsnu_e = 0.0;
+    sensor.dark_e_per_s = 0.0;
+    sensor.hot_pixels_per_mpix = 0.0;
+    sensor.read_noise_e = 0.0;
+    sensor.cte = 1.0;
+    camera.lens.vignette_stops = 0.0;
+    let isp = &mut camera.isp;
+    isp.tone_contrast = 1.0;
+    isp.tone_toe = 0.0;
+    isp.tone_shoulder = 0.0;
+    isp.chroma_nr_frac = 0.0;
+    isp.luma_nr_frac = 0.0;
+    isp.sharpen_gain = 0.0;
+    let tables = &mut camera.jpeg.tables;
+    for pair in [&mut tables.superfine, &mut tables.fine, &mut tables.normal] {
+        pair.luma = [[1; 8]; 8];
+        pair.chroma = [[1; 8]; 8];
+    }
+    camera
+}
+
+/// The clean preset with the input taken as scene radiance, without highlight headroom.
+fn neutral_preset() -> Preset {
+    let mut preset = preset_file("a520-clean");
+    preset.scene.headroom = 1.0;
+    preset
+}
+
 fn simulator(camera: Camera, preset: Preset, width: u32, height: u32) -> Simulator {
     Simulator::builder((camera, preset))
         .input_size(width, height)
@@ -90,7 +127,7 @@ fn marked_portrait() -> Scene {
 fn flat_grey_scene_develops_to_a_flat_frame() {
     let (width, height) = (96, 64);
     let scene = uniform(width, height, [128, 128, 128]);
-    let mut sim = simulator(camera(), preset_file("a520-clean"), width, height);
+    let mut sim = simulator(neutral_camera(), neutral_preset(), width, height);
     let frame = sim.frame(&scene, 0);
     let first = frame.pixel(0, 0);
     assert!(
@@ -108,7 +145,7 @@ fn smooth_gradient_round_trips_through_the_clean_camera() {
     let (width, height) = (256, 192);
     let input = gradient(width, height);
     let scene = Scene::from_srgb8(width, height, &input);
-    let mut sim = simulator(camera(), preset_file("a520-clean"), width, height);
+    let mut sim = simulator(neutral_camera(), neutral_preset(), width, height);
     let frame = sim.frame(&scene, 0);
     assert_eq!((frame.width(), frame.height()), (width, height));
     let quality = psnr(&input, frame.rgb());
@@ -149,9 +186,9 @@ fn movie_mode_bins_columns_and_skips_lines() {
 fn movie_mode_keeps_the_bayer_phase() {
     let (width, height) = (128, 96);
     let colour = [200, 120, 60];
-    let mut preset = preset_file("a520-clean");
+    let mut preset = neutral_preset();
     preset.readout.mode = Mode::Movie;
-    let mut sim = simulator(camera(), preset, width, height);
+    let mut sim = simulator(neutral_camera(), preset, width, height);
     let frame = sim.frame(&uniform(width, height, colour), 0);
     let pixel = frame.pixel(frame.width() / 2, frame.height() / 2);
     assert!(
@@ -165,9 +202,9 @@ fn movie_mode_keeps_the_bayer_phase() {
 
 #[test]
 fn native_movie_mode_delivers_the_camera_movie_size() {
-    let camera = camera();
+    let camera = neutral_camera();
     let size = (camera.movie.output_width, camera.movie.output_height);
-    let mut preset = preset_file("a520-clean");
+    let mut preset = neutral_preset();
     preset.readout.mode = Mode::Movie;
     preset.readout.resolution = Resolution::Native;
     let mut sim = Simulator::builder((camera, preset)).build().unwrap();
@@ -204,8 +241,8 @@ fn portrait_input_in_native_mode_develops_upright_on_the_rotated_sensor() {
 fn portrait_input_at_match_input_keeps_its_size_and_marks() {
     let scene = marked_portrait();
     let mut sim = simulator(
-        camera(),
-        preset_file("a520-clean"),
+        neutral_camera(),
+        neutral_preset(),
         scene.width(),
         scene.height(),
     );

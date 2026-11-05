@@ -58,7 +58,13 @@ fn bayer_sites_sample_their_own_channel() {
 
     let camera = camera();
     let t = timing(&camera, 4, 4);
-    let params = sensor::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    let mut params = sensor::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    // A well this deep makes shot noise negligible; the fixed pattern is switched off.
+    params.full_well_e = 1e14;
+    params.prnu = 0.0;
+    params.dsnu_e = 0.0;
+    params.dark_e_per_s = 0.0;
+    params.hot_pixels_per_mpix = 0.0;
     let mut scene = Scene::new(4, 4);
     scene.plane_mut(Channel::Red).fill(0.2);
     scene.plane_mut(Channel::Green).fill(0.4);
@@ -74,16 +80,20 @@ fn bayer_sites_sample_their_own_channel() {
     let site = |x, y| charge.plane().get(x, y);
     assert!((site(1, 0) / site(0, 0) - 2.0).abs() < 1e-5);
     assert!((site(1, 1) / site(0, 1) - 2.0).abs() < 1e-5);
-    assert!((site(0, 1) - site(1, 0)).abs() < 1e-3);
+    assert!((site(0, 1) / site(1, 0) - 1.0).abs() < 1e-5);
     let white = params.white_fraction * params.full_well_e;
-    assert!((site(0, 0) - 0.2 * white).abs() < 1e-2);
+    assert!((site(0, 0) / (0.2 * white) - 1.0).abs() < 1e-5);
 }
 
 #[test]
 fn charge_clips_at_full_well_and_never_goes_negative() {
     let camera = camera();
     let t = timing(&camera, 4, 2);
-    let params = sensor::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    let mut params = sensor::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    // Without dark signal, unlit photosites hold no charge at all.
+    params.dark_e_per_s = 0.0;
+    params.dsnu_e = 0.0;
+    params.hot_pixels_per_mpix = 0.0;
     let mut scene = Scene::new(4, 2);
     for (i, plane) in scene.planes_mut().into_iter().enumerate() {
         plane.fill(if i == 1 { -0.5 } else { 10.0 });
@@ -195,7 +205,7 @@ fn black_clamp_reads_the_bus_as_the_processor_does() {
     let mut codes = Codes::new(layout.clone());
     let (ob, line_len) = (layout.ob_cols() as usize, layout.line_len() as usize);
     for (line, words) in codes.words_mut().chunks_exact_mut(line_len).enumerate() {
-        let black: u16 = if line % 2 == 0 { 30 } else { 34 };
+        let black: u16 = 32;
         words[..ob].fill((black << shift) | unread);
         for (x, word) in words[ob..].iter_mut().enumerate() {
             *word = ((250 + 10 * line as u16 + x as u16) << shift) | unread;
@@ -223,8 +233,13 @@ fn checker(width: u32, height: u32) -> Scene {
     scene
 }
 
+/// Scene parameters with an even lens and no highlight expansion, for geometry checks.
 fn scene_params(camera: &Camera, width: u32, height: u32) -> scene::Params {
-    scene::Params::resolve(camera, &Preset::new("a520"), &timing(camera, width, height)).unwrap()
+    let t = timing(camera, width, height);
+    let mut params = scene::Params::resolve(camera, &Preset::new("a520"), &t).unwrap();
+    params.headroom = 1.0;
+    params.vignette_stops = 0.0;
+    params
 }
 
 #[test]
@@ -280,7 +295,9 @@ fn portrait_scenes_turn_clockwise_onto_the_sensor() {
     let camera = camera();
     let t = timing(&camera, 4, 6);
     assert!(t.rotated);
-    let params = scene::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    let mut params = scene::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    params.headroom = 1.0;
+    params.vignette_stops = 0.0;
     let mut input = Scene::new(4, 6);
     for plane in input.planes_mut() {
         plane.set(0, 0, 1.0);

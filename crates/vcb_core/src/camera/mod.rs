@@ -13,6 +13,7 @@
 pub(crate) mod model;
 
 use crate::codec::{ChromaUp, Quality, QuantTables, Subsampling};
+use crate::isp::{AeMode, Demosaic};
 use crate::readout::Direction;
 use crate::sensor::Cfa;
 
@@ -68,6 +69,29 @@ pub struct Sensor {
     pub hot_pixels_per_mpix: f64,
     /// Layout of the colour filter array.
     pub cfa: Cfa,
+    /// Seed of this unit's fixed pattern: its PRNU, DSNU and hot photosites.
+    ///
+    /// Two cameras of the same model differ only in this seed; the preset's seed,
+    /// which drives the temporal noise, leaves the pattern unchanged.
+    #[cfg_attr(feature = "serde", serde(default = "default_unit_seed"))]
+    pub unit_seed: u64,
+}
+
+/// Returns the unit seed of a camera file that does not set one.
+#[cfg(feature = "serde")]
+fn default_unit_seed() -> u64 {
+    1
+}
+
+/// The `[lens]` section: the optics in front of the sensor.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+pub struct Lens {
+    /// Illumination falloff at the image corner relative to the centre, in stops.
+    ///
+    /// The falloff follows the cos^4 law of natural vignetting; 0 is a perfectly even lens.
+    pub vignette_stops: f64,
 }
 
 /// The `[still]` section: full-sensor readout behind the mechanical shutter.
@@ -204,20 +228,26 @@ pub struct Isp {
     pub xyz_to_cam: [[f64; 3]; 3],
     /// Slope of the tone curve at mid-grey.
     pub tone_contrast: f64,
-    /// Lift of the tone curve in the shadows.
+    /// Linear level below which the tone curve compresses shadows towards black.
     pub tone_toe: f64,
-    /// Compression of the tone curve in the highlights.
+    /// Fraction of the output range below white given to the highlight roll-off.
     pub tone_shoulder: f64,
-    /// Chroma noise reduction radius as a fraction of the frame width.
+    /// Chroma noise reduction blur: Gaussian standard deviation as a fraction of the frame width.
     pub chroma_nr_frac: f64,
-    /// Luma noise reduction radius as a fraction of the frame width.
+    /// Luma noise reduction blur: Gaussian standard deviation as a fraction of the frame width.
     pub luma_nr_frac: f64,
-    /// Unsharp-mask radius as a fraction of the frame width.
+    /// Unsharp-mask blur: Gaussian standard deviation as a fraction of the frame width.
     pub sharpen_radius_frac: f64,
     /// Unsharp-mask gain: the fraction of high-pass detail added back.
     pub sharpen_gain: f64,
     /// Auto-exposure target: mean linear luminance of the developed frame.
     pub ae_target: f64,
+    /// Demosaicing algorithm.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub demosaic: Demosaic,
+    /// Auto-exposure mode: a fixed exposure, or one metered from the scene.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub ae_mode: AeMode,
 }
 
 /// The `[jpeg]` section: the camera's JPEG encoder.

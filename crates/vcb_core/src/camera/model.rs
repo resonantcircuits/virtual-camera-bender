@@ -1,6 +1,6 @@
 //! The camera model: every hardware section of a camera file.
 
-use crate::camera::{Adc, Afe, Clocking, Info, Isp, Jpeg, Logic, Movie, Sensor, Still};
+use crate::camera::{Adc, Afe, Clocking, Info, Isp, Jpeg, Lens, Logic, Movie, Sensor, Still};
 use crate::preset::Mode;
 use crate::validate::{at_least, finite, fraction, non_negative, positive, within};
 use crate::{Error, colour};
@@ -10,6 +10,12 @@ const MAX_ADC_BITS: u8 = 16;
 
 /// Lowest accepted smear figure; datasheets quote about -80 to -120 dB.
 const MIN_SMEAR_DB: f64 = -200.0;
+
+/// Largest accepted corner falloff of the lens in stops.
+///
+/// Compact-camera lenses lose about 0.5 to 1.5 stops at the corner wide open; beyond
+/// 8 stops the corners hold under 0.4 % of the centre's light and the value is a typo.
+const MAX_VIGNETTE_STOPS: f64 = 8.0;
 
 /// Allowed gap between the AFE pedestal and the nominal black code.
 ///
@@ -41,6 +47,9 @@ pub struct Camera {
     pub info: Info,
     /// The `[sensor]` section.
     pub sensor: Sensor,
+    /// The `[lens]` section; a camera file without one has an even lens.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub lens: Lens,
     /// The `[still]` section.
     pub still: Still,
     /// The `[movie]` section.
@@ -122,7 +131,13 @@ impl Camera {
         non_negative("sensor.antibloom_ratio", s.antibloom_ratio)?;
         within("sensor.smear_db", s.smear_db, MIN_SMEAR_DB, 0.0)?;
         fraction("sensor.cte", s.cte)?;
-        non_negative("sensor.hot_pixels_per_mpix", s.hot_pixels_per_mpix)
+        non_negative("sensor.hot_pixels_per_mpix", s.hot_pixels_per_mpix)?;
+        within(
+            "lens.vignette_stops",
+            self.lens.vignette_stops,
+            0.0,
+            MAX_VIGNETTE_STOPS,
+        )
     }
 
     fn validate_modes(&self) -> Result<(), Error> {
