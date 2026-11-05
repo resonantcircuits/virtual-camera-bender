@@ -62,12 +62,16 @@ and `--fps`. `vcb help <command>` lists the rest.
 
 `cargo run --release -p vcb_app -- samples/sample-01.jpg` opens the app (binary
 `vcb-app`, Rust 1.95 or later) with the sample photo in front of the camera; without a
-file, open an image or a video's first frame with "Open…" or drop it on the window. Run
-it from the repository root so it finds `cameras/` (or set `VCB_CAMERAS`) and the
-`presets/` list. The inspector holds the readout settings and the bus bend as a front
-panel; dragging a control shows a 720-pixel preview, releasing it renders the full
-frame, holding the space bar shows the original, and "Export image…" writes the full
-render as PNG or JPEG.
+file, open an image or a video with "Open…" or drop it on the window. Run it from the
+repository root so it finds `cameras/` (or set `VCB_CAMERAS`) and the `presets/` list,
+or build `target/Virtual Camera Bender.app` with `scripts/bundle-macos.sh`, which
+carries both. The inspector holds every stage in signal order, in physical units:
+scene, sensor, readout, the clock and analog-front-end bends, the bus bend as a front
+panel and the processor overrides, under a signal-path strip. Dragging a control shows
+a 720-pixel preview and releasing it renders the full frame; the camera keeps running
+between renders until "Reset circuit". Videos get a scrubber, frame steps and play
+through the preview camera, and "Export video…" renders a clip to H.264 or ProRes in
+the background. `docs/USER-GUIDE.md` explains every control and the shortcuts.
 
 ## Cameras and presets
 

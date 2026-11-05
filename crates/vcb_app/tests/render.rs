@@ -1,17 +1,17 @@
-//! Job coalescing on the worker, stale-reply rejection, the preview reduction, and
-//! the real renderer's answers.
+//! Job coalescing on the worker, stale-reply rejection, the preview reduction, the
+//! real renderer's answers, and the running simulators behind them.
 
 use std::path::Path;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use vcb_app::presets;
-use vcb_app::render::{self, Generations, Job, PREVIEW_LONG_EDGE, Renderer, Worker};
-use vcb_core::Preset;
-use vcb_core::Scene;
+use vcb_app::render::{self, Generations, Job, Output, PREVIEW_LONG_EDGE, Renderer, Worker};
+use vcb_core::afe::{Inject, Wave};
 use vcb_core::bus::Target;
-use vcb_core::preset::Resolution;
+use vcb_core::preset::{AfeBend, Mode, Resolution};
 use vcb_core::scene::Channel;
+use vcb_core::{Preset, Scene, Simulator};
 
 fn root() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
@@ -35,6 +35,7 @@ fn hpf_job(preview: bool) -> Job {
         camera: Arc::new(camera),
         preset,
         preview,
+        power_cycle: 0,
     }
 }
 
@@ -213,4 +214,128 @@ fn reduction_averages_light_over_each_footprint() {
         (mean - 0.5).abs() < 1e-3,
         "area averaging keeps the mean, got {mean}"
     );
+}
+
+/// A full-render job on a small gradient through the high-pass bend with an injected
+/// oscillator, at match-input resolution so the renders stay quick.
+fn running_job() -> Job {
+    let mut job = hpf_job(false);
+    let (width, height) = (192, 144);
+    let rgb: Vec<u8> = (0..width * height)
+        .flat_map(|i| {
+            let x = (i % width * 255 / width) as u8;
+            [x, 140, 255 - x]
+        })
+        .collect();
+    job.scene = Arc::new(Scene::from_srgb8(width, height, &rgb));
+    job.preset.bend.afe = Some(AfeBend {
+        inject: Some(Inject {
+            wave: Wave::Sine,
+            freq_hz: 700.0,
+            amplitude_v: 0.05,
+            phase_skew: 0.0,
+        }),
+        ..AfeBend::default()
+    });
+    job
+}
+
+fn render_ok(renderer: &mut Renderer, job: &Job) -> Output {
+    renderer.render(job).outcome.expect("the job renders")
+}
+
+/// The first frame a freshly built simulator renders for `job`, as `vcb render` does.
+fn power_on_frame(job: &Job) -> Vec<u8> {
+    let mut fresh = Simulator::builder(((*job.camera).clone(), job.preset.clone()))
+        .input_size(job.scene.width(), job.scene.height())
+        .build()
+        .expect("the preset builds");
+    fresh.frame(&job.scene, 0).rgb().to_vec()
+}
+
+#[test]
+fn the_simulator_keeps_running_and_a_power_cycle_replays_frame_zero() {
+    let mut renderer = Renderer::default();
+    let mut job = running_job();
+    let first = render_ok(&mut renderer, &job);
+    let second = render_ok(&mut renderer, &job);
+    assert_eq!(
+        (first.index, second.index),
+        (0, 1),
+        "each render is the next frame"
+    );
+    assert_ne!(
+        first.frame.rgb(),
+        second.frame.rgb(),
+        "the oscillator and the noise have moved on"
+    );
+
+    job.power_cycle = 1;
+    let replay = render_ok(&mut renderer, &job);
+    assert_eq!(replay.index, 0, "a power cycle restarts the sequence");
+    assert_eq!(
+        replay.frame.rgb(),
+        first.frame.rgb(),
+        "and replays its first frame"
+    );
+    let again = render_ok(&mut renderer, &job);
+    assert_eq!(
+        again.index, 1,
+        "the same power-cycle count does not reset again"
+    );
+    assert_eq!(
+        power_on_frame(&job),
+        first.frame.rgb(),
+        "the first frame after power-on is what vcb render writes"
+    );
+}
+
+#[test]
+fn a_new_preset_reaches_the_running_simulator() {
+    let mut renderer = Renderer::default();
+    let mut job = running_job();
+    render_ok(&mut renderer, &job);
+    if let Some(bus) = job.preset.bend.bus.as_mut() {
+        bus.pot_kohm = 0.2;
+    }
+    let turned = render_ok(&mut renderer, &job);
+    assert_eq!(turned.index, 1, "turning the pot keeps the camera running");
+
+    let mut cycled = job.clone();
+    cycled.power_cycle = 1;
+    assert_eq!(
+        render_ok(&mut renderer, &cycled).frame.rgb(),
+        power_on_frame(&job),
+        "after a power cycle the new pot setting renders as a fresh camera would"
+    );
+
+    job.power_cycle = 1;
+    job.preset.readout.mode = Mode::Movie;
+    let movie = render_ok(&mut renderer, &job);
+    assert_eq!(
+        movie.index, 0,
+        "a new readout geometry powers the camera on afresh"
+    );
+
+    let mut camera = (*job.camera).clone();
+    camera.still.exposure_s *= 2.0;
+    job.camera = Arc::new(camera);
+    assert_eq!(
+        render_ok(&mut renderer, &job).index,
+        0,
+        "another camera is a new simulator"
+    );
+}
+
+#[test]
+fn previews_and_full_renders_run_on_separate_simulators() {
+    let mut renderer = Renderer::default();
+    let full = running_job();
+    let mut preview = running_job();
+    preview.preview = true;
+    preview.preset.readout.resolution = Resolution::Native;
+    assert_eq!(render_ok(&mut renderer, &preview).index, 0);
+    assert_eq!(render_ok(&mut renderer, &full).index, 0);
+    assert_eq!(render_ok(&mut renderer, &preview).index, 1);
+    assert_eq!(render_ok(&mut renderer, &full).index, 1);
 }

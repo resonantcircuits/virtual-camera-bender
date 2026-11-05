@@ -1,15 +1,18 @@
 //! The desktop app of the virtual camera bender.
 //!
-//! A window in which a photo, or the first frame of a video, sits in front of the
-//! simulated camera: the user picks a camera and a preset, sets the readout and the
-//! bus bend on a front panel drawn after the schematic, and sees the camera's output
-//! as the controls move. Renders run on a worker thread ([`render`]): a reduced
-//! preview while a control is dragged, the full preset when it is released. The
-//! binary `vcb-app` calls [`run`].
+//! A window in which a photo or a video sits in front of the simulated camera: the
+//! user picks a camera and a preset, sets every stage of the signal chain on panels in
+//! physical units (scene, sensor, readout and clocks, analog front end, the bus bend
+//! drawn after its schematic, the processor), and sees the camera's output as the
+//! controls move. Renders run on a worker thread ([`render`]) whose simulators keep
+//! running between renders: a reduced preview while a control is dragged, the full
+//! preset when it is released. Videos are read frame by frame on demand, played
+//! through the preview simulator ([`video`]) and exported through a fresh full-size
+//! simulator on a background thread ([`export`]). The binary `vcb-app` calls [`run`].
 //!
-//! The modules are public so the pure parts (preset building, job coalescing, view
-//! geometry, camera discovery) can be tested from `tests/`; the app has no library
-//! users.
+//! The modules are public so the pure parts (preset building, job coalescing, the
+//! frame cache, the export job, shortcuts, view geometry, camera discovery) can be
+//! tested from `tests/`; the app has no library users.
 
 #![expect(
     clippy::multiple_crate_versions,
@@ -17,11 +20,15 @@
 )]
 
 pub mod app;
+pub mod export;
+pub mod icon;
 pub mod io;
 pub mod panels;
 pub mod presets;
 pub mod render;
+pub mod shortcuts;
 pub mod theme;
+pub mod video;
 pub mod viewport;
 
 use std::path::PathBuf;
@@ -31,6 +38,9 @@ use eframe::egui;
 
 /// Title of the window and name of the app.
 pub const TITLE: &str = "Virtual Camera Bender";
+
+/// Edge of the window icon in pixels.
+const ICON_SIZE: u32 = 256;
 
 /// Opens the app's window and runs it until it is closed.
 ///
@@ -43,9 +53,10 @@ pub fn run(path: Option<PathBuf>) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(TITLE)
-            .with_inner_size([1360.0, 860.0])
-            .with_min_inner_size([960.0, 600.0])
-            .with_drag_and_drop(true),
+            .with_inner_size([1400.0, 900.0])
+            .with_min_inner_size([1000.0, 640.0])
+            .with_drag_and_drop(true)
+            .with_icon(icon::icon_data(ICON_SIZE)),
         ..eframe::NativeOptions::default()
     };
     eframe::run_native(

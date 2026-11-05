@@ -63,8 +63,22 @@ pub const SMALL_SIZE: f32 = 11.0;
 /// Corner radius of widgets in points.
 const RADIUS: u8 = 4;
 
+/// The bundled monospace font, a fallback of the proportional one for symbols.
+///
+/// egui's proportional font lacks arrows and the transport symbols (→ ↺ ▶ ■ ◁ ▷);
+/// its bundled monospace font has them, so text in the proportional font falls back
+/// to it for those glyphs only.
+const SYMBOL_FALLBACK: &str = "Hack";
+
 /// Applies the theme to every style of the context and selects dark mode.
 pub fn apply(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional)
+        && !family.iter().any(|name| name == SYMBOL_FALLBACK)
+    {
+        family.push(SYMBOL_FALLBACK.to_owned());
+    }
+    ctx.set_fonts(fonts);
     ctx.set_theme(Theme::Dark);
     ctx.style_mut_of(Theme::Dark, |style| {
         style.text_styles = [

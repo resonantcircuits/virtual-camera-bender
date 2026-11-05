@@ -10,12 +10,18 @@
 //! render's aspect ratio, reduces it so the long edge is [`PREVIEW_LONG_EDGE`] pixels,
 //! and renders it at match-input resolution, which costs about a tenth of a native
 //! render; the reduced scene is cached per source scene. A full render uses the
-//! preset as it is. Both start from a power-on simulator and render frame 0, so a
-//! full render is byte for byte what `vcb render` writes for the same input and
-//! preset.
+//! preset as it is.
 //!
-//! TODO: build the simulator once and update it with `Simulator::set_preset` when the
-//! core gains it (plan stage 7); until then every job builds a new one.
+//! The [`Renderer`] keeps two running simulators, one for previews and one for full
+//! renders, each for one camera and scene size. A new preset reaches them through
+//! [`Simulator::set_preset`] and a new scene size through
+//! [`Simulator::set_scene_size`], so the camera's analog memory (oscillator phases,
+//! capacitor charge, servos, running clock faults) carries from one render to the
+//! next as in a camera that keeps running, and each render is the next frame of its
+//! simulator's sequence. A job whose [`power_cycle`](Job::power_cycle) count is
+//! higher than any seen before resets both simulators to their power-on state first;
+//! the full render after a power cycle is frame 0 of a fresh simulator, byte for
+//! byte what `vcb render` writes for the same input and preset.
 
 use std::any::Any;
 use std::fmt::{self, Debug, Formatter};
@@ -53,6 +59,8 @@ pub struct Job {
     pub preset: Preset,
     /// Whether to render a reduced preview instead of the full preset.
     pub preview: bool,
+    /// How often the UI has asked to power-cycle the camera; a new count resets both simulators.
+    pub power_cycle: u64,
 }
 
 /// A finished render.
@@ -64,7 +72,9 @@ pub struct Output {
     pub image: ColorImage,
     /// Size of the virtual sensor that rendered it, in photosites.
     pub sensor: [u32; 2],
-    /// Wall-clock time of the render, building the simulator included.
+    /// Index of the frame in its simulator's sequence since power-on, from 0.
+    pub index: u64,
+    /// Wall-clock time of the render, configuring the simulator included.
     pub elapsed: Duration,
 }
 
@@ -74,6 +84,7 @@ impl Debug for Output {
         f.debug_struct("Output")
             .field("frame", &self.frame)
             .field("sensor", &self.sensor)
+            .field("index", &self.index)
             .field("elapsed", &self.elapsed)
             .finish_non_exhaustive()
     }
@@ -219,10 +230,13 @@ pub fn preview_preset(preset: &Preset) -> Preset {
     preview
 }
 
-/// Renders jobs: the worker's state, which keeps the reduced preview scene.
+/// Renders jobs: the worker's state, which keeps the running simulators.
 #[derive(Debug, Default)]
 pub struct Renderer {
     cache: Option<Reduced>,
+    preview: Option<Live>,
+    full: Option<Live>,
+    power_cycle: u64,
 }
 
 /// A reduced copy of a source scene for previews.
@@ -233,11 +247,89 @@ struct Reduced {
     scene: Arc<Scene>,
 }
 
+/// A running simulator and the camera it was built for.
+#[derive(Debug)]
+struct Live {
+    camera: Arc<Camera>,
+    simulator: Simulator,
+    /// Frames rendered since power-on.
+    frames: u64,
+}
+
+impl Live {
+    /// Returns the simulator in `slot` configured for `camera`, `preset` and `size`.
+    ///
+    /// A simulator for the same camera is updated in place, keeping its analog state
+    /// where [`Simulator::set_preset`] allows; another camera, or a configuration the
+    /// running simulator refuses, builds a new one, whose error is then reported.
+    fn configure<'a>(
+        slot: &'a mut Option<Self>,
+        camera: &Arc<Camera>,
+        preset: &Preset,
+        size: (u32, u32),
+    ) -> Result<&'a mut Self, String> {
+        let updated = match slot.as_mut() {
+            Some(live) if Arc::ptr_eq(&live.camera, camera) || *live.camera == **camera => {
+                live.update(preset, size)
+            }
+            _ => false,
+        };
+        if !updated {
+            let simulator = Simulator::builder(((**camera).clone(), preset.clone()))
+                .input_size(size.0, size.1)
+                .build()
+                .map_err(|error| error.to_string())?;
+            *slot = Some(Self {
+                camera: Arc::clone(camera),
+                simulator,
+                frames: 0,
+            });
+        }
+        Ok(slot
+            .as_mut()
+            .expect("the slot holds a configured simulator"))
+    }
+
+    /// Applies `preset` and `size` to the running simulator; `false` if it refuses either.
+    ///
+    /// A new readout geometry powers the simulator on afresh, so the frame count restarts.
+    fn update(&mut self, preset: &Preset, size: (u32, u32)) -> bool {
+        let sim = &mut self.simulator;
+        let before = geometry(sim.timing());
+        if sim.scene_size() != size && sim.set_scene_size(size.0, size.1).is_err() {
+            return false;
+        }
+        let updated = sim.preset() == preset || sim.set_preset(preset.clone()).is_ok();
+        if geometry(sim.timing()) != before {
+            self.frames = 0;
+        }
+        updated
+    }
+}
+
+/// The parts of a timing whose change makes the simulator reallocate and power on.
+fn geometry(timing: &Timing) -> [u64; 9] {
+    [
+        u64::from(timing.mode == vcb_core::preset::Mode::Movie),
+        u64::from(timing.rotated),
+        u64::from(timing.sensor_width),
+        u64::from(timing.sensor_height),
+        u64::from(timing.rows_read),
+        u64::from(timing.cols),
+        u64::from(timing.output_width),
+        u64::from(timing.output_height),
+        timing.pixel_period_s.to_bits(),
+    ]
+}
+
 impl Renderer {
     /// Renders `job` and logs the result; a panic in the simulation becomes an error.
     pub fn render(&mut self, job: &Job) -> Reply {
         let outcome =
             panic::catch_unwind(AssertUnwindSafe(|| self.run(job))).unwrap_or_else(|payload| {
+                // A simulator that panicked mid-frame holds half-written state.
+                self.preview = None;
+                self.full = None;
                 Err(format!("the simulation failed: {}", panic_text(&*payload)))
             });
         match &outcome {
@@ -245,6 +337,7 @@ impl Renderer {
                 name: "app.render.done",
                 generation = job.generation,
                 preview = job.preview,
+                index = output.index,
                 width = output.frame.width(),
                 height = output.frame.height(),
                 elapsed_ms = output.elapsed.as_secs_f64() * 1e3,
@@ -265,12 +358,28 @@ impl Renderer {
         }
     }
 
+    /// Returns both simulators to their power-on state.
+    pub fn power_cycle(&mut self) {
+        for live in [&mut self.preview, &mut self.full].into_iter().flatten() {
+            live.simulator.reset();
+            live.frames = 0;
+        }
+    }
+
     fn run(&mut self, job: &Job) -> Result<Output, String> {
         let started = Instant::now();
-        let camera = (*job.camera).clone();
+        if job.power_cycle > self.power_cycle {
+            self.power_cycle = job.power_cycle;
+            self.power_cycle();
+        }
         let (scene, preset) = if job.preview {
-            let full = Timing::derive(&camera, &job.preset, job.scene.width(), job.scene.height())
-                .map_err(|error| error.to_string())?;
+            let full = Timing::derive(
+                &job.camera,
+                &job.preset,
+                job.scene.width(),
+                job.scene.height(),
+            )
+            .map_err(|error| error.to_string())?;
             let aspect = [full.output_width, full.output_height];
             (
                 self.reduced(&job.scene, aspect),
@@ -279,18 +388,24 @@ impl Renderer {
         } else {
             (Arc::clone(&job.scene), job.preset.clone())
         };
-        let mut simulator = Simulator::builder((camera, preset))
-            .input_size(scene.width(), scene.height())
-            .build()
-            .map_err(|error| error.to_string())?;
-        let timing = simulator.timing();
+        let slot = if job.preview {
+            &mut self.preview
+        } else {
+            &mut self.full
+        };
+        let size = (scene.width(), scene.height());
+        let live = Live::configure(slot, &job.camera, &preset, size)?;
+        let timing = live.simulator.timing();
         let sensor = [timing.sensor_width, timing.sensor_height];
-        let frame = simulator.frame(&scene, 0).clone();
+        let index = live.frames;
+        let frame = live.simulator.frame(&scene, index).clone();
+        live.frames += 1;
         let image = viewport::texture_image(frame.width(), frame.height(), frame.rgb());
         Ok(Output {
             frame: Arc::new(frame),
             image,
             sensor,
+            index,
             elapsed: started.elapsed(),
         })
     }
