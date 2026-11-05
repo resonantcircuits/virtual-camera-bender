@@ -1,0 +1,682 @@
+//! Image processing: from ADC codes to a developed 8-bit frame.
+//!
+//! The image processor (Canon's DIGIC in the A520) receives the ADC words line by
+//! line, but reads only `dsp_bits` bus lines starting at `dsp_lsb` (on the A520, lines
+//! `D11` to `D2` of the 12-bit bus, a 10-bit raw). [`clamp_black`] takes that view and
+//! removes the black level line by line, as the DSP's clamp loop does, leaving a
+//! [`Raw`] Bayer plane of the active area in processor codes above black, rows in image
+//! order. [`develop`] then turns it into a [`Frame`]:
+//!
+//! 1. Normalisation: codes are divided by `white_code`, the code above black that
+//!    reference white produces, so linear 1.0 is reference white again.
+//! 2. White balance, on the mosaic: the red and blue sites are multiplied by the
+//!    daylight gains, or by grey-world gains that equalise the channel means
+//!    ([`Wb::Auto`]). Gains are scaled so the smallest is 1, as dcraw does, and every
+//!    site is clipped where the least-amplified channel saturates (full well or ADC,
+//!    whichever comes first), so clipped highlights stay white instead of turning pink.
+//! 3. Demosaic: bilinear interpolation, or Malvar, He and Cutler's gradient-corrected
+//!    linear interpolation ([`Demosaic`]); borders are mirrored with the Bayer phase kept.
+//! 4. Colour correction: `cam_to_srgb`, from white-balanced camera RGB to linear sRGB.
+//! 5. Geometry: movie mode averages `h_bin` adjacent columns, and if the result
+//!    differs from the output size it is resampled to it, both in linear light.
+//! 6. Tone and encoding: the [`Tone`] curve in linear light, then the sRGB transfer
+//!    curve, through one lookup table.
+//! 7. Noise reduction and sharpening on BT.601 `Y'CbCr` of the encoded values, as camera
+//!    DSPs do: Cb and Cr are blurred with a Gaussian of `chroma_nr_frac` of the frame
+//!    width; luma is blurred with `luma_nr_frac` of the width and blended back in
+//!    proportion to local flatness, `max(0, 1 - |Y - blur(Y)| / 8)` with the detail
+//!    in 8-bit codes, so grain is smoothed and edges are kept; then an unsharp mask of
+//!    standard deviation `sharpen.radius_frac` of the width adds `sharpen.gain` times
+//!    the detail to luma, with no halo suppression: overshoots clip at 0 and 255.
+//! 8. Output: back to RGB, rounded to 8 bits.
+//!
+//! Defective-pixel concealment is not modelled: DIGIC's defect map and its
+//! interpolation rule for the A520 are undocumented, so hot photosites pass through
+//! to the demosaic, where they become small coloured crosses.
+//!
+//! Every pixel-parallel pass runs over rows on the rayon pool; working planes live in
+//! [`State`] and are allocated only when the frame size changes.
+
+mod demosaic;
+mod filter;
+mod tone;
+pub(crate) mod ycc;
+
+use std::fmt::{self, Debug, Formatter};
+
+use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+use rayon::slice::{ParallelSlice, ParallelSliceMut};
+
+use crate::adc::Codes;
+use crate::plane::Plane;
+use crate::preset::Mode;
+use crate::resample::{self, Rect, Turn};
+use crate::sensor::Cfa;
+use crate::{Camera, Error, Frame, Preset, Scene, Timing, colour};
+
+#[doc(inline)]
+pub use tone::Tone;
+
+/// Time constant of the black-clamp loop in lines.
+///
+/// Clamp loops of CCD signal processors (AD9949 class, research section 5) correct
+/// the black level from a 2 to 20 pixel optical-black window on every line and
+/// integrate the error over a few lines, so a disturbed line pulls the level without
+/// resetting it. Four lines is a typical loop setting.
+const CLAMP_TAU_LINES: f64 = 4.0;
+
+/// Local luma detail in 8-bit codes at which luma noise reduction stops.
+///
+/// About five times the A520's ISO 50 noise of 1.5 codes (dpreview, research
+/// section 9): grain-sized differences are smoothed, edges are left alone.
+const LUMA_NR_EDGE_CODES: f32 = 8.0;
+
+/// Which white balance the processor applies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum WbMode {
+    /// Fixed daylight gains.
+    #[default]
+    Daylight,
+    /// Gains measured from the frame (grey world).
+    Auto,
+}
+
+/// How the camera sets its exposure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum AeMode {
+    /// The exposure stays as configured.
+    #[default]
+    Fixed,
+    /// Every frame is exposed so that the scene's mean luminance lands on `ae_target`.
+    Scene,
+}
+
+/// White balance with its resolved gains.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Wb {
+    /// Fixed gains of the red and blue channels relative to green.
+    Daylight {
+        /// Red gain.
+        r_gain: f32,
+        /// Blue gain.
+        b_gain: f32,
+    },
+    /// Gains that make the mean of every channel equal to the green mean.
+    Auto,
+}
+
+/// Unsharp masking of luminance.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sharpen {
+    /// Standard deviation of the blur as a fraction of the frame width.
+    pub radius_frac: f32,
+    /// Fraction of the high-pass detail added back.
+    pub gain: f32,
+}
+
+/// Demosaicing algorithm.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum Demosaic {
+    /// Bilinear interpolation of each channel from its nearest sites.
+    Bilinear,
+    /// Malvar, He and Cutler (2004): bilinear plus a 5 by 5 gradient correction.
+    #[default]
+    Malvar,
+}
+
+/// Size of the developed frame on the landscape sensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Output {
+    /// Adjacent columns averaged into one, 1 for stills.
+    pub h_bin: u32,
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+}
+
+/// The active-area Bayer plane after the black clamp, in codes above black.
+#[derive(Clone, PartialEq)]
+pub struct Raw {
+    plane: Plane<f32>,
+    black: Box<[f32]>,
+}
+
+impl Raw {
+    /// Creates a zero raw plane of `width` by `height` sites.
+    #[must_use]
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            plane: Plane::new(width, height),
+            black: vec![0.0; height as usize].into_boxed_slice(),
+        }
+    }
+
+    /// Returns the sites in processor codes above black, rows in image order, red at `(0, 0)`.
+    #[must_use]
+    pub fn plane(&self) -> &Plane<f32> {
+        &self.plane
+    }
+
+    /// Returns the sites mutably.
+    pub fn plane_mut(&mut self) -> &mut Plane<f32> {
+        &mut self.plane
+    }
+
+    /// Returns the black level subtracted from each image row, in processor codes.
+    #[must_use]
+    pub fn black_levels(&self) -> &[f32] {
+        &self.black
+    }
+
+    /// Returns the mean black level the clamp subtracted, in processor codes.
+    #[must_use]
+    pub fn black_level(&self) -> f32 {
+        if self.black.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = self.black.iter().map(|&b| f64::from(b)).sum();
+        (sum / self.black.len() as f64) as f32
+    }
+}
+
+impl Debug for Raw {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Raw")
+            .field("width", &self.plane.width())
+            .field("height", &self.plane.height())
+            .field("black_level", &self.black_level())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Parameters of the processing pipeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Params {
+    /// Processor code above black that reference white produces; divides every site.
+    pub white_code: f32,
+    /// Processor code above black at which a photosite's well is full.
+    pub full_well_code: f32,
+    /// Lowest bus line the processor reads.
+    pub dsp_lsb: u8,
+    /// Number of bus lines the processor reads.
+    pub dsp_bits: u8,
+    /// Colour filter array of the raw plane.
+    pub cfa: Cfa,
+    /// White balance.
+    pub wb: Wb,
+    /// Matrix from white-balanced camera RGB to linear sRGB, row major.
+    pub cam_to_srgb: [[f32; 3]; 3],
+    /// Tone curve.
+    pub tone: Tone,
+    /// Chroma noise reduction blur, standard deviation as a fraction of the frame width.
+    pub chroma_nr_frac: f32,
+    /// Luma noise reduction blur, standard deviation as a fraction of the frame width.
+    pub luma_nr_frac: f32,
+    /// Unsharp masking.
+    pub sharpen: Sharpen,
+    /// Demosaicing algorithm.
+    pub demosaic: Demosaic,
+    /// Auto-exposure target luminance; the sensor's exposure control meters towards it.
+    pub ae_target: f32,
+    /// Size of the developed frame on the landscape sensor.
+    pub output: Output,
+}
+
+impl Params {
+    /// Resolves the processing parameters from the camera, preset and derived timing.
+    ///
+    /// `white_code` follows from the analog chain: reference white fills
+    /// `white_fraction` of the full well, which the conversion gain, PGA gain and ADC
+    /// scale map to a code above the pedestal, divided by `2^dsp_lsb` for the
+    /// processor's view of the bus; `full_well_code` is the same for a full well.
+    ///
+    /// `cam_to_srgb` is derived from the `xyz_to_cam` matrix as dcraw's `cam_xyz_coeff`
+    /// does: `xyz_to_cam * srgb_to_xyz` (D65) gives sRGB to camera RGB; each row is
+    /// normalised to sum to one, so white maps to white and the white balance stays a
+    /// separate gain; the inverse of that matrix is `cam_to_srgb`.
+    ///
+    /// The tone curve's white point is the linear level at which the sensor or the
+    /// ADC saturates, whichever comes first. Preset overrides replace camera values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error if the analog chain maps reference white to no code
+    /// or the colour matrix is not invertible.
+    pub fn resolve(camera: &Camera, preset: &Preset, timing: &Timing) -> Result<Self, Error> {
+        let sensor = &camera.sensor;
+        let white_volts = sensor.white_fraction
+            * sensor.full_well_e
+            * sensor.conv_gain_uv_per_e
+            * 1e-6
+            * 10f64.powf(camera.afe.pga_gain_db / 20.0);
+        let white_code = white_volts / camera.adc.full_scale_v * f64::from(camera.max_code())
+            / f64::from(1u32 << camera.adc.dsp_lsb);
+        if !(white_code.is_finite() && white_code >= 1.0) {
+            return Err(Error::config(format!(
+                "reference white reaches only {white_code:.3} ADC codes above black"
+            )));
+        }
+        let full_well_code = white_code / sensor.white_fraction;
+        let nominal_black = f64::from(camera.adc.black_level >> camera.adc.dsp_lsb);
+        let adc_room = f64::from(camera.dsp_max_code()) - nominal_black;
+        let white_point = full_well_code.min(adc_room) / white_code;
+
+        let isp = &camera.isp;
+        let o = preset.isp.clone().unwrap_or_default();
+        let pick = |value: Option<f64>, default: f64| value.unwrap_or(default) as f32;
+        let wb = match o.wb.unwrap_or_default() {
+            WbMode::Daylight => Wb::Daylight {
+                r_gain: pick(o.wb_r_gain, isp.wb_r_gain),
+                b_gain: pick(o.wb_b_gain, isp.wb_b_gain),
+            },
+            WbMode::Auto => Wb::Auto,
+        };
+        let cam_to_srgb = colour::cam_to_srgb(&o.xyz_to_cam.unwrap_or(isp.xyz_to_cam))?;
+        let h_bin = match timing.mode {
+            Mode::Still => 1,
+            Mode::Movie => camera.movie.h_bin,
+        };
+        let (width, height) = timing.developed_size();
+        Ok(Self {
+            white_code: white_code as f32,
+            full_well_code: full_well_code as f32,
+            dsp_lsb: camera.adc.dsp_lsb,
+            dsp_bits: camera.adc.dsp_bits,
+            cfa: sensor.cfa,
+            wb,
+            cam_to_srgb: colour::to_f32(&cam_to_srgb),
+            tone: Tone {
+                contrast: pick(o.tone_contrast, isp.tone_contrast),
+                toe: pick(o.tone_toe, isp.tone_toe),
+                shoulder: pick(o.tone_shoulder, isp.tone_shoulder),
+                white: white_point.max(1.0) as f32,
+            },
+            chroma_nr_frac: pick(o.chroma_nr_frac, isp.chroma_nr_frac),
+            luma_nr_frac: pick(o.luma_nr_frac, isp.luma_nr_frac),
+            sharpen: Sharpen {
+                radius_frac: pick(o.sharpen_radius_frac, isp.sharpen_radius_frac),
+                gain: pick(o.sharpen_gain, isp.sharpen_gain),
+            },
+            demosaic: isp.demosaic,
+            ae_target: pick(o.ae_target, isp.ae_target),
+            output: Output {
+                h_bin,
+                width,
+                height,
+            },
+        })
+    }
+}
+
+/// Persistent state of the image processor: working planes reused across frames.
+#[derive(Debug, Clone)]
+pub struct State {
+    balanced: Plane<f32>,
+    rgb: Scene,
+    binned: Scene,
+    sized: Scene,
+    /// Luma, blue-difference and red-difference planes, and two blur scratch planes.
+    ycc: [Plane<f32>; 5],
+    lut: Vec<f32>,
+    kernel: Vec<f32>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            balanced: Plane::new(0, 0),
+            rgb: Scene::new(0, 0),
+            binned: Scene::new(0, 0),
+            sized: Scene::new(0, 0),
+            ycc: std::array::from_fn(|_| Plane::new(0, 0)),
+            lut: Vec::new(),
+            kernel: Vec::new(),
+        }
+    }
+}
+
+/// Reads `codes` as the processor sees the bus and subtracts the black level line by line.
+///
+/// Each word becomes `(code >> dsp_lsb) & (2^dsp_bits - 1)`. The clamp measures the
+/// mean of every line's optical-black samples and follows it with a one-pole loop of
+/// four lines' time constant, `b[n] = b[n-1] + (1 - e^(-1/4)) (ob[n] - b[n-1])`, in
+/// readout order, starting from the first line's measurement. Each line's level is
+/// subtracted from its active samples, which are written into `out` with rows in
+/// image order; [`Raw::black_levels`] records the levels.
+///
+/// # Panics
+///
+/// Panics if `out` is not `cols` by `rows` of the code layout.
+pub fn clamp_black(params: &Params, codes: &Codes, out: &mut Raw) {
+    let layout = codes.layout();
+    assert!(
+        out.plane.width() == layout.cols() && out.plane.height() == layout.rows(),
+        "raw plane is {} x {} but the readout is {} x {}",
+        out.plane.width(),
+        out.plane.height(),
+        layout.cols(),
+        layout.rows()
+    );
+    let line_len = layout.line_len() as usize;
+    let ob = layout.ob_cols() as usize;
+    let shift = u32::from(params.dsp_lsb);
+    let mask = ((1u32 << params.dsp_bits.min(16)) - 1) as u16;
+    let view = |code: u16| (code >> shift) & mask;
+    if line_len == 0 {
+        return;
+    }
+
+    // Measure every line's optical black, stored by image row.
+    let rows = layout.rows();
+    for (line, words) in (0..rows).zip(codes.words().chunks_exact(line_len)) {
+        let sum: u64 = words[..ob].iter().map(|&code| u64::from(view(code))).sum();
+        let mean = if ob == 0 { 0.0 } else { sum as f64 / ob as f64 };
+        out.black[layout.image_row(line) as usize] = mean as f32;
+    }
+    // The clamp loop runs in readout order.
+    let alpha = 1.0 - (-1.0 / CLAMP_TAU_LINES).exp();
+    let mut level = None;
+    for line in 0..rows {
+        let slot = &mut out.black[layout.image_row(line) as usize];
+        let measured = f64::from(*slot);
+        let next = level.map_or(measured, |b: f64| b + alpha * (measured - b));
+        level = Some(next);
+        *slot = next as f32;
+    }
+
+    let width = out.plane.width() as usize;
+    if width == 0 {
+        return;
+    }
+    let black = &out.black;
+    out.plane
+        .data_mut()
+        .par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(row, sites)| {
+            // The readout runs forwards or backwards, so the map from lines to rows is
+            // its own inverse.
+            let line = layout.image_row(row as u32) as usize;
+            let words = &codes.words()[line * line_len + ob..(line + 1) * line_len];
+            let level = black[row];
+            for (site, &code) in sites.iter_mut().zip(words) {
+                *site = f32::from(view(code)) - level;
+            }
+        });
+}
+
+/// Develops the raw plane into the 8-bit frame `out`.
+///
+/// # Panics
+///
+/// Panics if `out` is not the output size in `params`, or if the raw plane is
+/// smaller than 2 by 2 sites.
+pub fn develop(params: &Params, state: &mut State, raw: &Raw, out: &mut Frame) {
+    let output = params.output;
+    assert!(
+        out.width() == output.width && out.height() == output.height,
+        "frame is {} x {} but the output is {} x {}",
+        out.width(),
+        out.height(),
+        output.width,
+        output.height
+    );
+    let (width, height) = (raw.plane.width(), raw.plane.height());
+    assert!(
+        width >= 2 && height >= 2,
+        "cannot demosaic a {width} x {height} raw plane"
+    );
+    let State {
+        balanced,
+        rgb,
+        binned,
+        sized,
+        ycc,
+        lut,
+        kernel,
+    } = state;
+
+    let balance = match params.wb {
+        Wb::Daylight { r_gain, b_gain } => [r_gain, 1.0, b_gain],
+        Wb::Auto => grey_world(&raw.plane, params.cfa),
+    };
+    let least = balance.iter().copied().fold(f32::MAX, f32::min);
+    let gains = balance.map(|gain| gain / least / params.white_code);
+    let max_code = ((1u32 << params.dsp_bits.min(16)) - 1) as f32;
+    let saturated = params.full_well_code.min(max_code - raw.black_level());
+    let clip = saturated / params.white_code;
+    fit_plane(balanced, width, height);
+    white_balance(&raw.plane, params.cfa, gains, clip, balanced);
+    fit(rgb, width, height);
+    match params.demosaic {
+        Demosaic::Bilinear => demosaic::bilinear(balanced, params.cfa, clip, rgb),
+        Demosaic::Malvar => demosaic::malvar(balanced, params.cfa, clip, rgb),
+    }
+    correct_colour(&params.cam_to_srgb, rgb);
+
+    let h_bin = output.h_bin.max(1);
+    let binned: &Scene = if h_bin > 1 {
+        fit(binned, width / h_bin, height);
+        for (src, dst) in rgb.planes().into_iter().zip(binned.planes_mut()) {
+            resample::bin_columns(src, h_bin, dst);
+        }
+        binned
+    } else {
+        rgb
+    };
+    let sized: &Scene = if (binned.width(), binned.height()) == (output.width, output.height) {
+        binned
+    } else {
+        fit(sized, output.width, output.height);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: binned.width(),
+            height: binned.height(),
+        };
+        for (src, dst) in binned.planes().into_iter().zip(sized.planes_mut()) {
+            resample::resample(src, Turn::None, whole, dst);
+        }
+        sized
+    };
+
+    params.tone.fill_lut(lut);
+    let frame_width = output.width as f32;
+    let chroma_sigma = params.chroma_nr_frac * frame_width;
+    let luma_sigma = params.luma_nr_frac * frame_width;
+    let sharpen_sigma = params.sharpen.radius_frac * frame_width;
+    let sharpen = params.sharpen.gain > 0.0 && sharpen_sigma > 0.0;
+    if chroma_sigma <= 0.0 && luma_sigma <= 0.0 && !sharpen {
+        encode_rgb(sized, &params.tone, lut, out);
+        return;
+    }
+
+    for plane in ycc.iter_mut() {
+        fit_plane(plane, output.width, output.height);
+    }
+    let [y, cb, cr, t1, t2] = ycc;
+    to_ycc(sized, &params.tone, lut, [y, cb, cr]);
+    if chroma_sigma > 0.0 {
+        filter::gaussian_kernel(chroma_sigma, kernel);
+        filter::blur(cb, t1, kernel);
+        filter::blur(cr, t1, kernel);
+    }
+    if luma_sigma > 0.0 {
+        filter::gaussian_kernel(luma_sigma, kernel);
+        filter::blur_into(y, t1, t2, kernel);
+        flatness_blend(y, t2);
+    }
+    if sharpen {
+        filter::gaussian_kernel(sharpen_sigma, kernel);
+        filter::blur_into(y, t1, t2, kernel);
+        unsharp(y, t2, params.sharpen.gain);
+    }
+    from_ycc([y, cb, cr], out);
+}
+
+/// Reallocates `scene` if it is not `width` by `height`.
+fn fit(scene: &mut Scene, width: u32, height: u32) {
+    if scene.width() != width || scene.height() != height {
+        *scene = Scene::new(width, height);
+    }
+}
+
+/// Reallocates `plane` if it is not `width` by `height`.
+fn fit_plane(plane: &mut Plane<f32>, width: u32, height: u32) {
+    if plane.width() != width || plane.height() != height {
+        *plane = Plane::new(width, height);
+    }
+}
+
+/// Writes every site of `raw` times its channel's gain, clipped at `clip`, into `out`.
+fn white_balance(raw: &Plane<f32>, cfa: Cfa, gains: [f32; 3], clip: f32, out: &mut Plane<f32>) {
+    let width = raw.width() as usize;
+    out.data_mut()
+        .par_chunks_mut(width)
+        .zip(raw.data().par_chunks(width))
+        .enumerate()
+        .for_each(|(y, (sites, codes))| {
+            let y = y as u32;
+            let row_gains = [cfa.channel(0, y), cfa.channel(1, y)].map(|c| gains[c.index()]);
+            for (x, (site, &code)) in sites.iter_mut().zip(codes).enumerate() {
+                *site = (code * row_gains[x % 2]).min(clip);
+            }
+        });
+}
+
+/// Returns `[r, g, b]` gains that equalise the red and blue means with green.
+fn grey_world(raw: &Plane<f32>, cfa: Cfa) -> [f32; 3] {
+    let mut sums = [0.0f64; 3];
+    let mut counts = [0u64; 3];
+    for (y, row) in (0..raw.height()).zip(raw.rows()) {
+        for (x, &value) in (0..raw.width()).zip(row) {
+            let channel = cfa.channel(x, y).index();
+            sums[channel] += f64::from(value);
+            counts[channel] += 1;
+        }
+    }
+    let means: [f64; 3] = std::array::from_fn(|c| sums[c] / counts[c].max(1) as f64);
+    let gain = |mean: f64| {
+        if mean > 0.0 && means[1] > 0.0 {
+            (means[1] / mean) as f32
+        } else {
+            1.0
+        }
+    };
+    [gain(means[0]), 1.0, gain(means[2])]
+}
+
+/// Multiplies every pixel by the colour matrix.
+fn correct_colour(matrix: &[[f32; 3]; 3], image: &mut Scene) {
+    let row_len = image.width().max(1) as usize;
+    let [red, green, blue] = image.planes_mut();
+    red.data_mut()
+        .par_chunks_mut(row_len)
+        .zip(green.data_mut().par_chunks_mut(row_len))
+        .zip(blue.data_mut().par_chunks_mut(row_len))
+        .for_each(|((red_row, green_row), blue_row)| {
+            for ((r, g), b) in red_row.iter_mut().zip(green_row).zip(blue_row) {
+                [*r, *g, *b] = colour::apply(matrix, [*r, *g, *b]);
+            }
+        });
+}
+
+/// Tone-maps and encodes a linear-light image straight into the 8-bit frame.
+fn encode_rgb(image: &Scene, tone: &Tone, lut: &[f32], out: &mut Frame) {
+    let width = out.width() as usize;
+    if width == 0 {
+        return;
+    }
+    let [red, green, blue] = image.planes();
+    out.rgb_mut()
+        .par_chunks_mut(width * 3)
+        .enumerate()
+        .for_each(|(y, bytes)| {
+            let y = y as u32;
+            let rows = [red.row(y), green.row(y), blue.row(y)];
+            for (x, pixel) in bytes.chunks_exact_mut(3).enumerate() {
+                for (byte, row) in pixel.iter_mut().zip(rows) {
+                    *byte = to_byte(tone.lookup(lut, row[x]));
+                }
+            }
+        });
+}
+
+/// Tone-maps and encodes a linear-light image into `Y'CbCr` planes on the 8-bit scale.
+fn to_ycc(image: &Scene, tone: &Tone, lut: &[f32], [y, cb, cr]: [&mut Plane<f32>; 3]) {
+    let width = image.width().max(1) as usize;
+    let [red, green, blue] = image.planes();
+    y.data_mut()
+        .par_chunks_mut(width)
+        .zip(cb.data_mut().par_chunks_mut(width))
+        .zip(cr.data_mut().par_chunks_mut(width))
+        .zip(red.data().par_chunks(width))
+        .zip(green.data().par_chunks(width))
+        .zip(blue.data().par_chunks(width))
+        .for_each(|(((((ys, cbs), crs), rs), gs), bs)| {
+            for i in 0..ys.len() {
+                let rgb = [rs[i], gs[i], bs[i]].map(|v| tone.lookup(lut, v));
+                [ys[i], cbs[i], crs[i]] = ycc::from_rgb(rgb);
+            }
+        });
+}
+
+/// Converts `Y'CbCr` planes on the 8-bit scale back to RGB bytes.
+fn from_ycc([y, cb, cr]: [&mut Plane<f32>; 3], out: &mut Frame) {
+    let width = out.width() as usize;
+    if width == 0 {
+        return;
+    }
+    out.rgb_mut()
+        .par_chunks_mut(width * 3)
+        .zip(y.data().par_chunks(width))
+        .zip(cb.data().par_chunks(width))
+        .zip(cr.data().par_chunks(width))
+        .for_each(|(((bytes, ys), cbs), crs)| {
+            for (i, pixel) in bytes.chunks_exact_mut(3).enumerate() {
+                let rgb = ycc::to_rgb([ys[i], cbs[i], crs[i]]);
+                for (byte, value) in pixel.iter_mut().zip(rgb) {
+                    *byte = to_byte(value);
+                }
+            }
+        });
+}
+
+/// Blends `luma` towards `blurred` in proportion to the local flatness.
+fn flatness_blend(luma: &mut Plane<f32>, blurred: &Plane<f32>) {
+    let width = luma.width().max(1) as usize;
+    luma.data_mut()
+        .par_chunks_mut(width)
+        .zip(blurred.data().par_chunks(width))
+        .for_each(|(ys, bs)| {
+            for (y, &b) in ys.iter_mut().zip(bs) {
+                let flatness = (1.0 - (*y - b).abs() / LUMA_NR_EDGE_CODES).max(0.0);
+                *y += flatness * (b - *y);
+            }
+        });
+}
+
+/// Adds `gain` times the detail above `blurred` to `luma`, clipping to the 8-bit range.
+fn unsharp(luma: &mut Plane<f32>, blurred: &Plane<f32>, gain: f32) {
+    let width = luma.width().max(1) as usize;
+    luma.data_mut()
+        .par_chunks_mut(width)
+        .zip(blurred.data().par_chunks(width))
+        .for_each(|(ys, bs)| {
+            for (y, &b) in ys.iter_mut().zip(bs) {
+                *y = gain.mul_add(*y - b, *y).clamp(0.0, 255.0);
+            }
+        });
+}
+
+/// Rounds a value on the 8-bit scale to a byte, clipping to `[0, 255]`.
+fn to_byte(value: f32) -> u8 {
+    value.round().clamp(0.0, 255.0) as u8
+}

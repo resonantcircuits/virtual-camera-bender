@@ -11,6 +11,9 @@ maker = "Canon"
 model = "PowerShot A520"
 year = 2005
 
+[lens]
+vignette_stops = 0.6                # PROVISIONAL: corner falloff of a wide-open compact zoom, cos^4 law
+
 [sensor]
 native_width = 2272                 # A: largest JPEG size (key constants)
 native_height = 1704                # A: largest JPEG size (key constants)
@@ -28,6 +31,7 @@ smear_db = -90.0                    # C: ICX452 high-frame-rate mode (section 3)
 cte = 0.99999                       # C: interline CCDs (section 4)
 hot_pixels_per_mpix = 5.0           # PROVISIONAL
 cfa = "RGGB"                        # PROVISIONAL: phase of the A520 mosaic unconfirmed
+unit_seed = 1                       # this unit's fixed pattern (PRNU, DSNU, hot photosites)
 
 [still]
 pixel_clock_hz = 27_000_000.0       # B: ICX498 horizontal drive (key constants)
@@ -99,6 +103,8 @@ luma_nr_frac = 0.0005               # PROVISIONAL
 sharpen_radius_frac = 0.0005        # PROVISIONAL
 sharpen_gain = 0.6                  # PROVISIONAL
 ae_target = 0.18                    # PROVISIONAL: mid-grey
+ae_mode = "fixed"                   # "scene" meters every frame; fixed keeps the exposure as set
+demosaic = "malvar"                 # PROVISIONAL: DIGIC's algorithm is unpublished; gradient-corrected linear
 
 [jpeg]
 subsampling = "4:2:2"               # A: measured (section 7)

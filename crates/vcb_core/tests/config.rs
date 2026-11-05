@@ -291,3 +291,48 @@ fn analog_bend_validation_rejects_unphysical_values() {
     camera.afe.noise_1f_corner_hz = -1.0;
     assert!(camera.validate().unwrap_err().is_config());
 }
+
+#[test]
+fn optional_camera_fields_default_to_an_even_lens_unit_one_and_fixed_exposure() {
+    let text = std::fs::read_to_string(root().join("cameras/a520.toml")).unwrap();
+    let mut file: toml::Table = toml::from_str(&text).unwrap();
+    file.remove("lens");
+    let table = |file: &mut toml::Table, name: &str| {
+        file.get_mut(name)
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .clone()
+    };
+    let mut sensor = table(&mut file, "sensor");
+    sensor.remove("unit_seed");
+    file.insert("sensor".into(), sensor.into());
+    let mut isp = table(&mut file, "isp");
+    isp.remove("ae_mode");
+    isp.remove("demosaic");
+    file.insert("isp".into(), isp.into());
+    let camera: Camera = toml::from_str(&toml::to_string(&file).unwrap()).unwrap();
+    camera.validate().unwrap();
+    assert!(camera.lens.vignette_stops.abs() < f64::EPSILON);
+    assert_eq!(camera.sensor.unit_seed, 1);
+    assert_eq!(camera.isp.ae_mode, vcb_core::isp::AeMode::Fixed);
+    assert_eq!(camera.isp.demosaic, vcb_core::isp::Demosaic::Malvar);
+
+    let mut camera = self::camera();
+    camera.lens.vignette_stops = -0.5;
+    assert!(camera.validate().unwrap_err().is_config());
+}
+
+#[test]
+fn scene_section_parses_and_rejects_unphysical_highlights() {
+    let preset: Preset = toml::from_str("camera = \"a520\"\n[scene]\nheadroom = 4.0").unwrap();
+    preset.validate().unwrap();
+    assert!((preset.scene.headroom - 4.0).abs() < f64::EPSILON);
+    let default = Preset::new("a520").scene;
+    assert!((preset.scene.shoulder_start - default.shoulder_start).abs() < f64::EPSILON);
+    let mut dim = preset.clone();
+    dim.scene.headroom = 0.5;
+    assert!(dim.validate().unwrap_err().is_config());
+    let mut late = preset;
+    late.scene.shoulder_start = 1.0;
+    assert!(late.validate().unwrap_err().is_config());
+}

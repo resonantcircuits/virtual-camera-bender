@@ -12,6 +12,9 @@
 //! mode = "still"              # or "movie"
 //! resolution = "match-input"  # or "native"
 //! orientation = "auto"        # or "landscape", "portrait"
+//! [scene]
+//! headroom = 2.5              # clipped white is 2.5 times reference white
+//! shoulder_start = 0.8
 //! [bend.bus]
 //! source_pins = [9, 8, 7]
 //! target = "pin:10"           # or "gnd"
@@ -162,6 +165,33 @@ pub struct Readout {
     pub resolution: Resolution,
     /// How the camera is held.
     pub orientation: Orientation,
+}
+
+/// The `[scene]` section: how bright the photographed scene was beyond the input's white.
+///
+/// An 8-bit input photo was tone-mapped by the camera that took it: its highlights
+/// were rolled off by a shoulder and clipped at code 255. Scene preparation inverts a
+/// soft shoulder that starts at `shoulder_start` (linear light, reference white 1.0)
+/// and maps input white to `headroom`, so clipped skies and lights reach the virtual
+/// sensor brighter than reference white. `headroom = 1` takes the input as it is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+pub struct SceneInput {
+    /// Brightness of the input's clipped white in multiples of reference white.
+    pub headroom: f64,
+    /// Linear input level, as a fraction of white, where the highlight shoulder begins.
+    pub shoulder_start: f64,
+}
+
+impl Default for SceneInput {
+    /// Returns a headroom of 2.5 above a shoulder that starts at 0.8 of white.
+    fn default() -> Self {
+        Self {
+            headroom: 2.5,
+            shoulder_start: 0.8,
+        }
+    }
 }
 
 /// The `[bend]` section: circuit modifications patched into the camera.

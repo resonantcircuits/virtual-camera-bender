@@ -1,8 +1,14 @@
 //! The preset: a camera reference plus readout mode, bends and overrides.
 
 use crate::Error;
-use crate::preset::{Bend, IspOverride, Readout};
+use crate::preset::{Bend, IspOverride, Readout, SceneInput};
 use crate::validate::{finite, fraction, non_negative, positive, within};
+
+/// Largest accepted scene headroom in multiples of reference white.
+///
+/// About 13 stops above white; real scenes hold more (the sun), but an 8-bit input
+/// gives no basis for guessing it, and larger values are typos.
+const MAX_HEADROOM: f64 = 10_000.0;
 
 /// A camera, a readout mode, the bends patched into it and processing overrides.
 ///
@@ -31,6 +37,9 @@ pub struct Preset {
     /// Readout mode and resolution.
     #[cfg_attr(feature = "serde", serde(default))]
     pub readout: Readout,
+    /// How the input image maps to scene radiance.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub scene: SceneInput,
     /// Circuit bends.
     #[cfg_attr(feature = "serde", serde(default))]
     pub bend: Bend,
@@ -50,6 +59,7 @@ impl Preset {
             camera: camera.into(),
             seed: 0,
             readout: Readout::default(),
+            scene: SceneInput::default(),
             bend: Bend::default(),
             isp: None,
         }
@@ -68,6 +78,13 @@ impl Preset {
     pub fn validate(&self) -> Result<(), Error> {
         if self.camera.is_empty() {
             return Err(Error::config("preset camera must not be empty"));
+        }
+        within("scene.headroom", self.scene.headroom, 1.0, MAX_HEADROOM)?;
+        if !(self.scene.shoulder_start > 0.0 && self.scene.shoulder_start < 1.0) {
+            return Err(Error::config(format!(
+                "scene.shoulder_start must lie in (0, 1), got {}",
+                self.scene.shoulder_start
+            )));
         }
         if let Some(bus) = &self.bend.bus {
             if bus.source_pins.is_empty() {
