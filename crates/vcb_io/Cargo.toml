@@ -1,8 +1,8 @@
 [package]
 name = "vcb_io"
-description = "Image decoding and encoding for the virtual camera bender, with EXIF orientation."
-keywords = ["camera", "image", "exif", "orientation"]
-categories = ["multimedia::images"]
+description = "Image and video I/O for the virtual camera bender: EXIF orientation, ffmpeg pipes."
+keywords = ["camera", "image", "video", "exif", "ffmpeg"]
+categories = ["multimedia::images", "multimedia::video"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,8 @@ publish.workspace = true
 [dependencies]
 image = { workspace = true, features = ["jpeg", "png"] }
 kamadak-exif.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 tracing.workspace = true
 vcb_core.workspace = true
 

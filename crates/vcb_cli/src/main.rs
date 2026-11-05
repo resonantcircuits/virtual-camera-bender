@@ -1,12 +1,21 @@
 //! `vcb`, the command line of the virtual camera bender.
 //!
 //! - `vcb render <input> <output> --preset <file>` renders one image through a preset.
+//! - `vcb render-video <input> <output> --preset <file>` renders a video through one
+//!   stateful simulator, so analog state carries from frame to frame.
+//! - `vcb sheet <output> --input <image> --preset <file>...` renders an image through
+//!   several presets and tiles the results, with optional reference images, into one
+//!   contact sheet.
 //! - `vcb inspect --preset <file>` prints the derived readout timing.
 //! - `vcb presets` lists the presets in a directory.
 //!
 //! Camera files are looked up as `<camera-dir>/<name>.toml`, where the directory is
-//! `--camera-dir`, else `$VCB_CAMERAS`, else `cameras/`. Logging goes to stderr and is
-//! controlled by `RUST_LOG`.
+//! `--camera-dir`, else `$VCB_CAMERAS`, else `cameras/`. Video needs `ffmpeg` and
+//! `ffprobe`, found through `$VCB_FFMPEG` and `$VCB_FFPROBE`, else `PATH`. Logging goes
+//! to stderr and is controlled by `RUST_LOG`.
+
+mod render_video;
+mod sheet;
 
 use std::fs;
 use std::io::IsTerminal;
@@ -20,6 +29,9 @@ use tracing_subscriber::EnvFilter;
 use vcb_core::preset::{Mode, Resolution};
 use vcb_core::{Camera, Preset, Simulator, Timing};
 use vcb_io::Format;
+
+use crate::render_video::RenderVideoArgs;
+use crate::sheet::SheetArgs;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -36,6 +48,10 @@ struct Cli {
 enum Command {
     /// Render an image through a preset.
     Render(RenderArgs),
+    /// Render a video through a preset, carrying the camera's analog state across frames.
+    RenderVideo(RenderVideoArgs),
+    /// Render an image through several presets into one contact sheet.
+    Sheet(SheetArgs),
     /// Print the derived readout timing of a preset.
     Inspect(InspectArgs),
     /// List the presets in a directory.
@@ -49,6 +65,37 @@ struct CameraDir {
     camera_dir: PathBuf,
 }
 
+/// Command-line replacements for preset values.
+#[derive(Debug, Args)]
+struct Overrides {
+    /// Override the preset's readout mode: still or movie.
+    #[arg(long)]
+    mode: Option<Mode>,
+    /// Override the preset's sensor resolution: match-input or native.
+    #[arg(long)]
+    resolution: Option<Resolution>,
+    /// Override the preset's noise seed, an unsigned integer.
+    #[arg(long)]
+    seed: Option<u64>,
+}
+
+impl Overrides {
+    /// Loads the preset at `path` and applies the overrides.
+    fn preset(&self, path: &Path) -> Result<Preset> {
+        let mut preset = load_preset(path)?;
+        if let Some(mode) = self.mode {
+            preset.readout.mode = mode;
+        }
+        if let Some(resolution) = self.resolution {
+            preset.readout.resolution = resolution;
+        }
+        if let Some(seed) = self.seed {
+            preset.seed = seed;
+        }
+        Ok(preset)
+    }
+}
+
 #[derive(Debug, Args)]
 struct RenderArgs {
     /// Input image (JPEG or PNG).
@@ -60,15 +107,8 @@ struct RenderArgs {
     preset: PathBuf,
     #[command(flatten)]
     cameras: CameraDir,
-    /// Override the preset's readout mode: still or movie.
-    #[arg(long)]
-    mode: Option<Mode>,
-    /// Override the preset's resolution: match-input or native.
-    #[arg(long)]
-    resolution: Option<Resolution>,
-    /// Override the preset's seed.
-    #[arg(long)]
-    seed: Option<u64>,
+    #[command(flatten)]
+    overrides: Overrides,
     /// Frame index within a sequence; selects the temporal noise.
     #[arg(long, default_value_t = 0)]
     frame: u64,
@@ -84,6 +124,9 @@ struct InspectArgs {
     /// Image whose size the sensor matches; defaults to the camera's native size.
     #[arg(long, conflicts_with_all = ["width", "height"])]
     input: Option<PathBuf>,
+    /// Video whose upright frame size the sensor matches, instead of an image.
+    #[arg(long, conflicts_with_all = ["input", "width", "height"])]
+    video: Option<PathBuf>,
     /// Input width in pixels, together with --height.
     #[arg(long, requires = "height")]
     width: Option<u32>,
@@ -108,6 +151,8 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Render(args) => render(&args),
+        Command::RenderVideo(args) => render_video::run(&args),
+        Command::Sheet(args) => sheet::run(&args),
         Command::Inspect(args) => inspect(&args),
         Command::Presets(args) => list_presets(&args),
     };
@@ -122,23 +167,9 @@ fn main() -> ExitCode {
 
 fn render(args: &RenderArgs) -> Result<()> {
     let started = Instant::now();
-    let mut preset = load_preset(&args.preset)?;
-    if let Some(mode) = args.mode {
-        preset.readout.mode = mode;
-    }
-    if let Some(resolution) = args.resolution {
-        preset.readout.resolution = resolution;
-    }
-    if let Some(seed) = args.seed {
-        preset.seed = seed;
-    }
+    let preset = args.overrides.preset(&args.preset)?;
     let camera = load_camera(&args.cameras.camera_dir, &preset.camera)?;
-    let format = Format::from_path(&args.output).with_context(|| {
-        format!(
-            "cannot tell the output format of {}; use .png, .jpg or .jpeg",
-            args.output.display()
-        )
-    })?;
+    let format = output_format(&args.output)?;
 
     let scene = vcb_io::read_image(&args.input)?;
     let mut simulator = Simulator::builder((camera, preset))
@@ -164,12 +195,18 @@ fn inspect(args: &InspectArgs) -> Result<()> {
     camera
         .validate()
         .with_context(|| format!("camera \"{}\" is invalid", preset.camera))?;
-    let (width, height) = match (&args.input, args.width, args.height) {
-        (Some(input), _, _) => {
+    let mut video = None;
+    let (width, height) = match (&args.input, &args.video, args.width, args.height) {
+        (Some(input), _, _, _) => {
             let probe = vcb_io::probe_image(input)?;
             (probe.width, probe.height)
         }
-        (None, Some(width), Some(height)) => (width, height),
+        (None, Some(path), _, _) => {
+            let info = vcb_io::video::probe_video(path)?;
+            video = Some(info);
+            (info.width, info.height)
+        }
+        (None, None, Some(width), Some(height)) => (width, height),
         _ => (camera.sensor.native_width, camera.sensor.native_height),
     };
     let timing = Timing::derive(&camera, &preset, width, height)?;
@@ -178,6 +215,9 @@ fn inspect(args: &InspectArgs) -> Result<()> {
         "camera        {} {} ({})",
         camera.info.maker, camera.info.model, camera.info.name
     );
+    if let Some(info) = video {
+        println!("video         {info}");
+    }
     println!("input         {width} x {height} px");
     println!("{timing}");
     if let Some(inject) = preset.bend.afe.as_ref().and_then(|afe| afe.inject.as_ref()) {
@@ -234,6 +274,16 @@ fn list_presets(args: &PresetsArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Chooses the image format of an output path from its extension.
+fn output_format(path: &Path) -> Result<Format> {
+    Format::from_path(path).with_context(|| {
+        format!(
+            "cannot tell the output format of {}; use .png, .jpg or .jpeg",
+            path.display()
+        )
+    })
 }
 
 fn load_preset(path: &Path) -> Result<Preset> {

@@ -1,4 +1,4 @@
-//! Image decoding and encoding for the virtual camera bender.
+//! Image and video input and output for the virtual camera bender.
 //!
 //! [`read_image`] decodes a JPEG or PNG file into a linear-light
 //! [`Scene`](vcb_core::Scene), applying the EXIF orientation so the scene is upright
@@ -8,6 +8,9 @@
 //!
 //! 8-bit images are decoded exactly; 16-bit images are reduced to 8 bits first.
 //! Missing or unreadable EXIF data counts as orientation 1 (upright).
+//!
+//! The [`video`] module reads and writes video files through `ffmpeg` child
+//! processes; it is the only part of the project that starts processes.
 //!
 //! # Examples
 //!
@@ -26,6 +29,7 @@
 mod error;
 mod orientation;
 mod read;
+pub mod video;
 mod write;
 
 #[doc(inline)]
