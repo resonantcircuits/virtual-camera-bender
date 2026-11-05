@@ -1,6 +1,7 @@
-# Canon PowerShot A520 with the ADC-bus bend: posterised negatives from the inverter driving D10.
-# Source bank D9, D8, D7 through a 1 uF capacitor and a 0.5 kOhm setting of the
-# 1 kOhm pot, function "invert", target D10.
+# Canon PowerShot A520 with the ADC-bus bend: posterised negatives from the inverter.
+# Source bank D11, D10, D9, D8 through the 1 uF capacitor and a 0.5 kOhm setting of the 1 kOhm
+# pot on the source bus, function "invert", target D7.
+# Tuned against the reference INV quadrant: docs/research/a520-tuning-log.md.
 camera = "a520"
 seed = 1
 
@@ -9,10 +10,11 @@ mode = "still"
 resolution = "match-input"
 
 [bend.bus]
-source_pins = [9, 8, 7]
-target = "pin:10"
+source_pins = [11, 10, 9, 8]
+target = "pin:7"
 function = "invert"
 cap_uf = 1.0
 pot_kohm = 0.5                      # PROVISIONAL: mid-travel of the 1 kOhm pot in the schematic
+pot_node = "s"                      # as the schematic draws it
 series_ohm = 0.0
 common_bus = false
