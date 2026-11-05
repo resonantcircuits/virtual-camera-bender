@@ -14,6 +14,8 @@ publish.workspace = true
 default = ["serde"]
 # Serialize and deserialize the configuration types (camera files, presets).
 serde = ["dep:serde"]
+# Inspection of internal state for tests (M-TEST-UTIL).
+test-util = []
 
 [dependencies]
 rayon.workspace = true

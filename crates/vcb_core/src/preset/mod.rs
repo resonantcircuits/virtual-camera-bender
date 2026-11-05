@@ -185,7 +185,9 @@ pub struct Bend {
 /// The selected source pins join node S, optionally through `series_ohm`; S couples
 /// through the `cap_uf` capacitor to node F, which the `pot_kohm` potentiometer loads
 /// to ground. `function` routes F to the target pin directly, through an inverter or
-/// through a divide-by-two flip-flop.
+/// through a divide-by-two flip-flop; the target pin joins through `series_ohm` too.
+/// Source pins lie in `D2` to `D11` and the target in `D4` to `D11` or ground, the
+/// positions of the bend's selector switches.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
@@ -198,9 +200,9 @@ pub struct BusBend {
     pub function: Function,
     /// Coupling capacitor in microfarads.
     pub cap_uf: f64,
-    /// Potentiometer from node F to ground in kilohms.
+    /// Potentiometer from node F to ground in kilohms; 0 grounds node F.
     pub pot_kohm: f64,
-    /// Patch resistor in series with each source pin in ohms; 0 is a direct wire.
+    /// Patch resistor between each tapped pin and its bus in ohms; 0 is a direct wire.
     #[cfg_attr(feature = "serde", serde(default))]
     pub series_ohm: f64,
     /// Whether the source and target banks share one bus wire.
