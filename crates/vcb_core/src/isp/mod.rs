@@ -8,7 +8,8 @@
 //! order. [`develop`] then turns it into a [`Frame`]:
 //!
 //! 1. Normalisation: codes are divided by `white_code`, the code above black that
-//!    reference white produces, so linear 1.0 is reference white again.
+//!    reference white produces at the sensor's nominal exposure, so linear 1.0 is
+//!    reference white again; a longer exposure develops brighter.
 //! 2. White balance, on the mosaic: the red and blue sites are multiplied by the
 //!    daylight gains, by grey-world gains that equalise the channel means
 //!    ([`Wb::Auto`]), or by the gains of the white-balance servo ([`Wb::Servo`]). Gains
@@ -294,10 +295,11 @@ pub struct Params {
 impl Params {
     /// Resolves the processing parameters from the camera, preset and derived timing.
     ///
-    /// `white_code` follows from the analog chain: reference white fills
-    /// `white_fraction` of the full well, which the conversion gain, PGA gain and ADC
-    /// scale map to a code above the pedestal, divided by `2^dsp_lsb` for the
-    /// processor's view of the bus; `full_well_code` is the same for a full well.
+    /// `white_code` follows from the analog chain: at the sensor's nominal exposure
+    /// reference white fills `white_fraction` of the full well, which the conversion
+    /// gain, PGA gain and ADC scale map to a code above the pedestal, divided by
+    /// `2^dsp_lsb` for the processor's view of the bus; `full_well_code` is the same
+    /// for a full well.
     ///
     /// `cam_to_srgb` is derived from the `xyz_to_cam` matrix as dcraw's `cam_xyz_coeff`
     /// does: `xyz_to_cam * srgb_to_xyz` (D65) gives sRGB to camera RGB; each row is
@@ -431,6 +433,22 @@ impl State {
     pub fn servo_gains(&self) -> Option<[f32; 2]> {
         self.gains
     }
+
+    /// Forgets the value of every servo that `params` does not run.
+    pub(crate) fn forget_stopped_servos(&mut self, params: &Params) {
+        if params.ae_servo.is_none() {
+            self.exposure = None;
+        }
+        if !matches!(params.wb, Wb::Servo { .. }) {
+            self.gains = None;
+        }
+    }
+}
+
+/// Returns whether `new` turns off a servo that `old` runs.
+pub(crate) fn stops_servo(old: &Params, new: &Params) -> bool {
+    let wb_servo = |params: &Params| matches!(params.wb, Wb::Servo { .. });
+    (old.ae_servo.is_some() && new.ae_servo.is_none()) || (wb_servo(old) && !wb_servo(new))
 }
 
 impl Default for State {

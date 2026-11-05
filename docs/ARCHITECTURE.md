@@ -21,6 +21,7 @@ whatever the bends did to the raw data), never from a lookup table or palette.
 
 ```
   vcb_cli   binary `vcb`: clap, anyhow, mimalloc, tracing-subscriber
+  vcb_app   binary `vcb-app`: eframe (egui, wgpu), rfd, anyhow, mimalloc
     |   \
     |    v
     |   vcb_io    image, kamadak-exif, serde_json; runs ffmpeg and ffprobe
@@ -33,7 +34,16 @@ whatever the bends did to the raw data), never from a lookup table or palette.
 processor and the codec model; it takes a linear-light `Scene`, returns an 8-bit sRGB
 `Frame`, and emits only `tracing` events. `vcb_io` owns every file and process: JPEG
 and PNG with EXIF orientation, raw frames piped through `ffmpeg`. `vcb_cli` loads
-camera and preset files, builds a `Simulator` and connects readers to writers.
+camera and preset files, builds a `Simulator` and connects readers to writers. Both
+binaries depend on `vcb_core` and `vcb_io`, and neither on the other.
+
+`vcb_app` is the desktop instrument: the camera's front panels in physical units
+around a viewport. The UI thread never renders; a render worker thread owns two
+running simulators, one for reduced previews while a control is dragged and one for
+full renders on release, and drains its queue to the newest job, so the latest
+change wins and stale replies are dropped. A new preset or scene size reaches a
+running simulator through `Simulator::set_preset` and `set_scene_size`, so the
+camera's analog memory carries from one render to the next.
 
 ## 3. The signal chain
 
@@ -45,7 +55,7 @@ module docs hold the formulas; this section states the contracts.
 | Stage | Function | In → out | Parameters | State |
 |---|---|---|---|---|
 | Scene | `scene::prepare` | `Scene` → `Scene` (sensor size) | camera `[isp]` `[lens]`; preset `[scene]` | – |
-| Sensor | `sensor::expose` | `Scene` → `Charge` (electrons) | camera `[sensor]` `[still]` `[movie]` `[isp]`; preset `[isp]` | – |
+| Sensor | `sensor::expose` | `Scene` → `Charge` (electrons) | camera `[sensor]` `[still]` `[movie]` `[isp]`; preset `[sensor]` `[isp]` | – |
 | Readout | `readout::read` | `Charge` → `Stream` (readout order) | camera clocking; preset `[bend.clocks]` | running faults |
 | AFE | `afe::process` | `Stream` → `Analog` (volts) | camera `[sensor]` `[afe]` `[adc]`; preset `[bend.afe]` | node, flicker, phases |
 | ADC | `adc::convert` | `Analog` → `Codes` (words) | camera `[adc]` | – |
@@ -65,15 +75,28 @@ daylight gains move the scene into sensor primaries, clipping negative responses
 
 ### Sensor
 
-An interline CCD with an RGGB mosaic; reference white fills `white_fraction` of
-`full_well_e`. Non-uniformity and hot photosites hash the camera's `unit_seed`: they
-belong to the unit, not the preset. Shot noise is Gaussian with the charge's variance.
-An overflow drain absorbs `antibloom_ratio` full wells; the rest spills along the
-column. Movie mode's electronic shutter adds smear from `smear_db` (V/10 definition),
-one constant streak per column. With `ae_mode = "scene"` each frame's light is scaled,
-within two stops and without lag, so the mean luminance lands on `ae_target`; with
-`"servo"` the image processor's exposure servo sets the scale from the previous frame
-(see ISP), and the first frame after a reset is metered on the scene.
+An interline CCD with an RGGB mosaic. Exposure is physical: at `nominal_exposure_s`
+reference white fills `white_fraction` of `full_well_e`, and the collected charge
+scales with `exposure_s / nominal_exposure_s`, so a longer exposure brightens the
+frame until the well, and then the ADC, clips. The exposure time is the preset's
+`[sensor] exposure_s`, else the readout mode's camera value; the movie readout's
+electronic shutter integrates at most one frame period. Dark charge is
+`dark_e_per_s` times the exposure time. Non-uniformity and hot photosites hash the
+camera's `unit_seed`: they belong to the unit, not the preset. Shot noise is Gaussian
+with the charge's variance. An overflow drain absorbs `antibloom_ratio` full wells;
+the rest spills along the column. Movie mode's electronic shutter adds smear from
+`smear_db` (V/10 definition), one constant streak per column; it scales with the
+light and the readout time, not the exposure, so relative to the signal it grows as
+the exposure shortens.
+
+Auto-exposure scales the light on top of the set exposure. With `ae_mode = "scene"`
+each frame is scaled, within two stops and without lag, so the mean luminance of the
+scene integrated for the set exposure lands on `ae_target`; with `"servo"` the image
+processor's exposure servo sets the scale from the previous frame (see ISP), and the
+first frame after a reset is metered on the scene. Either compensates a changed
+exposure time within its two stops, as the aperture would; with `"fixed"` the time
+alone sets the brightness. The image processor normalises by the code of reference
+white at the nominal exposure.
 
 ### Readout
 
@@ -170,7 +193,7 @@ the time constant `ae_tau_s` or `wb_tau_s` of camera time: a frame corrects
 `1 - e^(-frame_period_s / tau_s)` of the remaining error. After a reset the first frame
 uses the scene-metered exposure and the daylight gains, so a still with servos equals
 one with `ae_mode = "scene"` and daylight white balance. A servo that is turned off
-forgets its value.
+forgets its value at once.
 
 ### Codec
 
@@ -235,14 +258,21 @@ the old phase), running clock faults, the servos, and the bus bend's capacitor
 voltages, diodes and gates while its wiring stays. The wiring is the set of source
 pins, the target, the function, the pot node, whether the pot is at zero, the common
 bus and whether patch resistors are fitted; new component values keep the charge. A
-new wiring, or adding or removing the bend, returns the bend to power-on; a new
-geometry rebuilds everything as `build` does. A rejected preset changes nothing.
+new wiring, or adding or removing the bend, returns the bend to power-on, and a servo
+that the preset turns off forgets its value; a new geometry rebuilds everything as
+`build` does. Values that leave the geometry alone, such as the exposure time, take
+effect with the next frame. Both calls return a `Reconfigured`: `Kept`, with flags
+for a reset bus bend and a forgotten servo, or `Rebuilt`, so a caller such as the
+app knows whether the next frame continues the sequence or starts it afresh. A
+rejected preset changes nothing.
 
 ## 6. Configuration
 
 Camera files (`cameras/<name>.toml`) hold `[camera]`, `[sensor]`, `[lens]`, `[still]`,
 `[movie]`, `[afe]`, `[adc]`, `[logic]`, `[isp]` and `[jpeg]`, reject unknown keys and
-are range-checked by `Camera::validate`. `[logic]` describes the bend's 74HC chips,
+are range-checked by `Camera::validate`. `[sensor] nominal_exposure_s` calibrates the
+sensitivity; `[still]` and `[movie]` each give their `exposure_s`, the movie's at most
+`1 / fps`. `[logic]` describes the bend's 74HC chips,
 including input protection (`clamp_diode_v`, `clamp_r_ohm`, `input_leak_mohm`). Each
 physical value carries a confidence letter from the key-constants table of
 `docs/research/a520-technical.md`: **A** measured or stated for the A520, **B** stated
@@ -250,7 +280,9 @@ for the near-certain sibling part, **C** a documented substitute of the same cla
 **D** derived; or **PROVISIONAL**, a placeholder or choice awaiting validation.
 
 A preset needs only `camera`. `[readout]` sets mode, resolution and orientation;
-`[scene]` the highlight headroom; `[bend.bus]` source pins, target, function, `cap_uf`,
+`[scene]` the highlight headroom; `[sensor]` the exposure time `exposure_s`, which
+replaces the camera's in either mode (positive and finite; a sensor `iso` would join
+it there); `[bend.bus]` source pins, target, function, `cap_uf`,
 `pot_kohm`, `pot_node`, `series_ohm` and `common_bus`; `[bend.clocks]` CTE and fault
 rates; `[bend.afe]` injection, gain modulation and CDS skew; `[isp]` overrides, which
 change only what the processor assumes (the sensor's response stays the camera's), so
@@ -268,8 +300,9 @@ A bend elsewhere, such as the SDRAM address lines, becomes a new stage before th
 
 Tests of the public API live in `crates/*/tests/`, one file per area (`noise`,
 `timing`, `config`, `stages`, `clean_camera`, `readout_afe`, `bus`, `codec`,
-`simulator`, `interactive`, `servo`, `golden`, `io`, `video`, `cli`); the `test-util` feature exposes internal
-state to them. They assert physical properties and invariants, never restated
+`simulator`, `interactive`, `servo`, `golden`, `io`, `video`, `cli`, and the app's
+panels, render worker, video, export and viewport); the `test-util` feature exposes
+internal state to them. They assert physical properties and invariants, never restated
 constants: a 1 kHz square injection crosses zero twice per cycle, equal drivers meet
 at half rail, the divider skips pixel-rate edges, flat fields stay flat, every bend
 replays identically from power-on. There is no random-input framework. Video tests
@@ -319,10 +352,13 @@ Highlight reconstruction guesses at lost data. Shot noise is Gaussian, smear one
 streak per column, the CTE trail geometric. The AFE has one pole and an ideal supply.
 Scene auto-exposure meters the clean scene without lag; the servos meter the bent raw
 with a lag, on the plain mean luminance and grey world, without DIGIC's weighting.
-Bus lines carry capacitance but no inductance, so they never ring past their settled
-level. Bend gates see no crossings during blanking, and gate timing resolves to one
-sub-step. The
-colour matrix, tone curve, noise reduction, sharpening, mosaic phase, AFE bandwidth and
-many sensor values are stand-ins or provisional; defect concealment is absent. The
-movie line skip and the AFE part are inferred. The A520 bend layout is hard-coded. No
-post stage, GPU path or UI exists; validation is by eye against one composite.
+Auto-exposure stands in for the aperture: there is no separate aperture or ISO
+control, and the movie shutter's exposure does not follow the light. Bus lines carry
+capacitance but no inductance, so they never ring past their settled level. Bend
+gates see no crossings during blanking, and gate timing resolves to one sub-step.
+The colour matrix, tone curve, noise reduction, sharpening, mosaic phase, AFE
+bandwidth and many sensor values (the nominal exposure among them) are stand-ins or
+provisional; defect concealment is absent. The movie line skip and the AFE part are
+inferred. The A520 bend layout is hard-coded. No post stage or GPU path exists: the
+desktop app renders on the CPU and shows each frame as a texture. Validation is by
+eye against one composite.

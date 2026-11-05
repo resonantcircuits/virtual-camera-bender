@@ -47,8 +47,16 @@ pub struct Sensor {
     pub pitch_um: f64,
     /// Full-well capacity of one photosite in electrons.
     pub full_well_e: f64,
-    /// Fraction of the full well that reference white (scene value 1.0) fills.
+    /// Fraction of the full well that reference white fills at the nominal exposure.
+    ///
+    /// Reference white is scene value 1.0, before auto-exposure scales the light.
     pub white_fraction: f64,
+    /// Exposure time in seconds at which reference white fills `white_fraction` of the well.
+    ///
+    /// It calibrates the sensor's sensitivity to the scene: the charge every photosite
+    /// collects scales with the exposure time over this one, so a longer exposure
+    /// brightens the frame until the well or the ADC clips.
+    pub nominal_exposure_s: f64,
     /// Output amplifier read noise in electrons, one standard deviation.
     pub read_noise_e: f64,
     /// Mean dark current in electrons per second per photosite.
@@ -106,7 +114,7 @@ pub struct Still {
     pub hblank_px: u32,
     /// Vertical blanking per frame in line periods.
     pub vblank_lines: u32,
-    /// Exposure (integration) time in seconds.
+    /// Exposure (integration) time in seconds; a preset's `[sensor] exposure_s` replaces it.
     pub exposure_s: f64,
     /// Whether interline smear is present; false because the mechanical shutter closes during readout.
     pub smear: bool,
@@ -133,6 +141,10 @@ pub struct Movie {
     pub h_bin: u32,
     /// Nominal frame rate in frames per second.
     pub fps: f64,
+    /// Exposure (integration) time of the electronic shutter in seconds; at most `1 / fps`.
+    ///
+    /// A preset's `[sensor] exposure_s` replaces it, limited to one frame period.
+    pub exposure_s: f64,
     /// Width of the movie frame in pixels at native resolution.
     pub output_width: u32,
     /// Height of the movie frame in pixels at native resolution.

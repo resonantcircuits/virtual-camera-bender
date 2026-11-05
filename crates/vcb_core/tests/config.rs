@@ -8,7 +8,9 @@ use vcb_core::afe::{GainMod, Inject, Wave};
 use vcb_core::bus::{Function, PotNode, Target};
 use vcb_core::codec::Quality;
 use vcb_core::isp::WbMode;
-use vcb_core::preset::{AfeBend, BusBend, ClockBend, IspOverride, Mode, Orientation, Resolution};
+use vcb_core::preset::{
+    AfeBend, BusBend, ClockBend, IspOverride, Mode, Orientation, Resolution, SensorOverride,
+};
 use vcb_core::{Camera, Preset};
 
 fn root() -> PathBuf {
@@ -36,6 +38,9 @@ fn full_preset() -> Preset {
     preset.readout.mode = Mode::Movie;
     preset.readout.resolution = Resolution::Native;
     preset.readout.orientation = Orientation::Portrait;
+    preset.sensor = Some(SensorOverride {
+        exposure_s: Some(0.02),
+    });
     preset.bend.bus = Some(BusBend {
         source_pins: vec![9, 8, 7],
         target: Target::Gnd,
@@ -223,6 +228,37 @@ fn camera_validation_rejects_unphysical_values() {
     let mut camera = self::camera();
     camera.isp.xyz_to_cam = [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
     assert!(camera.validate().unwrap_err().is_config());
+
+    let mut camera = self::camera();
+    camera.sensor.nominal_exposure_s = 0.0;
+    assert!(camera.validate().unwrap_err().is_config());
+
+    // The electronic shutter cannot integrate for longer than a frame.
+    let mut camera = self::camera();
+    camera.movie.exposure_s = 1.5 / camera.movie.fps;
+    let error = camera.validate().unwrap_err();
+    assert!(error.to_string().contains("movie.exposure_s"), "{error}");
+}
+
+#[test]
+fn the_sensor_section_sets_the_exposure_time() {
+    let preset: Preset = toml::from_str("camera = \"a520\"\n[sensor]\nexposure_s = 0.25").unwrap();
+    preset.validate().unwrap();
+    assert_eq!(preset.sensor.and_then(|s| s.exposure_s), Some(0.25));
+    let empty: Preset = toml::from_str("camera = \"a520\"\n[sensor]").unwrap();
+    assert_eq!(empty.sensor, Some(SensorOverride::default()));
+    let text = toml::to_string(&Preset::new("a520")).unwrap();
+    assert!(!text.contains("sensor"), "{text}");
+    let unknown = toml::from_str::<Preset>("camera = \"a520\"\n[sensor]\niso = 100").unwrap_err();
+    assert!(unknown.to_string().contains("iso"), "{unknown}");
+    for exposure_s in [0.0, -0.01, f64::INFINITY, f64::NAN] {
+        let mut preset = preset.clone();
+        preset.sensor = Some(SensorOverride {
+            exposure_s: Some(exposure_s),
+        });
+        let error = preset.validate().unwrap_err();
+        assert!(error.is_config(), "{exposure_s}: {error}");
+    }
 }
 
 #[test]

@@ -123,6 +123,7 @@ impl Camera {
         positive("sensor.pitch_um", s.pitch_um)?;
         positive("sensor.full_well_e", s.full_well_e)?;
         fraction("sensor.white_fraction", s.white_fraction)?;
+        positive("sensor.nominal_exposure_s", s.nominal_exposure_s)?;
         non_negative("sensor.read_noise_e", s.read_noise_e)?;
         non_negative("sensor.dark_e_per_s", s.dark_e_per_s)?;
         non_negative("sensor.prnu", s.prnu)?;
@@ -150,6 +151,15 @@ impl Camera {
         at_least("movie.line_skip", movie.line_skip, 1)?;
         at_least("movie.h_bin", movie.h_bin, 1)?;
         positive("movie.fps", movie.fps)?;
+        positive("movie.exposure_s", movie.exposure_s)?;
+        if movie.exposure_s > 1.0 / movie.fps {
+            return Err(Error::config(format!(
+                "movie.exposure_s {} s is longer than the frame period of {} s at {} fps",
+                movie.exposure_s,
+                1.0 / movie.fps,
+                movie.fps
+            )));
+        }
         at_least("movie.output_width", movie.output_width, 1)?;
         at_least("movie.output_height", movie.output_height, 1)?;
         let rows = self.sensor.native_height / (2 * movie.line_skip) * 2;
