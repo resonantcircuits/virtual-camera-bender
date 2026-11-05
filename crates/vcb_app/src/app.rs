@@ -8,6 +8,10 @@
 //! drag ends or the preset has been still for [`SETTLE`]. For a video it also owns the
 //! decoder and the frame cache, plays the clip through the preview simulator one frame
 //! after the other, and runs video exports in the background.
+//!
+//! Replies from the worker threads are taken in by `App::logic`, which eframe runs
+//! before every ui pass and also while the window is hidden and no ui pass runs, so a
+//! render that finishes behind other windows is shown once the window comes back.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -167,12 +171,50 @@ pub struct App {
     render_error: Option<String>,
     screenshot: Option<PathBuf>,
     title: String,
+    /// Whether a control was being dragged in the last ui pass.
+    dragging: bool,
+}
+
+/// What the app starts with: the first file, the camera folder and the screenshot switch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Setup {
+    /// The image or video to open first.
+    pub path: Option<PathBuf>,
+    /// The folder of camera files.
+    pub camera_dir: PathBuf,
+    /// Where to save the window after the first full render, before quitting.
+    pub screenshot: Option<PathBuf>,
+}
+
+impl Setup {
+    /// The setup the environment asks for: [`presets::camera_dir`] and [`SCREENSHOT_ENV`].
+    #[must_use]
+    pub fn from_env(path: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            camera_dir: presets::camera_dir(),
+            screenshot: std::env::var_os(SCREENSHOT_ENV).map(PathBuf::from),
+        }
+    }
 }
 
 impl App {
     /// Sets up the theme, the render worker and the camera, then opens `path` if given.
+    ///
+    /// The camera folder and the screenshot switch come from the environment.
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
+        Self::with_setup(cc, Setup::from_env(path))
+    }
+
+    /// Sets up the theme, the render worker and the camera as `setup` says, then opens its file.
+    #[must_use]
+    pub fn with_setup(cc: &eframe::CreationContext<'_>, setup: Setup) -> Self {
+        let Setup {
+            path,
+            camera_dir,
+            screenshot,
+        } = setup;
         let ctx = cc.egui_ctx.clone();
         theme::apply(&ctx);
         let waker = ctx.clone();
@@ -182,7 +224,6 @@ impl App {
             move |job: Job| renderer.render(&job),
             move || waker.request_repaint(),
         );
-        let camera_dir = presets::camera_dir();
         let mut app = Self {
             cameras: Vec::new(),
             presets: presets::discover(&presets::presets_dir()).unwrap_or_default(),
@@ -214,8 +255,9 @@ impl App {
             view_rect: egui::Rect::NOTHING,
             message: Message::default(),
             render_error: None,
-            screenshot: std::env::var_os(SCREENSHOT_ENV).map(PathBuf::from),
+            screenshot,
             title: String::new(),
+            dragging: false,
             camera_dir,
         };
         match worker {
@@ -523,6 +565,12 @@ impl App {
         } else {
             ctx.request_repaint_after(SETTLE.saturating_sub(waited));
         }
+    }
+
+    /// Whether the frame on screen is the full render of the current preset.
+    #[must_use]
+    pub fn shows_full_render(&self) -> bool {
+        self.full_on_screen().is_some()
     }
 
     /// The frame on screen if it is the full render of the current preset.
@@ -1381,9 +1429,23 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Takes in renders, frames, file operations and exports, and schedules the full render.
+    ///
+    /// eframe calls this before every `ui` pass and also while the window is
+    /// hidden or its redraws are withheld, when `ui` is not called at all; so a render
+    /// that finishes while nothing is drawn still lands, and the screenshot switch, whose
+    /// request makes eframe paint even a hidden window, still fires.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll(ctx);
+        self.settle(ctx, self.dragging);
+        if self.exporting.is_some() {
+            ctx.request_repaint_after(EXPORT_REFRESH);
+        }
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.poll(&ctx);
+        // Play renders only while the window is drawn; `logic` has taken in the replies.
         self.drive_play();
         // Everything below may change the preset: shortcuts, file pickers, panels, camera choice.
         let before = self.preset.clone();
@@ -1466,14 +1528,12 @@ impl eframe::App for App {
         if edit.released && self.settle.is_some() {
             self.request(false);
         }
+        self.dragging = edit.dragging;
         self.settle(&ctx, edit.dragging);
         let title = self.window_title();
         if title != self.title {
             ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
             self.title = title;
-        }
-        if self.exporting.is_some() {
-            ctx.request_repaint_after(EXPORT_REFRESH);
         }
     }
 }
@@ -1549,7 +1609,12 @@ fn drop_overlay(ui: &Ui, rect: egui::Rect) {
 }
 
 /// Saves the next painted frame of the window to `path` as PNG, then closes the window.
+///
+/// The window is brought to the front first: macOS does not redraw a window that other
+/// windows cover completely, as one started from a background shell may be, and the
+/// screenshot is taken only when the window is painted.
 fn save_screenshot(ctx: &egui::Context, path: PathBuf) {
+    ctx.send_viewport_cmd(ViewportCommand::Focus);
     let closer = ctx.clone();
     ctx.request_screenshot(move |image| {
         let [width, height] = image.size;
