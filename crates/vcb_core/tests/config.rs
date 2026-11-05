@@ -6,8 +6,9 @@ use std::path::PathBuf;
 
 use vcb_core::afe::{Inject, Wave};
 use vcb_core::bus::{Function, Target};
+use vcb_core::codec::Quality;
 use vcb_core::isp::WbMode;
-use vcb_core::preset::{AfeBend, BusBend, ClockBend, IspOverride, Mode, Resolution};
+use vcb_core::preset::{AfeBend, BusBend, ClockBend, IspOverride, Mode, Orientation, Resolution};
 use vcb_core::{Camera, Preset};
 
 fn root() -> PathBuf {
@@ -34,6 +35,7 @@ fn full_preset() -> Preset {
     preset.seed = 77;
     preset.readout.mode = Mode::Movie;
     preset.readout.resolution = Resolution::Native;
+    preset.readout.orientation = Orientation::Portrait;
     preset.bend.bus = Some(BusBend {
         source_pins: vec![9, 8, 7],
         target: Target::Gnd,
@@ -57,7 +59,11 @@ fn full_preset() -> Preset {
     });
     preset.isp = Some(IspOverride {
         wb: Some(WbMode::Auto),
-        ccm: Some([[1.5, -0.3, -0.2], [-0.2, 1.4, -0.2], [0.0, -0.5, 1.5]]),
+        xyz_to_cam: Some([
+            [0.9877, -0.3775, -0.0871],
+            [-0.7613, 1.4807, 0.3072],
+            [-0.1448, 0.1305, 0.7485],
+        ]),
         sharpen_gain: Some(1.2),
         ..IspOverride::default()
     });
@@ -69,6 +75,22 @@ fn camera_file_parses_and_validates() {
     let camera = camera();
     camera.validate().unwrap();
     assert_eq!(camera.info.name, "a520");
+}
+
+#[test]
+fn camera_tables_are_the_measured_canon_tables() {
+    let camera = camera();
+    let tables = &camera.jpeg.tables;
+    // Quantiser steps grow from superfine to normal at every frequency.
+    for v in 0..8 {
+        for u in 0..8 {
+            assert!(tables.superfine.luma[v][u] <= tables.fine.luma[v][u]);
+            assert!(tables.fine.luma[v][u] <= tables.normal.luma[v][u]);
+            assert!(tables.superfine.chroma[v][u] <= tables.fine.chroma[v][u]);
+        }
+    }
+    assert_eq!(tables.get(Quality::Normal).chroma[7][7], 79);
+    assert_eq!(tables.get(camera.still.jpeg), &tables.superfine);
 }
 
 #[test]
@@ -177,6 +199,18 @@ fn camera_validation_rejects_unphysical_values() {
 
     let mut camera = self::camera();
     camera.sensor.native_width += 1;
+    assert!(camera.validate().unwrap_err().is_config());
+
+    let mut camera = self::camera();
+    camera.adc.dsp_lsb = camera.adc.bits - camera.adc.dsp_bits + 1;
+    assert!(camera.validate().unwrap_err().is_config());
+
+    let mut camera = self::camera();
+    camera.jpeg.tables.fine.chroma[3][4] = 0;
+    assert!(camera.validate().unwrap_err().is_config());
+
+    let mut camera = self::camera();
+    camera.isp.xyz_to_cam = [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
     assert!(camera.validate().unwrap_err().is_config());
 }
 

@@ -47,6 +47,7 @@ pub mod afe;
 pub mod bus;
 pub mod camera;
 pub mod codec;
+mod colour;
 mod error;
 mod frame;
 pub mod isp;

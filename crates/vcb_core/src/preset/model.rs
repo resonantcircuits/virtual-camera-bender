@@ -57,6 +57,8 @@ impl Preset {
 
     /// Checks that every value set in the preset is physically meaningful.
     ///
+    /// The camera's own values are checked by [`Camera::validate`](crate::Camera::validate).
+    ///
     /// Checks that depend on the camera, such as bus pins against the ADC width, happen
     /// when the simulator resolves the preset.
     ///
@@ -125,10 +127,11 @@ fn validate_isp(isp: &IspOverride) -> Result<(), Error> {
     if let Some(target) = isp.ae_target {
         fraction("isp.ae_target", target)?;
     }
-    if let Some(ccm) = &isp.ccm
-        && ccm.iter().flatten().any(|value| !value.is_finite())
-    {
-        return Err(Error::config("isp.ccm must contain finite values"));
+    if let Some(matrix) = &isp.xyz_to_cam {
+        if matrix.iter().flatten().any(|value| !value.is_finite()) {
+            return Err(Error::config("isp.xyz_to_cam must contain finite values"));
+        }
+        crate::colour::srgb_to_cam(matrix)?;
     }
     Ok(())
 }

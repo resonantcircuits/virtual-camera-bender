@@ -126,20 +126,38 @@ pub struct Params {
     pub driver_r_spread: f64,
     /// Output-high voltage of the ADC drivers.
     pub v_oh: f64,
+    /// Series resistor on each bus line between the ADC and the image processor in ohms.
+    pub bus_series_ohm: f64,
+    /// Lowest bus line the image processor reads.
+    pub dsp_lsb: u8,
+    /// Number of bus lines the image processor reads.
+    pub dsp_bits: u8,
     /// Logic threshold of the image processor's bus inputs in volts.
     pub dsp_threshold_v: f64,
     /// Thermal noise at the image processor's inputs in millivolts.
     pub dsp_noise_mv: f64,
+    /// Fraction of the pixel period at which the image processor latches the bus.
+    pub latch_phase: f64,
     /// Output resistance of the 74HC gates in ohms.
     pub hc_r_out_ohm: f64,
     /// Input threshold of the 74HC gates in volts.
     pub hc_threshold_v: f64,
     /// Input hysteresis of the 74HC gates in volts.
     pub hc_hysteresis_v: f64,
-    /// Propagation delay of the 74HC gates in nanoseconds.
+    /// Propagation delay of the 74HC00 gates in nanoseconds.
     pub hc_prop_delay_ns: f64,
+    /// Highest clock frequency of the 74HC74 flip-flop in hertz.
+    pub ff_fmax_hz: f64,
+    /// Shortest clock pulse the flip-flop responds to in nanoseconds.
+    pub ff_min_pulse_ns: f64,
+    /// Setup time of the flip-flop's `D` input in nanoseconds.
+    pub ff_setup_ns: f64,
+    /// Clock-to-output delay of the flip-flop in nanoseconds.
+    pub ff_prop_delay_ns: f64,
     /// Duration of one pixel period in seconds.
     pub pixel_period_s: f64,
+    /// Duration of one pixel period of the camera's own clock in seconds.
+    pub native_pixel_period_s: f64,
     /// Circuit simulation sub-steps per pixel period.
     pub oversample: u32,
     /// Seed of the circuit's noise sources and component spreads.
@@ -195,13 +213,22 @@ impl Params {
             driver_r_ohm: camera.adc.driver_r_ohm,
             driver_r_spread: camera.adc.driver_r_spread,
             v_oh: camera.adc.v_oh,
+            bus_series_ohm: camera.adc.bus_series_ohm,
+            dsp_lsb: camera.adc.dsp_lsb,
+            dsp_bits: camera.adc.dsp_bits,
             dsp_threshold_v: camera.adc.dsp_threshold_v,
             dsp_noise_mv: camera.adc.dsp_noise_mv,
+            latch_phase: camera.adc.latch_phase,
             hc_r_out_ohm: camera.logic.hc_r_out_ohm,
             hc_threshold_v: camera.logic.hc_threshold_v,
             hc_hysteresis_v: camera.logic.hc_hysteresis_v,
             hc_prop_delay_ns: camera.logic.hc_prop_delay_ns,
+            ff_fmax_hz: camera.logic.ff_fmax_hz,
+            ff_min_pulse_ns: camera.logic.ff_min_pulse_ns,
+            ff_setup_ns: camera.logic.ff_setup_ns,
+            ff_prop_delay_ns: camera.logic.ff_prop_delay_ns,
             pixel_period_s: timing.pixel_period_s,
+            native_pixel_period_s: timing.native_pixel_period_s,
             oversample: timing.oversample,
             seed: noise::stage_seed(preset.seed, SALT),
         }))

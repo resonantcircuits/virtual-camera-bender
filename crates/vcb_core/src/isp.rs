@@ -1,18 +1,21 @@
 //! Image processing: from ADC codes to a developed 8-bit frame.
 //!
 //! The image processor (Canon's DIGIC in the A520) receives the ADC words line by
-//! line. [`clamp_black`] measures the black level as the mean of the optical-black
-//! samples of the frame and subtracts it, leaving a [`Raw`] Bayer plane of the active
-//! area in code units above black, rows in image order. [`develop`] then turns it into
-//! a [`Frame`]:
+//! line, but reads only `dsp_bits` bus lines starting at `dsp_lsb` (on the A520, lines
+//! `D11` to `D2` of the 12-bit bus, a 10-bit raw). [`clamp_black`] takes that view,
+//! measures the black level as the mean of the optical-black samples of the frame and
+//! subtracts it, leaving a [`Raw`] Bayer plane of the active area in processor codes
+//! above black, rows in image order. [`develop`] then turns it into a [`Frame`]:
 //!
 //! 1. Normalisation: codes are divided by `white_code`, the code above black that
 //!    reference white produces, so linear 1.0 is reference white again.
 //! 2. White balance: the red and blue sites are multiplied by the daylight gains, or
-//!    by grey-world gains that equalise the channel means ([`Wb::Auto`]).
+//!    by grey-world gains that equalise the channel means ([`Wb::Auto`]). Every channel
+//!    is then clipped where the least-amplified channel saturates the ADC, so clipped
+//!    highlights stay white instead of turning pink.
 //! 3. Demosaic: bilinear interpolation of the two missing channels at every site,
 //!    mirrored at the borders with the Bayer phase preserved.
-//! 4. Colour correction: a 3 by 3 matrix from sensor RGB to linear sRGB.
+//! 4. Colour correction: `cam_to_srgb`, from white-balanced camera RGB to linear sRGB.
 //! 5. Geometry: movie mode averages `h_bin` adjacent columns, and if the result
 //!    differs from the output size it is resampled to it.
 //! 6. Encoding: the sRGB transfer curve, clipped and rounded to 8 bits.
@@ -29,11 +32,11 @@ use rayon::slice::ParallelSliceMut;
 use crate::adc::Codes;
 use crate::plane::Plane;
 use crate::preset::Mode;
-use crate::resample::{self, Rect};
+use crate::resample::{self, Rect, Turn};
 use crate::scene::Channel;
 use crate::sensor::Cfa;
 use crate::srgb;
-use crate::{Camera, Error, Frame, Preset, Scene, Timing};
+use crate::{Camera, Error, Frame, Preset, Scene, Timing, colour};
 
 /// Which white balance the processor applies.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -89,7 +92,7 @@ pub enum Demosaic {
     Bilinear,
 }
 
-/// Size of the developed frame.
+/// Size of the developed frame on the landscape sensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Output {
     /// Adjacent columns averaged into one, 1 for stills.
@@ -117,7 +120,7 @@ impl Raw {
         }
     }
 
-    /// Returns the sites in codes above black, rows in image order, red at `(0, 0)`.
+    /// Returns the sites in processor codes above black, rows in image order, red at `(0, 0)`.
     #[must_use]
     pub fn plane(&self) -> &Plane<f32> {
         &self.plane
@@ -128,7 +131,7 @@ impl Raw {
         &mut self.plane
     }
 
-    /// Returns the black level the clamp subtracted, in ADC codes.
+    /// Returns the black level the clamp subtracted, in processor codes.
     #[must_use]
     pub fn black_level(&self) -> f32 {
         self.black_level
@@ -148,14 +151,18 @@ impl Debug for Raw {
 /// Parameters of the processing pipeline.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Params {
-    /// Code above black that reference white produces; divides every site.
+    /// Processor code above black that reference white produces; divides every site.
     pub white_code: f32,
+    /// Lowest bus line the processor reads.
+    pub dsp_lsb: u8,
+    /// Number of bus lines the processor reads.
+    pub dsp_bits: u8,
     /// Colour filter array of the raw plane.
     pub cfa: Cfa,
     /// White balance.
     pub wb: Wb,
-    /// Colour correction matrix from sensor RGB to linear sRGB, row major.
-    pub ccm: [[f32; 3]; 3],
+    /// Matrix from white-balanced camera RGB to linear sRGB, row major.
+    pub cam_to_srgb: [[f32; 3]; 3],
     /// Tone curve.
     pub tone: Tone,
     /// Chroma noise reduction radius as a fraction of the frame width.
@@ -168,7 +175,7 @@ pub struct Params {
     pub demosaic: Demosaic,
     /// Auto-exposure target luminance.
     pub ae_target: f32,
-    /// Size of the developed frame.
+    /// Size of the developed frame on the landscape sensor.
     pub output: Output,
 }
 
@@ -177,11 +184,20 @@ impl Params {
     ///
     /// `white_code` follows from the analog chain: reference white fills
     /// `white_fraction` of the full well, which the conversion gain, PGA gain and ADC
-    /// scale map to a code above the pedestal. Preset overrides replace camera values.
+    /// scale map to a code above the pedestal, divided by `2^dsp_lsb` for the
+    /// processor's view of the bus.
+    ///
+    /// `cam_to_srgb` is derived from the `xyz_to_cam` matrix as dcraw's `cam_xyz_coeff`
+    /// does: `xyz_to_cam * srgb_to_xyz` (D65) gives sRGB to camera RGB; each row is
+    /// normalised to sum to one, so white maps to white and the white balance stays a
+    /// separate gain; the inverse of that matrix is `cam_to_srgb`.
+    ///
+    /// Preset overrides replace camera values.
     ///
     /// # Errors
     ///
-    /// Returns a configuration error if the analog chain maps reference white to no code.
+    /// Returns a configuration error if the analog chain maps reference white to no code
+    /// or the colour matrix is not invertible.
     pub fn resolve(camera: &Camera, preset: &Preset, timing: &Timing) -> Result<Self, Error> {
         let sensor = &camera.sensor;
         let white_volts = sensor.white_fraction
@@ -189,7 +205,8 @@ impl Params {
             * sensor.conv_gain_uv_per_e
             * 1e-6
             * 10f64.powf(camera.afe.pga_gain_db / 20.0);
-        let white_code = white_volts / camera.adc.full_scale_v * f64::from(camera.max_code());
+        let white_code = white_volts / camera.adc.full_scale_v * f64::from(camera.max_code())
+            / f64::from(1u32 << camera.adc.dsp_lsb);
         if !(white_code.is_finite() && white_code >= 1.0) {
             return Err(Error::config(format!(
                 "reference white reaches only {white_code:.3} ADC codes above black"
@@ -206,19 +223,19 @@ impl Params {
             },
             WbMode::Auto => Wb::Auto,
         };
-        let ccm = o
-            .ccm
-            .unwrap_or(isp.ccm)
-            .map(|row| row.map(|value| value as f32));
+        let cam_to_srgb = colour::cam_to_srgb(&o.xyz_to_cam.unwrap_or(isp.xyz_to_cam))?;
         let h_bin = match timing.mode {
             Mode::Still => 1,
             Mode::Movie => camera.movie.h_bin,
         };
+        let (width, height) = timing.developed_size();
         Ok(Self {
             white_code: white_code as f32,
+            dsp_lsb: camera.adc.dsp_lsb,
+            dsp_bits: camera.adc.dsp_bits,
             cfa: sensor.cfa,
             wb,
-            ccm,
+            cam_to_srgb: colour::to_f32(&cam_to_srgb),
             tone: Tone {
                 contrast: pick(o.tone_contrast, isp.tone_contrast),
                 toe: pick(o.tone_toe, isp.tone_toe),
@@ -234,8 +251,8 @@ impl Params {
             ae_target: pick(o.ae_target, isp.ae_target),
             output: Output {
                 h_bin,
-                width: timing.output_width,
-                height: timing.output_height,
+                width,
+                height,
             },
         })
     }
@@ -259,15 +276,16 @@ impl Default for State {
     }
 }
 
-/// Subtracts the frame's optical-black mean from the active samples of `codes`.
+/// Reads `codes` as the processor sees the bus and subtracts the optical-black mean.
 ///
-/// Writes the active area into `out` with rows in image order and records the
-/// subtracted level as [`Raw::black_level`].
+/// Each word becomes `(code >> dsp_lsb) & (2^dsp_bits - 1)`. Writes the active area
+/// into `out` with rows in image order and records the subtracted level, in processor
+/// codes, as [`Raw::black_level`].
 ///
 /// # Panics
 ///
 /// Panics if `out` is not `cols` by `rows` of the code layout.
-pub fn clamp_black(codes: &Codes, out: &mut Raw) {
+pub fn clamp_black(params: &Params, codes: &Codes, out: &mut Raw) {
     let layout = codes.layout();
     assert!(
         out.plane.width() == layout.cols() && out.plane.height() == layout.rows(),
@@ -279,11 +297,14 @@ pub fn clamp_black(codes: &Codes, out: &mut Raw) {
     );
     let line_len = layout.line_len() as usize;
     let ob = layout.ob_cols() as usize;
+    let shift = u32::from(params.dsp_lsb);
+    let mask = ((1u32 << params.dsp_bits.min(16)) - 1) as u16;
+    let view = |code: u16| (code >> shift) & mask;
     let black_sum: u64 = codes
         .words()
         .chunks_exact(line_len)
         .flat_map(|line| &line[..ob])
-        .map(|&code| u64::from(code))
+        .map(|&code| u64::from(view(code)))
         .sum();
     let black_count = ob * layout.rows() as usize;
     let black = if black_count == 0 {
@@ -294,7 +315,7 @@ pub fn clamp_black(codes: &Codes, out: &mut Raw) {
     for (line, words) in (0..layout.rows()).zip(codes.words().chunks_exact(line_len)) {
         let row = out.plane.row_mut(layout.image_row(line));
         for (site, &code) in row.iter_mut().zip(&words[ob..]) {
-            *site = f32::from(code) - black;
+            *site = f32::from(view(code)) - black;
         }
     }
     out.black_level = black;
@@ -328,11 +349,16 @@ pub fn develop(params: &Params, state: &mut State, raw: &Raw, out: &mut Frame) {
         Wb::Auto => grey_world(&raw.plane, params.cfa),
     };
     let gains = balance.map(|gain| gain / params.white_code);
+    let max_code = ((1u32 << params.dsp_bits.min(16)) - 1) as f32;
+    let least_gain = gains.iter().copied().fold(f32::MAX, f32::min);
+    let saturation = (max_code - raw.black_level) * least_gain;
     fit(rgb, width, height);
     match params.demosaic {
-        Demosaic::Bilinear => demosaic_bilinear(&raw.plane, params.cfa, gains, rgb),
+        Demosaic::Bilinear => {
+            demosaic_bilinear(&raw.plane, params.cfa, gains, saturation, rgb);
+        }
     }
-    correct_colour(&params.ccm, rgb);
+    correct_colour(&params.cam_to_srgb, rgb);
 
     let h_bin = output.h_bin.max(1);
     let binned: &Scene = if h_bin > 1 {
@@ -355,7 +381,7 @@ pub fn develop(params: &Params, state: &mut State, raw: &Raw, out: &mut Frame) {
             height: binned.height(),
         };
         for (src, dst) in binned.planes().into_iter().zip(sized.planes_mut()) {
-            resample::resample(src, whole, dst);
+            resample::resample(src, Turn::None, whole, dst);
         }
         sized
     };
@@ -404,8 +430,14 @@ fn reflect(i: i64, n: u32) -> usize {
     mirrored as usize
 }
 
-/// Interpolates the full RGB image from the Bayer plane, scaling each channel by `gains`.
-fn demosaic_bilinear(raw: &Plane<f32>, cfa: Cfa, gains: [f32; 3], out: &mut Scene) {
+/// Interpolates every channel from the Bayer plane, applying `gains` and clipping at `saturation`.
+fn demosaic_bilinear(
+    raw: &Plane<f32>,
+    cfa: Cfa,
+    gains: [f32; 3],
+    saturation: f32,
+    out: &mut Scene,
+) {
     let (width, height) = (raw.width(), raw.height());
     let [red, green, blue] = out.planes_mut();
     let row_len = width as usize;
@@ -436,15 +468,15 @@ fn demosaic_bilinear(raw: &Plane<f32>, cfa: Cfa, gains: [f32; 3], out: &mut Scen
                     }
                     Channel::Green => [vertical, here, across],
                 };
-                red_row[c] = rgb[0] * gains[0];
-                green_row[c] = rgb[1] * gains[1];
-                blue_row[c] = rgb[2] * gains[2];
+                red_row[c] = (rgb[0] * gains[0]).min(saturation);
+                green_row[c] = (rgb[1] * gains[1]).min(saturation);
+                blue_row[c] = (rgb[2] * gains[2]).min(saturation);
             }
         });
 }
 
-/// Multiplies every pixel by the colour correction matrix.
-fn correct_colour(ccm: &[[f32; 3]; 3], image: &mut Scene) {
+/// Multiplies every pixel by the colour matrix.
+fn correct_colour(matrix: &[[f32; 3]; 3], image: &mut Scene) {
     let row_len = image.width().max(1) as usize;
     let [red, green, blue] = image.planes_mut();
     red.data_mut()
@@ -453,11 +485,7 @@ fn correct_colour(ccm: &[[f32; 3]; 3], image: &mut Scene) {
         .zip(blue.data_mut().par_chunks_mut(row_len))
         .for_each(|((red_row, green_row), blue_row)| {
             for ((r, g), b) in red_row.iter_mut().zip(green_row).zip(blue_row) {
-                let input = [*r, *g, *b];
-                let [out_r, out_g, out_b] = ccm.map(|row| {
-                    row[0].mul_add(input[0], row[1].mul_add(input[1], row[2] * input[2]))
-                });
-                (*r, *g, *b) = (out_r, out_g, out_b);
+                [*r, *g, *b] = colour::apply(matrix, [*r, *g, *b]);
             }
         });
 }

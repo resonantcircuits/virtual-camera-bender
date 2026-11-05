@@ -1,9 +1,9 @@
 //! The camera model: every hardware section of a camera file.
 
-use crate::Error;
 use crate::camera::{Adc, Afe, Clocking, Info, Isp, Jpeg, Logic, Movie, Sensor, Still};
 use crate::preset::Mode;
 use crate::validate::{at_least, finite, fraction, non_negative, positive, within};
+use crate::{Error, colour};
 
 /// Largest supported ADC resolution; codes are stored as `u16`.
 const MAX_ADC_BITS: u8 = 16;
@@ -119,7 +119,7 @@ impl Camera {
         non_negative("sensor.prnu", s.prnu)?;
         non_negative("sensor.dsnu_e", s.dsnu_e)?;
         positive("sensor.conv_gain_uv_per_e", s.conv_gain_uv_per_e)?;
-        within("sensor.antibloom_ratio", s.antibloom_ratio, 0.0, 1.0)?;
+        non_negative("sensor.antibloom_ratio", s.antibloom_ratio)?;
         within("sensor.smear_db", s.smear_db, MIN_SMEAR_DB, 0.0)?;
         fraction("sensor.cte", s.cte)?;
         non_negative("sensor.hot_pixels_per_mpix", s.hot_pixels_per_mpix)
@@ -129,12 +129,6 @@ impl Camera {
         let still = &self.still;
         positive("still.pixel_clock_hz", still.pixel_clock_hz)?;
         positive("still.exposure_s", still.exposure_s)?;
-        within(
-            "still.jpeg_quality",
-            f64::from(still.jpeg_quality),
-            1.0,
-            100.0,
-        )?;
 
         let movie = &self.movie;
         positive("movie.pixel_clock_hz", movie.pixel_clock_hz)?;
@@ -143,12 +137,6 @@ impl Camera {
         positive("movie.fps", movie.fps)?;
         at_least("movie.output_width", movie.output_width, 1)?;
         at_least("movie.output_height", movie.output_height, 1)?;
-        within(
-            "movie.jpeg_quality",
-            f64::from(movie.jpeg_quality),
-            1.0,
-            100.0,
-        )?;
         let rows = self.sensor.native_height / (2 * movie.line_skip) * 2;
         if rows < 2 || self.sensor.native_width / movie.h_bin < 1 {
             return Err(Error::config(format!(
@@ -173,6 +161,13 @@ impl Camera {
             1.0,
             f64::from(MAX_ADC_BITS),
         )?;
+        at_least("adc.dsp_bits", u32::from(adc.dsp_bits), 1)?;
+        if u32::from(adc.dsp_lsb) + u32::from(adc.dsp_bits) > u32::from(adc.bits) {
+            return Err(Error::config(format!(
+                "adc.dsp_lsb {} + adc.dsp_bits {} exceed the {}-bit bus",
+                adc.dsp_lsb, adc.dsp_bits, adc.bits
+            )));
+        }
         positive("adc.full_scale_v", adc.full_scale_v)?;
         within("afe.pedestal_v", afe.pedestal_v, 0.0, adc.full_scale_v)?;
         let max_code = f64::from(self.max_code());
@@ -187,8 +182,16 @@ impl Camera {
         positive("adc.driver_r_ohm", adc.driver_r_ohm)?;
         within("adc.driver_r_spread", adc.driver_r_spread, 0.0, 0.5)?;
         positive("adc.v_oh", adc.v_oh)?;
+        non_negative("adc.bus_series_ohm", adc.bus_series_ohm)?;
         within("adc.dsp_threshold_v", adc.dsp_threshold_v, 0.0, adc.v_oh)?;
-        non_negative("adc.dsp_noise_mv", adc.dsp_noise_mv)
+        non_negative("adc.dsp_noise_mv", adc.dsp_noise_mv)?;
+        if !(0.0..1.0).contains(&adc.latch_phase) {
+            return Err(Error::config(format!(
+                "adc.latch_phase must lie in [0, 1), got {}",
+                adc.latch_phase
+            )));
+        }
+        Ok(())
     }
 
     fn validate_logic_and_isp(&self) -> Result<(), Error> {
@@ -202,15 +205,20 @@ impl Camera {
         )?;
         non_negative("logic.hc_hysteresis_v", logic.hc_hysteresis_v)?;
         non_negative("logic.hc_prop_delay_ns", logic.hc_prop_delay_ns)?;
+        positive("logic.ff_fmax_hz", logic.ff_fmax_hz)?;
+        non_negative("logic.ff_min_pulse_ns", logic.ff_min_pulse_ns)?;
+        non_negative("logic.ff_setup_ns", logic.ff_setup_ns)?;
+        non_negative("logic.ff_prop_delay_ns", logic.ff_prop_delay_ns)?;
 
         let isp = &self.isp;
         positive("isp.wb_r_gain", isp.wb_r_gain)?;
         positive("isp.wb_b_gain", isp.wb_b_gain)?;
-        for (row, coefficients) in isp.ccm.iter().enumerate() {
+        for (row, coefficients) in isp.xyz_to_cam.iter().enumerate() {
             for (col, value) in coefficients.iter().enumerate() {
-                finite(&format!("isp.ccm[{row}][{col}]"), *value)?;
+                finite(&format!("isp.xyz_to_cam[{row}][{col}]"), *value)?;
             }
         }
+        colour::srgb_to_cam(&isp.xyz_to_cam)?;
         positive("isp.tone_contrast", isp.tone_contrast)?;
         within("isp.tone_toe", isp.tone_toe, 0.0, 1.0)?;
         within("isp.tone_shoulder", isp.tone_shoulder, 0.0, 1.0)?;
@@ -218,6 +226,32 @@ impl Camera {
         within("isp.luma_nr_frac", isp.luma_nr_frac, 0.0, 1.0)?;
         within("isp.sharpen_radius_frac", isp.sharpen_radius_frac, 0.0, 1.0)?;
         non_negative("isp.sharpen_gain", isp.sharpen_gain)?;
-        fraction("isp.ae_target", isp.ae_target)
+        fraction("isp.ae_target", isp.ae_target)?;
+
+        let tables = &self.jpeg.tables;
+        for (name, pair) in [
+            ("superfine", &tables.superfine),
+            ("fine", &tables.fine),
+            ("normal", &tables.normal),
+        ] {
+            if pair
+                .luma
+                .iter()
+                .chain(&pair.chroma)
+                .flatten()
+                .any(|&step| step == 0)
+            {
+                return Err(Error::config(format!(
+                    "jpeg.tables.{name} contains a zero quantiser step"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the largest code the image processor reads, `2^dsp_bits - 1`.
+    #[must_use]
+    pub fn dsp_max_code(&self) -> u16 {
+        ((1u32 << self.adc.dsp_bits.min(MAX_ADC_BITS)) - 1) as u16
     }
 }

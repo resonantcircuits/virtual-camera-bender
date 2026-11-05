@@ -11,6 +11,7 @@
 //! [readout]
 //! mode = "still"              # or "movie"
 //! resolution = "match-input"  # or "native"
+//! orientation = "auto"        # or "landscape", "portrait"
 //! [bend.bus]
 //! source_pins = [9, 8, 7]
 //! target = "pin:10"           # or "gnd"
@@ -108,7 +109,49 @@ impl FromStr for Resolution {
     }
 }
 
-/// The `[readout]` section: readout mode and sensor resolution.
+/// How the camera is held relative to the scene.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+pub enum Orientation {
+    /// Portrait when the input is taller than wide, landscape otherwise.
+    #[default]
+    Auto,
+    /// The camera is held level; sensor rows run across the scene.
+    Landscape,
+    /// The camera is held vertically; sensor rows run up the scene.
+    ///
+    /// The scene is rotated 90 degrees clockwise onto the landscape sensor and the
+    /// developed frame is rotated back, so readout effects run vertically in the image.
+    Portrait,
+}
+
+impl Display for Orientation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Auto => "auto",
+            Self::Landscape => "landscape",
+            Self::Portrait => "portrait",
+        })
+    }
+}
+
+impl FromStr for Orientation {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "auto" => Ok(Self::Auto),
+            "landscape" => Ok(Self::Landscape),
+            "portrait" => Ok(Self::Portrait),
+            other => Err(Error::config(format!(
+                "orientation must be \"auto\", \"landscape\" or \"portrait\", got \"{other}\""
+            ))),
+        }
+    }
+}
+
+/// The `[readout]` section: readout mode, sensor resolution and camera orientation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
@@ -117,6 +160,8 @@ pub struct Readout {
     pub mode: Mode,
     /// Match the input's size or use the camera's native size.
     pub resolution: Resolution,
+    /// How the camera is held.
+    pub orientation: Orientation,
 }
 
 /// The `[bend]` section: circuit modifications patched into the camera.
@@ -204,9 +249,12 @@ pub struct IspOverride {
     /// Daylight blue gain.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub wb_b_gain: Option<f64>,
-    /// Colour correction matrix, row major.
+    /// Colour matrix from XYZ to camera RGB that the processor assumes, row major.
+    ///
+    /// The sensor's response stays the camera file's; a different matrix here renders
+    /// colours as a mis-profiled processor would.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub ccm: Option<[[f64; 3]; 3]>,
+    pub xyz_to_cam: Option<[[f64; 3]; 3]>,
     /// Tone curve slope at mid-grey.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub tone_contrast: Option<f64>,

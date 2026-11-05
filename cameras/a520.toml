@@ -1,7 +1,9 @@
 # Canon PowerShot A520 (2005), 4 MP CCD compact, in physical units.
 #
-# Lines marked PROVISIONAL hold placeholder values until the A520 research notes
-# (docs/research/a520-technical.md) supply sourced numbers.
+# Each value notes its confidence and source in docs/research/a520-technical.md:
+# A = measured or stated for the A520, B = stated for the near-certain sibling part,
+# C = documented substitute of the same class, D = derived. PROVISIONAL marks values
+# that are placeholders or choices still to be validated.
 
 [camera]
 name = "a520"
@@ -10,85 +12,159 @@ model = "PowerShot A520"
 year = 2005
 
 [sensor]
-native_width = 2272                 # PROVISIONAL: largest JPEG width; raw active area to confirm
-native_height = 1704                # PROVISIONAL: largest JPEG height
-ob_cols = 64                        # PROVISIONAL: optical-black columns per line
-pitch_um = 2.8                      # PROVISIONAL: typical of 1/2.5-inch 4 MP CCDs
-full_well_e = 12_000.0              # PROVISIONAL
+native_width = 2272                 # A: largest JPEG size (key constants)
+native_height = 1704                # A: largest JPEG size (key constants)
+ob_cols = 48                        # D: A430 raw buffer margins (section 1); PROVISIONAL
+pitch_um = 2.5                      # B: Sony ICX498 (section 3)
+full_well_e = 17_800.0              # D: 22,000 e at 2.8 um scaled to 2.5 um (section 3)
 white_fraction = 0.7                # PROVISIONAL: reference white at 70 % of the full well
-read_noise_e = 10.0                 # PROVISIONAL
-dark_e_per_s = 20.0                 # PROVISIONAL
+read_noise_e = 12.0                 # PROVISIONAL: class typical (section 3)
+dark_e_per_s = 1.0                  # PROVISIONAL: at 25 C; unpublished for ICX498 (section 3)
 prnu = 0.01                         # PROVISIONAL: 1 % gain spread
 dsnu_e = 2.0                        # PROVISIONAL
-conv_gain_uv_per_e = 25.0           # PROVISIONAL
-antibloom_ratio = 0.99              # PROVISIONAL: vertical overflow drain removes 99 % of excess
-smear_db = -100.0                   # PROVISIONAL: typical Sony interline CCD figure
-cte = 0.99999                       # PROVISIONAL
+conv_gain_uv_per_e = 26.0           # D: 460 mV / 17,800 e (key constants)
+antibloom_ratio = 1000.0            # C: overflow drain absorbs 1000x full-well overexposure; PROVISIONAL
+smear_db = -90.0                    # C: ICX452 high-frame-rate mode (section 3)
+cte = 0.99999                       # C: interline CCDs (section 4)
 hot_pixels_per_mpix = 5.0           # PROVISIONAL
-cfa = "RGGB"                        # PROVISIONAL: phase of the A520 raw to confirm
+cfa = "RGGB"                        # PROVISIONAL: phase of the A520 mosaic unconfirmed
 
 [still]
-pixel_clock_hz = 18_000_000.0       # PROVISIONAL
-hblank_px = 180                     # PROVISIONAL
-vblank_lines = 24                   # PROVISIONAL
+pixel_clock_hz = 27_000_000.0       # B: ICX498 horizontal drive (key constants)
+hblank_px = 1244                    # D: 132 us line at 27 MHz minus 2272 + 48 stored samples
+vblank_lines = 20                   # D: estimate; blanking is unpublished (Unknowns, item 2)
 exposure_s = 0.008                  # PROVISIONAL: 1/125 s, a daylight exposure
-jpeg_quality = 95                   # PROVISIONAL: Superfine
+smear = false                       # C: mechanical shutter closes during readout (section 3)
+jpeg = "superfine"                  # A: quality setting (section 7)
 direction = "top-down"              # PROVISIONAL
 
 [movie]
-pixel_clock_hz = 18_000_000.0       # PROVISIONAL
-hblank_px = 180                     # PROVISIONAL
-vblank_lines = 51                   # PROVISIONAL: pads the frame period to 1/15 s
-line_skip = 4                       # PROVISIONAL
-h_bin = 4                           # PROVISIONAL
-fps = 15.0                          # PROVISIONAL
-output_width = 640
-output_height = 480
-jpeg_quality = 85                   # PROVISIONAL: MJPEG quality
-direction = "top-down"              # PROVISIONAL
-smear = true
+pixel_clock_hz = 27_000_000.0       # B: ICX498 horizontal drive (key constants)
+hblank_px = 1716                    # D: 66.7 ms / 446 lines, a 15 fps readout
+vblank_lines = 20                   # D: estimate, as the still readout
+line_skip = 4                       # C: line-decimated draft mode (section 2)
+h_bin = 4                           # C: line-decimated draft mode (section 2)
+fps = 15.0                          # A: 320x240 mode; the 640x480 mode is 10 fps (section 2); PROVISIONAL choice
+output_width = 640                  # A: movie frame size (key constants)
+output_height = 480                 # A: movie frame size (key constants)
+jpeg = "normal"                     # PROVISIONAL: Motion JPEG quality setting
+direction = "top-down"
+smear = true                        # C: electronic shutter, smear visible (section 3)
 
 [afe]
-pga_gain_db = 16.0                  # PROVISIONAL: full well lands just below ADC full scale
-pedestal_v = 0.0625                 # PROVISIONAL: 128 codes at 2.0 V full scale and 12 bits
+pga_gain_db = 6.2                   # D: 463 mV saturation scaled to 95 % of a 1.0 V full scale
+pedestal_v = 0.0303                 # D: 124 / 4095 of 1.0 V
 bandwidth_hz = 40_000_000.0         # PROVISIONAL
 slew_v_per_us = 200.0               # PROVISIONAL
 oversample = 4
 
 [adc]
-bits = 12                           # PROVISIONAL: CHDK reports 10-bit raw for A-series cameras
-full_scale_v = 2.0                  # PROVISIONAL
-black_level = 128                   # PROVISIONAL
-driver_r_ohm = 60.0                 # PROVISIONAL
+bits = 12                           # C: AD9949 class AFE (section 5)
+dsp_bits = 10                       # B: 10-bit raw of DIGIC I era cameras (key constants)
+dsp_lsb = 2                         # D: the processor reads D11..D2 of the 12-bit bus
+full_scale_v = 1.0                  # C: AD9949 input range (section 5)
+black_level = 124                   # B: CHDK black 31 at 10 bits, 31 << 2 on the 12-bit bus
+driver_r_ohm = 150.0                # D: AD9949 VOH 2.2 V at 2 mA gives 550 ohm worst case; PROVISIONAL
 driver_r_spread = 0.1               # PROVISIONAL
-v_oh = 3.3
-dsp_threshold_v = 1.65              # PROVISIONAL: half of the 3.3 V rail
-dsp_noise_mv = 8.0                  # PROVISIONAL
+v_oh = 3.3                          # C: 3.3 V digital rail (section 5)
+bus_series_ohm = 0.0                # PROVISIONAL: the S3 IS has 100 ohm arrays (section 10)
+dsp_threshold_v = 1.5               # PROVISIONAL
+dsp_noise_mv = 5.0                  # PROVISIONAL
+latch_phase = 0.75                  # PROVISIONAL: fraction of the pixel period
 
 [logic]
-hc_r_out_ohm = 40.0                 # PROVISIONAL: 74HC at 3.3 V
-hc_threshold_v = 1.65               # PROVISIONAL: half of the 3.3 V rail
+hc_r_out_ohm = 90.0                 # D: half the guaranteed 108/217 ohm limits at 3.0 V (section 6)
+hc_threshold_v = 1.6                # D: 74HC at 3.3 V (section 6)
 hc_hysteresis_v = 0.05              # PROVISIONAL
-hc_prop_delay_ns = 12.0             # PROVISIONAL: 74HC00/74HC74 at 3.3 V
+hc_prop_delay_ns = 20.0             # C: 74HC00 typical, 30 ns max (section 6)
+ff_fmax_hz = 15_000_000.0           # C: 74HC74 at 3.0 V (section 6)
+ff_min_pulse_ns = 25.0              # C: 74HC74 clock pulse width (section 6)
+ff_setup_ns = 35.0                  # C: 74HC74 setup time (section 6)
+ff_prop_delay_ns = 40.0             # C: 74HC74 typical, 75 ns max (section 6)
 
 [isp]
-wb_r_gain = 1.0                     # PROVISIONAL: neutral until the inverse colour model exists
-wb_b_gain = 1.0                     # PROVISIONAL
-ccm = [                             # PROVISIONAL: identity
-    [1.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0],
-    [0.0, 0.0, 1.0],
+wb_r_gain = 2.0                     # PROVISIONAL: daylight
+wb_b_gain = 1.5                     # PROVISIONAL: daylight
+xyz_to_cam = [                      # C: dcraw "Canon PowerShot S60" / 10000, stand-in (section 8)
+    [0.8795, -0.2482, -0.0797],
+    [-0.7804, 1.5403, 0.2573],
+    [-0.1422, 0.1996, 0.7082],
 ]
-tone_contrast = 1.0                 # PROVISIONAL
-tone_toe = 0.0                      # PROVISIONAL
-tone_shoulder = 0.0                 # PROVISIONAL
+tone_contrast = 1.15                # PROVISIONAL
+tone_toe = 0.02                     # PROVISIONAL
+tone_shoulder = 0.10                # PROVISIONAL
 chroma_nr_frac = 0.002              # PROVISIONAL
-luma_nr_frac = 0.0                  # PROVISIONAL
+luma_nr_frac = 0.0005               # PROVISIONAL
 sharpen_radius_frac = 0.0005        # PROVISIONAL
-sharpen_gain = 0.5                  # PROVISIONAL
+sharpen_gain = 0.6                  # PROVISIONAL
 ae_target = 0.18                    # PROVISIONAL: mid-grey
 
 [jpeg]
-subsampling = "4:2:0"               # PROVISIONAL
-chroma_upsample = "nearest"         # PROVISIONAL
-tables = "standard"                 # PROVISIONAL: Canon tables to extract
+subsampling = "4:2:2"               # A: measured (section 7)
+chroma_upsample = "bilinear"        # PROVISIONAL: decoder behaviour
+
+[jpeg.tables.superfine]                 # A: measured, section 7
+luma = [
+    [ 1,  1,  1,  1,  1,  2,  3,  3],
+    [ 1,  1,  1,  1,  1,  3,  3,  3],
+    [ 1,  1,  1,  1,  2,  3,  3,  3],
+    [ 1,  1,  1,  1,  2,  4,  4,  3],
+    [ 1,  1,  3,  4,  4,  6,  6,  4],
+    [ 1,  2,  3,  3,  4,  5,  6,  5],
+    [ 2,  3,  4,  4,  5,  6,  6,  5],
+    [ 5,  5,  5,  5,  5,  5,  5,  5],
+]
+chroma = [
+    [ 1,  1,  2,  4,  6, 11, 11, 11],
+    [ 1,  1,  2,  4,  8, 11, 11, 11],
+    [ 2,  2,  3,  4, 11, 11, 11, 11],
+    [ 4,  4,  4,  5, 11, 11, 11, 11],
+    [ 6,  8, 11, 11, 11, 11, 11, 11],
+    [11, 11, 11, 11, 11, 11, 11, 11],
+    [11, 11, 11, 11, 11, 11, 11, 11],
+    [11, 11, 11, 11, 11, 11, 11, 11],
+]
+
+[jpeg.tables.fine]                 # A: measured, section 7
+luma = [
+    [ 1,  1,  1,  2,  3,  6,  8, 10],
+    [ 1,  1,  2,  3,  4,  8,  9,  8],
+    [ 2,  2,  2,  3,  6,  8, 10,  8],
+    [ 2,  2,  3,  4,  7, 12, 11,  9],
+    [ 3,  3,  8, 11, 10, 16, 15, 11],
+    [ 3,  5,  8, 10, 12, 15, 16, 13],
+    [ 7, 10, 11, 12, 15, 17, 17, 14],
+    [14, 13, 13, 15, 15, 14, 14, 14],
+]
+chroma = [
+    [ 4,  4,  5,  9, 15, 26, 26, 26],
+    [ 4,  4,  5, 10, 19, 26, 26, 26],
+    [ 5,  5,  8,  9, 26, 26, 26, 26],
+    [ 9, 10,  9, 13, 26, 26, 26, 26],
+    [15, 19, 26, 26, 26, 26, 26, 26],
+    [26, 26, 26, 26, 26, 26, 26, 26],
+    [26, 26, 26, 26, 26, 26, 26, 26],
+    [26, 26, 26, 26, 26, 26, 26, 26],
+]
+
+[jpeg.tables.normal]                 # A: measured, section 7
+luma = [
+    [ 9,  6,  5,  9, 13, 22, 29, 35],
+    [ 6,  6,  8, 11, 15, 33, 34, 30],
+    [ 8,  7,  9, 13, 22, 33, 39, 31],
+    [ 8,  9, 12, 16, 28, 49, 45, 34],
+    [10, 12, 21, 32, 39, 61, 58, 42],
+    [13, 19, 31, 36, 45, 58, 63, 51],
+    [28, 36, 44, 49, 58, 68, 66, 55],
+    [41, 52, 54, 55, 62, 56, 57, 54],
+]
+chroma = [
+    [ 9,  9, 12, 20, 15, 26, 79, 79],
+    [ 9, 10, 12, 10, 26, 26, 79, 79],
+    [12, 12, 10, 10, 26, 79, 79, 79],
+    [20, 10, 10, 26, 79, 79, 79, 79],
+    [15, 26, 26, 79, 79, 79, 79, 79],
+    [26, 26, 79, 79, 79, 79, 79, 79],
+    [79, 79, 79, 79, 79, 79, 79, 79],
+    [79, 79, 79, 79, 79, 79, 79, 79],
+]

@@ -1,0 +1,4 @@
+# png 0.18 depends on miniz_oxide 0.8 directly while flate2 1.1.10 and later use 0.9.
+# Cargo.lock pins flate2 1.1.9 to keep a single version; this entry keeps the
+# `multiple_crate_versions` gate green when a future `cargo update` splits them again.
+allowed-duplicate-crates = ["miniz_oxide"]

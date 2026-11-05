@@ -2,7 +2,7 @@
 
 #![cfg(feature = "serde")]
 
-use vcb_core::preset::{Mode, Resolution};
+use vcb_core::preset::{Mode, Orientation, Resolution};
 use vcb_core::readout::{Direction, Layout};
 use vcb_core::{Camera, Preset, Timing};
 
@@ -17,6 +17,10 @@ fn preset(mode: Mode, resolution: Resolution) -> Preset {
     preset.readout.mode = mode;
     preset.readout.resolution = resolution;
     preset
+}
+
+fn derive(mode: Mode, resolution: Resolution, width: u32, height: u32) -> Timing {
+    Timing::derive(&camera(), &preset(mode, resolution), width, height).unwrap()
 }
 
 fn close(a: f64, b: f64, relative: f64) -> bool {
@@ -34,9 +38,8 @@ const CASES: [(Mode, Resolution, u32, u32); 6] = [
 
 #[test]
 fn line_and_frame_periods_follow_the_pixel_period() {
-    let camera = camera();
     for (mode, resolution, width, height) in CASES {
-        let t = Timing::derive(&camera, &preset(mode, resolution), width, height).unwrap();
+        let t = derive(mode, resolution, width, height);
         let line_len = f64::from(t.cols + t.ob_cols + t.hblank_px);
         let lines = f64::from(t.rows_read + t.vblank_lines);
         assert!(close(t.pixel_period_s * line_len, t.line_period_s, 1e-12));
@@ -47,17 +50,10 @@ fn line_and_frame_periods_follow_the_pixel_period() {
 
 #[test]
 fn match_input_keeps_the_native_frame_period() {
-    let camera = camera();
     for mode in [Mode::Still, Mode::Movie] {
-        let native = Timing::derive(&camera, &preset(mode, Resolution::Native), 1, 1).unwrap();
+        let native = derive(mode, Resolution::Native, 1, 1);
         for (width, height) in [(640, 480), (1920, 1440), (301, 977)] {
-            let matched = Timing::derive(
-                &camera,
-                &preset(mode, Resolution::MatchInput),
-                width,
-                height,
-            )
-            .unwrap();
+            let matched = derive(mode, Resolution::MatchInput, width, height);
             assert!(
                 close(matched.frame_period_s, native.frame_period_s, 1e-9),
                 "{mode} {width}x{height}: {} s vs native {} s",
@@ -69,35 +65,48 @@ fn match_input_keeps_the_native_frame_period() {
 }
 
 #[test]
-fn match_input_keeps_oscillator_bands_at_the_same_place_in_the_frame() {
-    let camera = camera();
-    let mode = preset(Mode::Still, Resolution::MatchInput);
-    let small = Timing::derive(&camera, &mode, 640, 480).unwrap();
-    let large = Timing::derive(&camera, &mode, 1920, 1440).unwrap();
-    for freq_hz in [60.0, 1000.0, 15_734.0] {
-        let lines = |t: &Timing| t.lines_per_cycle(freq_hz) / f64::from(t.lines_per_frame());
-        assert!(close(lines(&small), lines(&large), 1e-9), "{freq_hz} Hz");
-        let samples = |t: &Timing| {
-            t.samples_per_cycle(freq_hz)
-                / (f64::from(t.line_len()) * f64::from(t.lines_per_frame()))
-        };
+fn match_input_keeps_the_native_active_line_time() {
+    for mode in [Mode::Still, Mode::Movie] {
+        let native = derive(mode, Resolution::Native, 1, 1);
+        let native_active = f64::from(native.cols) * native.pixel_period_s;
+        let small = derive(mode, Resolution::MatchInput, 640, 480);
+        let large = derive(mode, Resolution::MatchInput, 1920, 1440);
+        for t in [&small, &large] {
+            let active = f64::from(t.cols) * t.pixel_period_s;
+            assert!(
+                close(active, native_active, 1e-3),
+                "{mode} {}x{}: active line {active} s vs native {native_active} s",
+                t.cols,
+                t.rows_read
+            );
+            assert!(
+                t.hblank_px > native.hblank_px,
+                "blanking absorbs the longer line"
+            );
+        }
+        let lines = large.lines_per_cycle(1000.0) / small.lines_per_cycle(1000.0);
+        let rows = f64::from(large.rows_read) / f64::from(small.rows_read);
         assert!(
-            close(samples(&small), samples(&large), 1e-9),
-            "{freq_hz} Hz"
+            (lines / rows - 1.0).abs() < 0.01,
+            "{mode}: a 1 kHz cycle spans {lines} times the lines at {rows} times the rows"
         );
     }
-    let rows = f64::from(large.rows_read) / f64::from(small.rows_read);
-    let ratio = small.lines_per_cycle(1000.0) / large.lines_per_cycle(1000.0);
-    assert!(
-        (ratio * rows - 1.0).abs() < 0.02,
-        "a 1 kHz cycle spans {ratio} as many lines at a third of the rows"
-    );
+}
+
+#[test]
+fn inputs_with_more_rows_than_the_sensor_keep_minimum_blanking() {
+    let native = derive(Mode::Still, Resolution::Native, 1, 1);
+    let tall = derive(Mode::Still, Resolution::MatchInput, 4000, 3000);
+    assert_eq!(tall.hblank_px, 8);
+    assert!(tall.frame_period_s > native.frame_period_s);
+    let native_active = f64::from(native.cols) * native.pixel_period_s;
+    let active = f64::from(tall.cols) * tall.pixel_period_s;
+    assert!(close(active, native_active, 1e-12));
 }
 
 #[test]
 fn lines_per_cycle_counts_line_periods() {
-    let camera = camera();
-    let t = Timing::derive(&camera, &preset(Mode::Movie, Resolution::Native), 1, 1).unwrap();
+    let t = derive(Mode::Movie, Resolution::Native, 1, 1);
     let freq_hz = 1000.0;
     let lines = t.lines_per_cycle(freq_hz);
     assert!(close(lines * t.line_period_s * freq_hz, 1.0, 1e-12));
@@ -106,18 +115,22 @@ fn lines_per_cycle_counts_line_periods() {
 }
 
 #[test]
+fn native_pixel_period_is_the_camera_clock_at_every_resolution() {
+    let camera = camera();
+    for (mode, resolution, width, height) in CASES {
+        let t = derive(mode, resolution, width, height);
+        let clock_hz = camera.clocking(mode).pixel_clock_hz;
+        assert!(close(t.native_pixel_period_s * clock_hz, 1.0, 1e-12));
+    }
+}
+
+#[test]
 fn match_input_at_the_native_size_reproduces_the_native_clocks() {
     let camera = camera();
     let (width, height) = (camera.sensor.native_width, camera.sensor.native_height);
     for mode in [Mode::Still, Mode::Movie] {
-        let native = Timing::derive(&camera, &preset(mode, Resolution::Native), 1, 1).unwrap();
-        let matched = Timing::derive(
-            &camera,
-            &preset(mode, Resolution::MatchInput),
-            width,
-            height,
-        )
-        .unwrap();
+        let native = derive(mode, Resolution::Native, 1, 1);
+        let matched = derive(mode, Resolution::MatchInput, width, height);
         assert_eq!(
             (matched.ob_cols, matched.hblank_px, matched.vblank_lines),
             (native.ob_cols, native.hblank_px, native.vblank_lines)
@@ -133,29 +146,44 @@ fn match_input_at_the_native_size_reproduces_the_native_clocks() {
 
 #[test]
 fn match_input_rounds_the_sensor_down_to_even() {
+    let t = derive(Mode::Still, Resolution::MatchInput, 1601, 1067);
+    assert_eq!((t.sensor_width, t.sensor_height), (1600, 1066));
+    assert_eq!((t.output_width, t.output_height), (1600, 1066));
+}
+
+#[test]
+fn portrait_inputs_turn_onto_the_landscape_sensor() {
     let camera = camera();
-    let t = Timing::derive(
-        &camera,
-        &preset(Mode::Still, Resolution::MatchInput),
-        1067,
-        1601,
-    )
-    .unwrap();
-    assert_eq!((t.sensor_width, t.sensor_height), (1066, 1600));
-    assert_eq!((t.output_width, t.output_height), (1066, 1600));
+    let auto = derive(Mode::Still, Resolution::MatchInput, 480, 640);
+    assert!(auto.rotated);
+    assert_eq!((auto.sensor_width, auto.sensor_height), (640, 480));
+    assert_eq!((auto.output_width, auto.output_height), (480, 640));
+    assert_eq!(auto.developed_size(), (640, 480));
+
+    let mut level = preset(Mode::Still, Resolution::MatchInput);
+    level.readout.orientation = Orientation::Landscape;
+    let kept = Timing::derive(&camera, &level, 480, 640).unwrap();
+    assert!(!kept.rotated);
+    assert_eq!((kept.sensor_width, kept.sensor_height), (480, 640));
+
+    let mut held = preset(Mode::Still, Resolution::Native);
+    held.readout.orientation = Orientation::Portrait;
+    let native = Timing::derive(&camera, &held, 800, 600).unwrap();
+    assert_eq!(
+        (native.sensor_width, native.sensor_height),
+        (camera.sensor.native_width, camera.sensor.native_height)
+    );
+    assert_eq!(
+        (native.output_width, native.output_height),
+        (camera.sensor.native_height, camera.sensor.native_width)
+    );
 }
 
 #[test]
 fn movie_mode_reads_one_row_pair_in_every_line_skip_pairs() {
     let camera = camera();
     let skip = camera.movie.line_skip;
-    let t = Timing::derive(
-        &camera,
-        &preset(Mode::Movie, Resolution::MatchInput),
-        256,
-        192,
-    )
-    .unwrap();
+    let t = derive(Mode::Movie, Resolution::MatchInput, 256, 192);
     assert_eq!(t.rows_read, t.sensor_height / skip);
     assert_eq!(
         (t.output_width, t.output_height),
@@ -183,14 +211,12 @@ fn movie_mode_reads_one_row_pair_in_every_line_skip_pairs() {
 #[test]
 fn native_output_has_the_camera_frame_size() {
     let camera = camera();
-    let still =
-        Timing::derive(&camera, &preset(Mode::Still, Resolution::Native), 800, 600).unwrap();
+    let still = derive(Mode::Still, Resolution::Native, 800, 600);
     assert_eq!(
         (still.output_width, still.output_height),
         (camera.sensor.native_width, camera.sensor.native_height)
     );
-    let movie =
-        Timing::derive(&camera, &preset(Mode::Movie, Resolution::Native), 800, 600).unwrap();
+    let movie = derive(Mode::Movie, Resolution::Native, 800, 600);
     assert_eq!(
         (movie.output_width, movie.output_height),
         (camera.movie.output_width, camera.movie.output_height)
@@ -199,9 +225,8 @@ fn native_output_has_the_camera_frame_size() {
 
 #[test]
 fn layout_periods_agree_with_the_timing() {
-    let camera = camera();
     for (mode, resolution, width, height) in CASES {
-        let t = Timing::derive(&camera, &preset(mode, resolution), width, height).unwrap();
+        let t = derive(mode, resolution, width, height);
         let layout = Layout::from_timing(&t, Direction::TopDown);
         assert!(close(layout.line_period_s(), t.line_period_s, 1e-12));
         assert!(close(layout.frame_period_s(), t.frame_period_s, 1e-12));
@@ -236,18 +261,18 @@ fn too_small_or_empty_inputs_are_rejected() {
 
 #[test]
 fn display_names_every_period_with_its_unit() {
-    let camera = camera();
-    let t = Timing::derive(&camera, &preset(Mode::Movie, Resolution::Native), 1, 1).unwrap();
-    let text = t.to_string();
-    for needle in [
+    let text = derive(Mode::Movie, Resolution::Native, 1, 1).to_string();
+    let needles = [
         "movie",
         "native",
+        "landscape",
         "MHz",
         "µs",
         "ms",
         "frames per second",
         "px",
-    ] {
+    ];
+    for needle in needles {
         assert!(text.contains(needle), "missing {needle:?} in\n{text}");
     }
 }

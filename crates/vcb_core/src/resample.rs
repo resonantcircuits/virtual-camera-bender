@@ -118,39 +118,60 @@ impl Axis {
     }
 }
 
-/// Resamples the `crop` region of `src` onto the whole of `dst`.
+/// How the source is turned before cropping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Turn {
+    /// The source as stored.
+    None,
+    /// The source turned 90 degrees clockwise: its left column becomes the top row.
+    Clockwise,
+}
+
+/// Resamples the `crop` region of `src`, turned by `turn`, onto the whole of `dst`.
+///
+/// `crop` is in the coordinates of the turned source.
 ///
 /// # Panics
 ///
-/// Panics if `crop` is empty or extends beyond `src`.
-pub(crate) fn resample(src: &Plane<f32>, crop: Rect, dst: &mut Plane<f32>) {
+/// Panics if `crop` is empty or extends beyond the turned source.
+pub(crate) fn resample(src: &Plane<f32>, turn: Turn, crop: Rect, dst: &mut Plane<f32>) {
+    let (view_w, view_h) = match turn {
+        Turn::None => (src.width(), src.height()),
+        Turn::Clockwise => (src.height(), src.width()),
+    };
     assert!(
         crop.width > 0
             && crop.height > 0
-            && crop.x + crop.width <= src.width()
-            && crop.y + crop.height <= src.height(),
-        "crop {crop:?} does not fit a {} x {} source",
-        src.width(),
-        src.height()
+            && crop.x + crop.width <= view_w
+            && crop.y + crop.height <= view_h,
+        "crop {crop:?} does not fit a {view_w} x {view_h} source"
     );
-    let (dst_w, dst_h) = (dst.width(), dst.height());
-    if dst_w == 0 || dst_h == 0 {
+    if dst.width() == 0 || dst.height() == 0 {
         return;
     }
-    let ax = Axis::new(crop.x, crop.width, dst_w);
-    let ay = Axis::new(crop.y, crop.height, dst_h);
-    let src_w = src.width() as usize;
+    let ax = Axis::new(crop.x, crop.width, dst.width());
+    let ay = Axis::new(crop.y, crop.height, dst.height());
     let data = src.data();
+    let src_w = src.width() as usize;
+    let last_row = src.height() as usize - 1;
+    match turn {
+        Turn::None => run(ax, ay, dst, |u, v| data[v * src_w + u]),
+        Turn::Clockwise => run(ax, ay, dst, |u, v| data[(last_row - u) * src_w + v]),
+    }
+}
+
+/// Fills `dst` from a source read through `fetch(column, row)`.
+fn run(ax: Axis, ay: Axis, dst: &mut Plane<f32>, fetch: impl Fn(usize, usize) -> f32 + Sync) {
+    let dst_w = dst.width() as usize;
     dst.data_mut()
-        .par_chunks_mut(dst_w as usize)
+        .par_chunks_mut(dst_w)
         .enumerate()
         .for_each(|(j, out_row)| {
             out_row.fill(0.0);
             ay.taps(j, |v, wy| {
-                let src_row = &data[v * src_w..(v + 1) * src_w];
                 for (i, out) in out_row.iter_mut().enumerate() {
                     let mut acc = 0.0;
-                    ax.taps(i, |u, wx| acc += wx * src_row[u]);
+                    ax.taps(i, |u, wx| acc += wx * fetch(u, v));
                     *out += wy * acc;
                 }
             });

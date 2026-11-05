@@ -23,7 +23,7 @@ fn simulator(camera: Camera, preset: Preset, width: u32, height: u32) -> Simulat
         .unwrap()
 }
 
-/// A smooth sRGB test chart: horizontal red ramp, vertical green ramp, diagonal blue.
+/// A smooth sRGB test chart inside the sensor gamut: red, green and blue ramps.
 fn gradient(width: u32, height: u32) -> Vec<u8> {
     let mut rgb = Vec::with_capacity((width * height * 3) as usize);
     for y in 0..height {
@@ -40,6 +40,11 @@ fn gradient(width: u32, height: u32) -> Vec<u8> {
     rgb
 }
 
+fn uniform(width: u32, height: u32, rgb: [u8; 3]) -> Scene {
+    let bytes: Vec<u8> = (0..width * height).flat_map(|_| rgb).collect();
+    Scene::from_srgb8(width, height, &bytes)
+}
+
 fn psnr(a: &[u8], b: &[u8]) -> f64 {
     assert_eq!(a.len(), b.len());
     let mse = a
@@ -51,10 +56,40 @@ fn psnr(a: &[u8], b: &[u8]) -> f64 {
     10.0 * (255.0f64.powi(2) / mse.max(1e-12)).log10()
 }
 
+/// Returns the centroid of the pixels brighter than mid-grey in every channel.
+fn bright_centroid(frame: &Frame) -> (f64, f64) {
+    let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
+    for y in 0..frame.height() {
+        for x in 0..frame.width() {
+            if frame.pixel(x, y).iter().all(|&c| c > 128) {
+                sx += f64::from(x);
+                sy += f64::from(y);
+                n += 1.0;
+            }
+        }
+    }
+    assert!(n > 0.0, "no bright pixels in the frame");
+    (sx / n, sy / n)
+}
+
+/// A dark portrait scene with a white square centred at `(45, 55)` of 300 by 400.
+fn marked_portrait() -> Scene {
+    let (width, height) = (300, 400);
+    let mut scene = uniform(width, height, [20, 20, 20]);
+    for plane in scene.planes_mut() {
+        for y in 40..70 {
+            for x in 30..60 {
+                plane.set(x, y, 1.0);
+            }
+        }
+    }
+    scene
+}
+
 #[test]
 fn flat_grey_scene_develops_to_a_flat_frame() {
     let (width, height) = (96, 64);
-    let scene = Scene::from_srgb8(width, height, &vec![128; (width * height * 3) as usize]);
+    let scene = uniform(width, height, [128, 128, 128]);
     let mut sim = simulator(camera(), preset_file("a520-clean"), width, height);
     let frame = sim.frame(&scene, 0);
     let first = frame.pixel(0, 0);
@@ -81,16 +116,17 @@ fn smooth_gradient_round_trips_through_the_clean_camera() {
 }
 
 #[test]
-fn the_same_frame_index_renders_identical_bytes() {
+fn the_same_sequence_from_reset_renders_identical_bytes() {
     let (width, height) = (128, 96);
     let scene = Scene::from_srgb8(width, height, &gradient(width, height));
     let mut sim = simulator(camera(), preset_file("a520-clean"), width, height);
-    let first: Frame = sim.frame(&scene, 3).clone();
-    assert_eq!(sim.frame(&scene, 3), &first);
+    let first: Vec<Frame> = (0..3).map(|i| sim.frame(&scene, i).clone()).collect();
     sim.reset();
-    assert_eq!(sim.frame(&scene, 3), &first);
+    let again: Vec<Frame> = (0..3).map(|i| sim.frame(&scene, i).clone()).collect();
+    assert_eq!(again, first);
     let mut other = simulator(camera(), preset_file("a520-clean"), width, height);
-    assert_eq!(other.frame(&scene, 3), &first);
+    let fresh: Vec<Frame> = (0..3).map(|i| other.frame(&scene, i).clone()).collect();
+    assert_eq!(fresh, first);
 }
 
 #[test]
@@ -112,19 +148,18 @@ fn movie_mode_bins_columns_and_skips_lines() {
 #[test]
 fn movie_mode_keeps_the_bayer_phase() {
     let (width, height) = (128, 96);
-    let mut red = vec![0u8; (width * height * 3) as usize];
-    for pixel in red.chunks_exact_mut(3) {
-        pixel[0] = 220;
-    }
+    let colour = [200, 120, 60];
     let mut preset = preset_file("a520-clean");
     preset.readout.mode = Mode::Movie;
     let mut sim = simulator(camera(), preset, width, height);
-    let frame = sim.frame(&Scene::from_srgb8(width, height, &red), 0);
-    let [r, g, b] = frame.pixel(frame.width() / 2, frame.height() / 2);
+    let frame = sim.frame(&uniform(width, height, colour), 0);
+    let pixel = frame.pixel(frame.width() / 2, frame.height() / 2);
     assert!(
-        r.abs_diff(220) <= 1 && g <= 1 && b <= 1,
-        "red became {:?}",
-        [r, g, b]
+        pixel
+            .iter()
+            .zip(colour)
+            .all(|(&got, want)| got.abs_diff(want) <= 2),
+        "{colour:?} became {pixel:?}"
     );
 }
 
@@ -136,9 +171,53 @@ fn native_movie_mode_delivers_the_camera_movie_size() {
     preset.readout.mode = Mode::Movie;
     preset.readout.resolution = Resolution::Native;
     let mut sim = Simulator::builder((camera, preset)).build().unwrap();
-    let frame = sim.frame(&Scene::from_srgb8(4, 3, &[100; 36]), 0);
+    let frame = sim.frame(&uniform(4, 3, [100, 100, 100]), 0);
     assert_eq!((frame.width(), frame.height()), size);
     assert!(frame.rgb().iter().all(|&c| c.abs_diff(100) <= 1));
+}
+
+#[test]
+fn portrait_input_in_native_mode_develops_upright_on_the_rotated_sensor() {
+    let camera = camera();
+    let (native_w, native_h) = (camera.sensor.native_width, camera.sensor.native_height);
+    let mut preset = preset_file("a520-clean");
+    preset.readout.resolution = Resolution::Native;
+    let scene = marked_portrait();
+    let mut sim = Simulator::builder((camera, preset))
+        .input_size(scene.width(), scene.height())
+        .build()
+        .unwrap();
+    assert!(sim.timing().rotated);
+    let frame = sim.frame(&scene, 0);
+    assert_eq!((frame.width(), frame.height()), (native_h, native_w));
+    let scale = f64::from(native_h) / f64::from(scene.width());
+    let (cx, cy) = bright_centroid(frame);
+    assert!(
+        (cx - 45.0 * scale).abs() < 2.0 && (cy - 55.0 * scale).abs() < 2.0,
+        "mark moved to ({cx:.1}, {cy:.1}), expected ({:.1}, {:.1})",
+        45.0 * scale,
+        55.0 * scale
+    );
+}
+
+#[test]
+fn portrait_input_at_match_input_keeps_its_size_and_marks() {
+    let scene = marked_portrait();
+    let mut sim = simulator(
+        camera(),
+        preset_file("a520-clean"),
+        scene.width(),
+        scene.height(),
+    );
+    let frame = sim.frame(&scene, 0);
+    assert_eq!((frame.width(), frame.height()), (300, 400));
+    let (cx, cy) = bright_centroid(frame);
+    assert!(
+        (cx - 44.5).abs() < 0.5 && (cy - 54.5).abs() < 0.5,
+        "mark moved to ({cx:.2}, {cy:.2})"
+    );
+    let input = scene.to_srgb8();
+    assert!(psnr(&input, frame.rgb()) > 30.0);
 }
 
 #[test]
@@ -155,7 +234,7 @@ fn readout_direction_changes_time_order_not_the_image() {
 }
 
 #[test]
-fn highlights_clip_at_full_well() {
+fn clipped_highlights_stay_white() {
     let (width, height) = (32, 32);
     let mut scene = Scene::new(width, height);
     for plane in scene.planes_mut() {

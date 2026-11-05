@@ -94,7 +94,7 @@ pub struct Params {
     pub prnu: f32,
     /// Dark-signal non-uniformity in electrons (one standard deviation).
     pub dsnu_e: f32,
-    /// Fraction of the charge above full well that the overflow drain removes.
+    /// Overexposure, in multiples of the full well, the overflow drain absorbs before spill.
     pub antibloom_ratio: f32,
     /// Interline smear relative to the signal in decibels.
     pub smear_db: f32,
@@ -113,8 +113,8 @@ pub struct Params {
 impl Params {
     /// Resolves the sensor parameters from the camera, preset and derived timing.
     ///
-    /// Movie mode integrates for one frame period and enables smear if the camera's
-    /// movie section does; still mode uses the still exposure without smear.
+    /// Movie mode integrates for one frame period; still mode uses the still exposure.
+    /// Each mode's camera section says whether interline smear is present.
     ///
     /// # Errors
     ///
@@ -122,7 +122,7 @@ impl Params {
     pub fn resolve(camera: &Camera, preset: &Preset, timing: &Timing) -> Result<Self, Error> {
         let sensor = &camera.sensor;
         let (exposure_s, smear) = match timing.mode {
-            Mode::Still => (camera.still.exposure_s, false),
+            Mode::Still => (camera.still.exposure_s, camera.still.smear),
             Mode::Movie => (1.0 / camera.movie.fps, camera.movie.smear),
         };
         Ok(Self {

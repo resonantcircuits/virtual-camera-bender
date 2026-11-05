@@ -84,6 +84,31 @@ impl Frame {
     }
 }
 
+/// Writes `src` turned 90 degrees counter-clockwise into `dst`.
+///
+/// # Panics
+///
+/// Panics if `dst` is not `src.height()` by `src.width()`.
+pub(crate) fn rotate_ccw(src: &Frame, dst: &mut Frame) {
+    assert!(
+        dst.width == src.height && dst.height == src.width,
+        "cannot turn a {} x {} frame into {} x {}",
+        src.width,
+        src.height,
+        dst.width,
+        dst.height
+    );
+    let src_w = src.width as usize;
+    let dst_w = dst.width as usize;
+    for (y, row) in dst.rgb.chunks_exact_mut(dst_w * 3).enumerate() {
+        let sx = src_w - 1 - y;
+        for (x, pixel) in row.chunks_exact_mut(3).enumerate() {
+            let i = (x * src_w + sx) * 3;
+            pixel.copy_from_slice(&src.rgb[i..i + 3]);
+        }
+    }
+}
+
 impl Debug for Frame {
     /// Prints the shape only; frames hold millions of bytes.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {

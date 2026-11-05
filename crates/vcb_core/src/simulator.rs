@@ -6,7 +6,7 @@ use crate::isp::{self, Raw};
 use crate::preset::Resolution;
 use crate::readout::{self, Stream};
 use crate::sensor::{self, Charge};
-use crate::{Camera, Error, Frame, Preset, Scene, Timing, bus, codec, scene};
+use crate::{Camera, Error, Frame, Preset, Scene, Timing, bus, codec, frame, scene};
 
 /// The required inputs of a [`Simulator`]: the camera and the preset.
 #[derive(Debug, Clone, PartialEq)]
@@ -137,6 +137,8 @@ struct Buffers {
     codes: Codes,
     raw: Raw,
     frame: Frame,
+    /// The frame turned upright, when the camera is held in portrait.
+    upright: Option<Frame>,
 }
 
 impl Buffers {
@@ -150,6 +152,9 @@ impl Buffers {
             codes: Codes::new(layout.clone()),
             raw: Raw::new(layout.cols(), layout.rows()),
             frame: Frame::new(params.isp.output.width, params.isp.output.height),
+            upright: timing
+                .rotated
+                .then(|| Frame::new(timing.output_width, timing.output_height)),
         }
     }
 }
@@ -174,7 +179,7 @@ impl Buffers {
 /// let scene = Scene::from_srgb8(32, 24, &[90; 32 * 24 * 3]);
 /// let first = sim.frame(&scene, 0).clone();
 /// sim.reset();
-/// assert_eq!(sim.frame(&scene, 0), &first);
+/// assert_eq!(sim.frame(&scene, 0), &first, "the same sequence from reset is identical");
 /// # Ok(())
 /// # }
 /// ```
@@ -195,12 +200,19 @@ impl Simulator {
         }
     }
 
-    /// Renders `scene` as frame `index` of a sequence and returns the developed frame.
+    /// Renders `scene` as frame `index` of a sequence and returns the upright frame.
     ///
     /// The scene may have any non-zero size; it is cropped to the sensor's aspect ratio
     /// and resampled to the sensor. `index` selects the temporal noise of the frame.
-    /// Analog state persists from the previous call, so a sequence rendered in order
-    /// from a fresh or [`reset`](Self::reset) simulator is reproducible byte for byte.
+    ///
+    /// # Determinism
+    ///
+    /// Analog state (oscillator phase, circuit nodes, servo loops) persists from one
+    /// call to the next, as in the camera. The same sequence of scenes and indices
+    /// rendered from a fresh or [`reset`](Self::reset) simulator, with the same camera,
+    /// preset and seed, is identical byte for byte. Rendering the same index twice
+    /// without a reset in between is not guaranteed to repeat, because the state has
+    /// moved on.
     ///
     /// # Panics
     ///
@@ -230,7 +242,7 @@ impl Simulator {
         afe::process(&params.afe, &mut state.afe, &b.stream, index, &mut b.analog);
         adc::convert(&params.adc, &b.analog, &mut b.codes);
         bus::bend(params.bus.as_ref(), &mut state.bus, index, &mut b.codes);
-        isp::clamp_black(&b.codes, &mut b.raw);
+        isp::clamp_black(&params.isp, &b.codes, &mut b.raw);
         isp::develop(&params.isp, &mut state.isp, &b.raw, &mut b.frame);
         codec::encode(&params.codec, &mut state.codec, &mut b.frame);
         tracing::trace!(
@@ -239,7 +251,13 @@ impl Simulator {
             black_level = b.raw.black_level(),
             "frame rendered"
         );
-        &b.frame
+        match &mut b.upright {
+            Some(upright) => {
+                frame::rotate_ccw(&b.frame, upright);
+                upright
+            }
+            None => &b.frame,
+        }
     }
 
     /// Returns the derived readout timing.

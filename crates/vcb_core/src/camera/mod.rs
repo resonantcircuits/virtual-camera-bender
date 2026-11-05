@@ -12,7 +12,7 @@
 
 pub(crate) mod model;
 
-use crate::codec::{ChromaUp, Subsampling, Tables};
+use crate::codec::{ChromaUp, Quality, QuantTables, Subsampling};
 use crate::readout::Direction;
 use crate::sensor::Cfa;
 
@@ -58,7 +58,7 @@ pub struct Sensor {
     pub dsnu_e: f64,
     /// Conversion gain of the output amplifier in microvolts per electron.
     pub conv_gain_uv_per_e: f64,
-    /// Fraction of the charge above full well that the overflow drain removes.
+    /// Overexposure, in multiples of the full well, that the overflow drain absorbs before charge spills.
     pub antibloom_ratio: f64,
     /// Interline smear relative to the signal, in decibels (negative).
     pub smear_db: f64,
@@ -83,8 +83,10 @@ pub struct Still {
     pub vblank_lines: u32,
     /// Exposure (integration) time in seconds.
     pub exposure_s: f64,
-    /// JPEG quality factor of the still image, 1 to 100.
-    pub jpeg_quality: u8,
+    /// Whether interline smear is present; false because the mechanical shutter closes during readout.
+    pub smear: bool,
+    /// JPEG quality setting of the still image.
+    pub jpeg: Quality,
     /// Which sensor row is read first.
     pub direction: Direction,
 }
@@ -110,8 +112,8 @@ pub struct Movie {
     pub output_width: u32,
     /// Height of the movie frame in pixels at native resolution.
     pub output_height: u32,
-    /// JPEG quality factor of each movie frame, 1 to 100.
-    pub jpeg_quality: u8,
+    /// JPEG quality setting of each movie frame.
+    pub jpeg: Quality,
     /// Which sensor row is read first.
     pub direction: Direction,
     /// Whether interline smear is present; the electronic shutter leaves the CCD exposed during transfer.
@@ -142,9 +144,13 @@ pub struct Afe {
 pub struct Adc {
     /// Resolution in bits; data lines are `D0` to `D(bits-1)`.
     pub bits: u8,
+    /// Bus lines the image processor reads, starting at `dsp_lsb`.
+    pub dsp_bits: u8,
+    /// Lowest bus line the image processor reads; lines below it are unconnected.
+    pub dsp_lsb: u8,
     /// Input voltage that maps to the largest code.
     pub full_scale_v: f64,
-    /// Nominal code of the black pedestal; the AFE pedestal must map to it.
+    /// Nominal code of the black pedestal in full-bus units; the AFE pedestal must map to it.
     pub black_level: u16,
     /// Output resistance of each data-line driver in ohms.
     pub driver_r_ohm: f64,
@@ -152,13 +158,17 @@ pub struct Adc {
     pub driver_r_spread: f64,
     /// Output-high voltage of the data-line drivers.
     pub v_oh: f64,
+    /// Series resistor on each bus line between the ADC and the image processor in ohms.
+    pub bus_series_ohm: f64,
     /// Logic threshold of the image processor's bus inputs in volts.
     pub dsp_threshold_v: f64,
     /// Thermal noise at the image processor's bus inputs in millivolts, one standard deviation.
     pub dsp_noise_mv: f64,
+    /// Fraction of the pixel period at which the image processor latches the bus.
+    pub latch_phase: f64,
 }
 
-/// The `[logic]` section: the 74HC gates of the bend circuit.
+/// The `[logic]` section: the 74HC00 and 74HC74 of the bend circuit.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
@@ -169,8 +179,16 @@ pub struct Logic {
     pub hc_threshold_v: f64,
     /// Input hysteresis of a 74HC gate in volts.
     pub hc_hysteresis_v: f64,
-    /// Propagation delay of a 74HC gate in nanoseconds.
+    /// Propagation delay of a 74HC00 gate in nanoseconds.
     pub hc_prop_delay_ns: f64,
+    /// Highest clock frequency of the 74HC74 flip-flop in hertz.
+    pub ff_fmax_hz: f64,
+    /// Shortest clock pulse, high or low, the flip-flop responds to, in nanoseconds.
+    pub ff_min_pulse_ns: f64,
+    /// Setup time of the flip-flop's `D` input before the clock edge in nanoseconds.
+    pub ff_setup_ns: f64,
+    /// Clock-to-output propagation delay of the flip-flop in nanoseconds.
+    pub ff_prop_delay_ns: f64,
 }
 
 /// The `[isp]` section: the image processor's colour and detail pipeline.
@@ -182,8 +200,8 @@ pub struct Isp {
     pub wb_r_gain: f64,
     /// Daylight white-balance gain of the blue channel relative to green.
     pub wb_b_gain: f64,
-    /// Colour correction matrix from sensor RGB to linear sRGB, row major.
-    pub ccm: [[f64; 3]; 3],
+    /// Colour matrix from CIE XYZ (D65) to camera RGB, row major, in dcraw's convention.
+    pub xyz_to_cam: [[f64; 3]; 3],
     /// Slope of the tone curve at mid-grey.
     pub tone_contrast: f64,
     /// Lift of the tone curve in the shadows.
@@ -211,8 +229,33 @@ pub struct Jpeg {
     pub subsampling: Subsampling,
     /// Chroma upsampling of the decoder that displays the file.
     pub chroma_upsample: ChromaUp,
-    /// Quantisation table family.
-    pub tables: Tables,
+    /// The camera's quantisation tables for each quality setting.
+    pub tables: JpegTables,
+}
+
+/// The `[jpeg.tables]` section: quantisation tables measured from camera files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+pub struct JpegTables {
+    /// Tables of the superfine setting.
+    pub superfine: QuantTables,
+    /// Tables of the fine setting.
+    pub fine: QuantTables,
+    /// Tables of the normal setting.
+    pub normal: QuantTables,
+}
+
+impl JpegTables {
+    /// Returns the tables of one quality setting.
+    #[must_use]
+    pub fn get(&self, quality: Quality) -> &QuantTables {
+        match quality {
+            Quality::Superfine => &self.superfine,
+            Quality::Fine => &self.fine,
+            Quality::Normal => &self.normal,
+        }
+    }
 }
 
 /// The clocking of one readout mode, common to the still and movie sections.

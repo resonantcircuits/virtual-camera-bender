@@ -184,68 +184,114 @@ fn analog_pedestal_lands_on_the_nominal_black_code() {
 }
 
 #[test]
-fn black_clamp_subtracts_the_optical_black_mean() {
+fn black_clamp_reads_the_bus_as_the_processor_does() {
     let camera = camera();
     let t = timing(&camera, 6, 4);
+    let params = isp::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    let shift = camera.adc.dsp_lsb;
+    // Bus lines below `dsp_lsb` are not connected to the processor: set them all.
+    let unread = (1u16 << shift) - 1;
     let layout = Layout::from_timing(&t, Direction::BottomUp);
     let mut codes = Codes::new(layout.clone());
     let (ob, line_len) = (layout.ob_cols() as usize, layout.line_len() as usize);
     for (line, words) in codes.words_mut().chunks_exact_mut(line_len).enumerate() {
-        words[..ob].fill(if line % 2 == 0 { 120 } else { 140 });
+        let black: u16 = if line % 2 == 0 { 30 } else { 34 };
+        words[..ob].fill((black << shift) | unread);
         for (x, word) in words[ob..].iter_mut().enumerate() {
-            *word = 1000 + 10 * line as u16 + x as u16;
+            *word = ((250 + 10 * line as u16 + x as u16) << shift) | unread;
         }
     }
     let mut raw = Raw::new(layout.cols(), layout.rows());
-    isp::clamp_black(&codes, &mut raw);
-    assert!((raw.black_level() - 130.0).abs() < 1e-4);
+    isp::clamp_black(&params, &codes, &mut raw);
+    assert!((raw.black_level() - 32.0).abs() < 1e-4);
     // Bottom-up readout: the first line read is the last image row.
     let last = layout.rows() - 1;
-    assert!((raw.plane().get(0, last) - (1000.0 - 130.0)).abs() < 1e-4);
-    assert!((raw.plane().get(2, 0) - (1000.0 + 10.0 * last as f32 + 2.0 - 130.0)).abs() < 1e-4);
+    assert!((raw.plane().get(0, last) - (250.0 - 32.0)).abs() < 1e-4);
+    let top = 250.0 + 10.0 * last as f32 + 2.0 - 32.0;
+    assert!((raw.plane().get(2, 0) - top).abs() < 1e-4);
 }
 
-#[test]
-fn downscaling_averages_the_light_over_each_photosite() {
-    let (width, height) = (64, 48);
-    let mut checker = Scene::new(width, height);
-    for plane in checker.planes_mut() {
+fn checker(width: u32, height: u32) -> Scene {
+    let mut scene = Scene::new(width, height);
+    for plane in scene.planes_mut() {
         for (y, row) in (0..height).zip(plane.rows_mut()) {
             for (x, value) in (0..width).zip(row.iter_mut()) {
                 *value = if (x + y) % 2 == 0 { 1.0 } else { 0.0 };
             }
         }
     }
-    let camera = camera();
-    let t = timing(&camera, 16, 12);
-    let params = scene::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
-    let mut out = Scene::new(16, 12);
-    scene::prepare(&params, &checker, &mut out);
-    assert!(
-        out.plane(Channel::Green)
-            .data()
-            .iter()
-            .all(|&v| (v - 0.5).abs() < 1e-5)
-    );
+    scene
+}
+
+fn scene_params(camera: &Camera, width: u32, height: u32) -> scene::Params {
+    scene::Params::resolve(camera, &Preset::new("a520"), &timing(camera, width, height)).unwrap()
 }
 
 #[test]
-fn preparing_keeps_the_total_light_of_a_flat_scene() {
+fn downscaling_averages_the_light_over_each_photosite() {
     let camera = camera();
-    let t = timing(&camera, 16, 12);
-    let params = scene::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
-    for (width, height) in [(17, 13), (40, 10), (7, 30), (16, 12)] {
+    let params = scene_params(&camera, 16, 12);
+    let mut out = Scene::new(16, 12);
+    scene::prepare(&params, &checker(64, 48), &mut out);
+    let green = out.plane(Channel::Green).data();
+    assert!(green.iter().all(|&v| (v - 0.5).abs() < 1e-5));
+}
+
+#[test]
+fn grey_reaches_the_sensor_divided_by_the_white_balance_gains() {
+    let camera = camera();
+    let params = scene_params(&camera, 16, 12);
+    for (width, height) in [(17, 13), (40, 10), (16, 12)] {
         let mut input = Scene::new(width, height);
         for plane in input.planes_mut() {
             plane.fill(0.3);
         }
         let mut out = Scene::new(16, 12);
         scene::prepare(&params, &input, &mut out);
-        for plane in out.planes() {
+        for (channel, gain) in Channel::ALL.into_iter().zip(params.wb_gains) {
+            let expected = 0.3 / gain;
             assert!(
-                plane.data().iter().all(|&v| (v - 0.3).abs() < 1e-5),
-                "{width}x{height} input is not flat after preparation"
+                out.plane(channel)
+                    .data()
+                    .iter()
+                    .all(|&v| (v - expected).abs() < 1e-5),
+                "{width}x{height}: {channel:?} is not {expected} everywhere"
             );
         }
     }
+}
+
+#[test]
+fn out_of_gamut_colours_collect_no_negative_charge() {
+    let camera = camera();
+    let params = scene_params(&camera, 8, 6);
+    let mut red = Scene::new(8, 6);
+    red.plane_mut(Channel::Red).fill(1.0);
+    let mut out = Scene::new(8, 6);
+    scene::prepare(&params, &red, &mut out);
+    for plane in out.planes() {
+        assert!(plane.data().iter().all(|&v| v >= 0.0));
+    }
+    assert!(out.plane(Channel::Blue).data().iter().all(|&v| v == 0.0));
+}
+
+#[test]
+fn portrait_scenes_turn_clockwise_onto_the_sensor() {
+    let camera = camera();
+    let t = timing(&camera, 4, 6);
+    assert!(t.rotated);
+    let params = scene::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    let mut input = Scene::new(4, 6);
+    for plane in input.planes_mut() {
+        plane.set(0, 0, 1.0);
+    }
+    let mut out = Scene::new(t.sensor_width, t.sensor_height);
+    scene::prepare(&params, &input, &mut out);
+    let green = out.plane(Channel::Green);
+    assert_eq!((green.width(), green.height()), (6, 4));
+    assert!(
+        (green.get(5, 0) - 1.0).abs() < 1e-5,
+        "top-left did not turn to top-right"
+    );
+    assert!(green.data().iter().filter(|&&v| v > 0.0).count() == 1);
 }
