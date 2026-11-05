@@ -209,6 +209,9 @@ impl Camera {
         non_negative("logic.ff_min_pulse_ns", logic.ff_min_pulse_ns)?;
         non_negative("logic.ff_setup_ns", logic.ff_setup_ns)?;
         non_negative("logic.ff_prop_delay_ns", logic.ff_prop_delay_ns)?;
+        non_negative("logic.clamp_diode_v", logic.clamp_diode_v)?;
+        positive("logic.clamp_r_ohm", logic.clamp_r_ohm)?;
+        positive("logic.input_leak_mohm", logic.input_leak_mohm)?;
 
         let isp = &self.isp;
         positive("isp.wb_r_gain", isp.wb_r_gain)?;

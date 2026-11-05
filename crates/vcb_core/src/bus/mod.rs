@@ -17,9 +17,16 @@
 //!   node S, each through a patch resistor of `series_ohm`. A patch resistor of 0 is a
 //!   direct wire, which makes the pin and S one node.
 //! - **Coupling.** A capacitor of `cap_uf` joins S to node F, and a potentiometer of
-//!   `pot_kohm` loads F to ground. The pair is a high-pass filter: edges of the source
-//!   mix pass to F, its mean decays away with the time constant of the capacitor and
-//!   the resistance around it.
+//!   `pot_kohm` loads one of them to ground ([`PotNode`]). On F the pair is a
+//!   high-pass filter: edges of the source mix pass to F, its mean decays away with the
+//!   time constant of the capacitor and the resistance around it. On S, as the
+//!   schematic draws it, F keeps no resistive path but the gate inputs, and the
+//!   capacitor shifts the source mix's level instead of filtering it.
+//! - **Gate inputs.** The inverter's input and the flip-flop's clock sit on F. Each
+//!   leaks `input_leak_mohm` to half the supply and clamps F through protection diodes:
+//!   below ground or above the supply by more than `clamp_diode_v`, a diode conducts
+//!   through `clamp_r_ohm`. The diodes charge the capacitor when F passes a rail, which
+//!   restores F's level when the potentiometer loads S (research section 6).
 //! - **Function.** [`Function::Bypass`] wires F to node T. [`Function::Invert`] drives T
 //!   from a 74HC00 NAND gate with tied inputs, and [`Function::Divide`] from the `Q`
 //!   output of a 74HC74 wired as a toggle (`D` from `/Q`, preset and clear tied high)
@@ -57,13 +64,17 @@
 //!
 //! Time advances in `oversample` sub-steps per pixel period. The capacitor is replaced
 //! by its backward-Euler companion, a conductance `C / dt` in parallel with a current
-//! source `C / dt` times its voltage at the previous sub-step, which leaves a linear
-//! resistive network. Ideal wires merge nodes, so a circuit of direct shorts has two or
-//! three unknown node voltages, and one with patch resistors at most `bits + 3`.
-//! [`Params::resolve`] stamps the conductance matrix once, inverts it, and tabulates
-//! every needed voltage (node F, the capacitor voltage, each latched pin) as a linear
-//! function of the driver levels, the gate output and the previous capacitor voltage.
-//! A sub-step is then a table lookup and two multiply-adds per voltage.
+//! source `C / dt` times its voltage at the previous sub-step, and each protection
+//! diode by a switch in series with its forward voltage and resistance, which leaves a
+//! piecewise-linear resistive network with three states: no diode, the diodes to
+//! ground, or the diodes to the supply conducting. Ideal wires merge nodes, so a
+//! circuit of direct shorts has two or three unknown node voltages, and one with patch
+//! resistors at most `bits + 3`. [`Params::resolve`] stamps and inverts the
+//! conductance matrix of each state once, and tabulates every needed voltage (node F,
+//! the capacitor voltage, each latched pin) as a linear function of the driver levels,
+//! the gate output and the previous capacitor voltage. A sub-step solves F in the
+//! previous sub-step's diode state, switches state if F contradicts it, and is then a
+//! table lookup and two multiply-adds per voltage.
 //!
 //! A gate output changes at a sub-step boundary: from the first sub-step that ends at
 //! or after its due time, and at least one sub-step after the input crossing that
@@ -71,17 +82,18 @@
 //! after `latch_phase`.
 //!
 //! During horizontal and vertical blanking no samples are stored but the circuit keeps
-//! running with the black code on the drivers. Nothing switches then, so the capacitor
-//! voltage is advanced over the interval in closed form (the backward-Euler recursion
-//! summed as a geometric series), and a pending gate transition completes at its due
-//! time. The approximation is that the gates see no new input crossings during
-//! blanking: a crossing of F caused by the black level is registered at the first
-//! sub-step of the next line.
+//! running with the black code on the drivers. The drivers do not switch then, so the
+//! capacitor voltage is advanced over the interval in closed form (the backward-Euler
+//! recursion summed as a geometric series), split where a pending gate transition
+//! completes and where a conducting diode turns off, both exactly. The approximation
+//! is that the gates see no new input crossings during blanking: a crossing of F
+//! caused by the black level is registered at the first sub-step of the next line.
 //!
 //! # State
 //!
-//! The capacitor voltage, the gates' logic levels, pending transitions and edge timers
-//! persist in [`State`] from frame to frame, as in the camera.
+//! The capacitor voltage, the diodes' state, the gates' logic levels, pending
+//! transitions and edge timers persist in [`State`] from frame to frame, as in the
+//! camera.
 
 mod circuit;
 mod gates;
@@ -95,7 +107,7 @@ use crate::camera::Adc;
 use crate::noise::{self, Pcg32};
 use crate::validate::{non_negative, positive, within};
 use crate::{Camera, Error, Preset, Timing};
-use circuit::{Line, Network, Topology};
+use circuit::{Clamp, Line, Network, Topology};
 use gates::{Chips, FlipFlop, Gate, Inverter, Wire};
 
 /// Salt of the bus circuit's noise sources.
@@ -199,6 +211,21 @@ pub enum Function {
     Divide,
 }
 
+/// The node the potentiometer loads to ground.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum PotNode {
+    /// Node F, after the capacitor: F is the high-pass of the source mix around 0 V.
+    #[default]
+    F,
+    /// Node S, before the capacitor, as the schematic draws it.
+    ///
+    /// F then has no resistive path but the gate inputs' leakage, so the capacitor
+    /// shifts the source mix's level and the input clamp diodes restore it.
+    S,
+}
+
 /// The resolved bend circuit, ready to run on the ADC's code stream.
 ///
 /// Built by [`Params::resolve`] from the preset's `[bend.bus]` section, the camera's
@@ -289,8 +316,12 @@ impl Params {
             series_ohm: bus.series_ohm,
             cap_f: bus.cap_uf * 1e-6,
             pot_ohm: bus.pot_kohm * 1e3,
+            pot_node: bus.pot_node,
             gate_ohm: camera.logic.hc_r_out_ohm,
             v_oh: adc.v_oh,
+            clamp_v: camera.logic.clamp_diode_v,
+            clamp_ohm: camera.logic.clamp_r_ohm,
+            leak_ohm: camera.logic.input_leak_mohm * 1e6,
             dt_s,
             latched,
             bits: adc.bits,
@@ -399,14 +430,15 @@ fn latch_step(phase: f64, oversample: u32) -> u32 {
 
 /// Persistent state of the bend circuit between frames.
 ///
-/// Holds the capacitor's voltage, the logic levels, pending transitions and edge timers
-/// of the inverter and the flip-flop, and the image processor's input-noise stream,
-/// which each frame reseeds from its index. The default is the power-on state: the
-/// capacitor discharged, the inverter's output high for its low input, `Q` low.
+/// Holds the capacitor's voltage, which input protection diodes conduct, the logic
+/// levels, pending transitions and edge timers of the inverter and the flip-flop, and
+/// the image processor's input-noise stream, which each frame reseeds from its index.
+/// The default is the power-on state: the capacitor discharged, no diode conducting,
+/// the inverter's output high for its low input, `Q` low.
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
-    /// Capacitor voltage, node S minus node F, in volts.
-    cap_v: f64,
+    /// The capacitor and the clamp diodes on node F.
+    coupling: Coupling,
     /// The 74HC00 inverter.
     inverter: Inverter,
     /// The 74HC74 flip-flop.
@@ -415,10 +447,22 @@ pub struct State {
     noise: Pcg32,
 }
 
+/// Analog state around node F: the capacitor's charge and the protection diodes.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Coupling {
+    /// Capacitor voltage, node S minus node F, in volts.
+    cap_v: f64,
+    /// Which protection diodes conducted in the last sub-step.
+    clamp: Clamp,
+    /// Sub-steps in which a protection diode conducted, since power-on.
+    #[cfg(feature = "test-util")]
+    clamped: u64,
+}
+
 impl Default for State {
     fn default() -> Self {
         Self {
-            cap_v: 0.0,
+            coupling: Coupling::default(),
             inverter: Inverter::default(),
             flip_flop: FlipFlop::default(),
             noise: Pcg32::new(0, 0),
@@ -431,7 +475,13 @@ impl State {
     /// Returns the capacitor voltage, node S minus node F, in volts.
     #[must_use]
     pub fn cap_v(&self) -> f64 {
-        self.cap_v
+        self.coupling.cap_v
+    }
+
+    /// Returns the sub-steps since power-on in which an input protection diode conducted.
+    #[must_use]
+    pub fn clamped_steps(&self) -> u64 {
+        self.coupling.clamped
     }
 }
 
@@ -467,16 +517,22 @@ pub fn bend(params: Option<&Params>, state: &mut State, index: u64, codes: &mut 
     };
     state.noise = Pcg32::new(params.seed, index);
     let State {
-        cap_v,
+        coupling,
         inverter,
         flip_flop,
         noise,
     } = state;
     let words = codes.words_mut();
     match params.function {
-        Function::Bypass => Run::new(params, &mut Wire, noise, cap_v).frame(words, line_len, blank),
-        Function::Invert => Run::new(params, inverter, noise, cap_v).frame(words, line_len, blank),
-        Function::Divide => Run::new(params, flip_flop, noise, cap_v).frame(words, line_len, blank),
+        Function::Bypass => {
+            Run::new(params, &mut Wire, noise, coupling).frame(words, line_len, blank);
+        }
+        Function::Invert => {
+            Run::new(params, inverter, noise, coupling).frame(words, line_len, blank);
+        }
+        Function::Divide => {
+            Run::new(params, flip_flop, noise, coupling).frame(words, line_len, blank);
+        }
     }
 }
 
@@ -492,9 +548,10 @@ struct Run<'a, G> {
     params: &'a Params,
     gate: &'a mut G,
     noise: &'a mut Pcg32,
-    state_cap_v: &'a mut f64,
-    /// Capacitor voltage at the end of the last sub-step.
-    cap_v: f64,
+    /// Where the coupling state is written back when the run ends.
+    state: &'a mut Coupling,
+    /// The coupling state at the end of the last sub-step.
+    coupling: Coupling,
 }
 
 impl<'a, G: Gate> Run<'a, G> {
@@ -502,14 +559,14 @@ impl<'a, G: Gate> Run<'a, G> {
         params: &'a Params,
         gate: &'a mut G,
         noise: &'a mut Pcg32,
-        state_cap_v: &'a mut f64,
+        state: &'a mut Coupling,
     ) -> Self {
         Self {
             params,
             gate,
             noise,
-            cap_v: *state_cap_v,
-            state_cap_v,
+            coupling: *state,
+            state,
         }
     }
 
@@ -518,7 +575,7 @@ impl<'a, G: Gate> Run<'a, G> {
         let lines = words.len() / line_len;
         for (line, samples) in words.chunks_exact_mut(line_len).enumerate() {
             for word in samples {
-                *word = self.pixel(*word, |_, _, _| {});
+                *word = self.pixel(*word, |_, _, _, _| {});
             }
             self.blank(if line + 1 == lines {
                 blank.frame
@@ -526,15 +583,15 @@ impl<'a, G: Gate> Run<'a, G> {
                 blank.line
             });
         }
-        *self.state_cap_v = self.cap_v;
+        *self.state = self.coupling;
     }
 
     /// Runs one pixel period with `code` on the drivers and returns the latched word.
     ///
-    /// `probe` sees the driver pattern, previous capacitor voltage and gate level of
-    /// every sub-step, from which every node voltage of that sub-step follows.
+    /// `probe` sees the diode state, driver pattern, previous capacitor voltage and gate
+    /// level of every sub-step, from which every node voltage of that sub-step follows.
     #[inline]
-    fn pixel(&mut self, code: u16, mut probe: impl FnMut(usize, f64, f64)) -> u16 {
+    fn pixel(&mut self, code: u16, mut probe: impl FnMut(Clamp, usize, f64, f64)) -> u16 {
         let params = self.params;
         let net = &params.net;
         let pattern = net.pattern(code);
@@ -542,12 +599,15 @@ impl<'a, G: Gate> Run<'a, G> {
         for step in 0..params.oversample {
             self.gate.tick();
             let gate = level(self.gate.high());
-            probe(pattern, self.cap_v, gate);
-            let f_v = net.f.at(pattern, self.cap_v, gate);
+            let c = &mut self.coupling;
+            let f_v = net.settle(&mut c.clamp, pattern, c.cap_v, gate);
+            probe(c.clamp, pattern, c.cap_v, gate);
+            let solution = net.solution(c.clamp);
             if step == params.latch.step {
                 latched = self.latch(pattern, gate);
             }
-            self.cap_v = net.cap.at(pattern, self.cap_v, gate);
+            self.coupling.cap_v = solution.cap.at(pattern, self.coupling.cap_v, gate);
+            count_clamped(&mut self.coupling, 1);
             self.gate.sense(f_v, &params.chips);
         }
         (code & !params.latch.mask) | latched
@@ -557,8 +617,9 @@ impl<'a, G: Gate> Run<'a, G> {
     fn latch(&mut self, pattern: usize, gate: f64) -> u16 {
         let params = self.params;
         let latch = &params.latch;
+        let pins = &params.net.solution(self.coupling.clamp).latched;
         let mut bits = 0;
-        for (bit, volts) in params.net.latched.pins(pattern, self.cap_v, gate) {
+        for (bit, volts) in pins.pins(pattern, self.coupling.cap_v, gate) {
             let margin = volts - latch.threshold_v;
             let high = if margin.abs() >= latch.reach_v {
                 margin > 0.0
@@ -571,27 +632,45 @@ impl<'a, G: Gate> Run<'a, G> {
     }
 
     /// Advances the circuit through `steps` sub-steps of blanking.
+    ///
+    /// Each round runs one sub-step explicitly, which settles the diodes after a change
+    /// of the sources and completes a gate transition that falls due, and then as many
+    /// sub-steps in closed form as the gate's pending transition and the diodes allow.
     fn blank(&mut self, mut steps: u64) {
-        let net = &self.params.net;
-        let dark = net.pattern(self.params.dark_code);
+        let params = self.params;
+        let net = &params.net;
+        let dark = net.pattern(params.dark_code);
         while steps > 0 {
+            self.gate.tick();
+            let gate = level(self.gate.high());
+            let c = &mut self.coupling;
+            net.settle(&mut c.clamp, dark, c.cap_v, gate);
+            c.cap_v = net.solution(c.clamp).cap.at(dark, c.cap_v, gate);
+            count_clamped(c, 1);
+            steps -= 1;
+
             let due = u64::from(self.gate.pending());
-            let quiet = if due > 0 && due <= steps {
-                due - 1
-            } else {
-                steps
-            };
-            self.cap_v = net.hold(self.cap_v, dark, level(self.gate.high()), quiet);
+            let until_due = if due > 0 { due - 1 } else { steps };
+            let c = &mut self.coupling;
+            let quiet = until_due
+                .min(steps)
+                .min(net.quiet_steps(c.clamp, c.cap_v, dark, gate));
+            c.cap_v = net.hold(c.clamp, c.cap_v, dark, gate, quiet);
+            count_clamped(c, quiet);
             self.gate.idle(quiet);
             steps -= quiet;
-            if steps > 0 {
-                // The sub-step in which the pending transition completes.
-                self.gate.tick();
-                self.cap_v = net.cap.at(dark, self.cap_v, level(self.gate.high()));
-                steps -= 1;
-            }
         }
     }
+}
+
+/// Counts `steps` sub-steps in the coupling's present diode state, for the probes.
+#[inline]
+fn count_clamped(coupling: &mut Coupling, steps: u64) {
+    #[cfg(feature = "test-util")]
+    if coupling.clamp != Clamp::Off {
+        coupling.clamped += steps;
+    }
+    let _ = (coupling, steps);
 }
 
 /// Returns a logic level as the multiplier of a source's high voltage.
@@ -609,6 +688,8 @@ pub struct Probe {
     pub f_v: f64,
     /// Node T, the target bus, in volts.
     pub t_v: f64,
+    /// Current the input protection diodes push into node F, in amperes.
+    pub clamp_a: f64,
     /// Whether the active gate's output is high; always false in bypass.
     pub gate_high: bool,
     /// Pin voltage of every bus line, indexed by bit number, in volts.
@@ -624,15 +705,15 @@ pub struct Probe {
 #[cfg(feature = "test-util")]
 pub fn trace(params: &Params, state: &mut State, codes: &[u16], probes: &mut Vec<Probe>) {
     let State {
-        cap_v,
+        coupling,
         inverter,
         flip_flop,
         noise,
     } = state;
     match params.function {
-        Function::Bypass => Run::new(params, &mut Wire, noise, cap_v).trace(codes, probes),
-        Function::Invert => Run::new(params, inverter, noise, cap_v).trace(codes, probes),
-        Function::Divide => Run::new(params, flip_flop, noise, cap_v).trace(codes, probes),
+        Function::Bypass => Run::new(params, &mut Wire, noise, coupling).trace(codes, probes),
+        Function::Invert => Run::new(params, inverter, noise, coupling).trace(codes, probes),
+        Function::Divide => Run::new(params, flip_flop, noise, coupling).trace(codes, probes),
     }
 }
 
@@ -641,23 +722,27 @@ impl<G: Gate> Run<'_, G> {
     fn trace(mut self, codes: &[u16], probes: &mut Vec<Probe>) {
         let net = &self.params.net;
         for &code in codes {
-            self.pixel(code, |pattern, cap_v, gate| {
-                let (s_v, t_v) = net.probes.buses(pattern, cap_v, gate);
+            self.pixel(code, |clamp, pattern, cap_v, gate| {
+                let solution = net.solution(clamp);
+                let (s_v, t_v) = solution.probes.buses(pattern, cap_v, gate);
+                let f_v = solution.f.at(pattern, cap_v, gate);
+                let v_oh = solution.probes.v_oh();
                 let mut pin_v: [f64; 16] =
-                    std::array::from_fn(|bit| level((code >> bit) & 1 == 1) * net.probes.v_oh());
-                for (bit, volts) in net.probes.pins(pattern, cap_v, gate) {
+                    std::array::from_fn(|bit| level((code >> bit) & 1 == 1) * v_oh);
+                for (bit, volts) in solution.probes.pins(pattern, cap_v, gate) {
                     pin_v[usize::from(bit)] = volts;
                 }
                 probes.push(Probe {
                     s_v,
-                    f_v: net.f.at(pattern, cap_v, gate),
+                    f_v,
                     t_v,
+                    clamp_a: net.clamp_current(clamp, f_v),
                     gate_high: gate > 0.5,
                     pin_v,
                 });
             });
         }
-        *self.state_cap_v = self.cap_v;
+        *self.state = self.coupling;
     }
 }
 

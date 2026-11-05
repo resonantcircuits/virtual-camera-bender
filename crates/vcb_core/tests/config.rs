@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use vcb_core::afe::{Inject, Wave};
-use vcb_core::bus::{Function, Target};
+use vcb_core::bus::{Function, PotNode, Target};
 use vcb_core::codec::Quality;
 use vcb_core::isp::WbMode;
 use vcb_core::preset::{AfeBend, BusBend, ClockBend, IspOverride, Mode, Orientation, Resolution};
@@ -42,6 +42,7 @@ fn full_preset() -> Preset {
         function: Function::Divide,
         cap_uf: 0.47,
         pot_kohm: 22.0,
+        pot_node: PotNode::S,
         series_ohm: 47.0,
         common_bus: true,
     });

@@ -18,6 +18,7 @@
 //! function = "bypass"         # or "invert", "divide"
 //! cap_uf = 1.0
 //! pot_kohm = 10.0
+//! pot_node = "f"              # or "s"
 //! [bend.clocks]
 //! cte = 0.9995
 //! [bend.afe.inject]
@@ -36,7 +37,7 @@ use std::str::FromStr;
 
 use crate::Error;
 use crate::afe::Inject;
-use crate::bus::{Function, Target};
+use crate::bus::{Function, PotNode, Target};
 use crate::isp::WbMode;
 
 /// Which readout the sensor performs.
@@ -183,11 +184,19 @@ pub struct Bend {
 /// The `[bend.bus]` section: the DIP-switch, capacitor and gate circuit on the data bus.
 ///
 /// The selected source pins join node S, optionally through `series_ohm`; S couples
-/// through the `cap_uf` capacitor to node F, which the `pot_kohm` potentiometer loads
-/// to ground. `function` routes F to the target pin directly, through an inverter or
-/// through a divide-by-two flip-flop; the target pin joins through `series_ohm` too.
-/// Source pins lie in `D2` to `D11` and the target in `D4` to `D11` or ground, the
-/// positions of the bend's selector switches.
+/// through the `cap_uf` capacitor to node F, and the `pot_kohm` potentiometer loads one
+/// of the two nodes to ground. `function` routes F to the target pin directly, through
+/// an inverter or through a divide-by-two flip-flop; the target pin joins through
+/// `series_ohm` too. Source pins lie in `D2` to `D11` and the target in `D4` to `D11`
+/// or ground, the positions of the bend's selector switches.
+///
+/// `pot_node` picks the potentiometer's node:
+///
+/// - `"f"`: the pot returns F to ground, so the capacitor and pot form a high-pass
+///   filter and F swings around 0 V with the edges of the source mix.
+/// - `"s"`, as the schematic draws it: the pot loads the source bus, F keeps only the
+///   gate inputs' leakage and clamp diodes, so F follows the source mix shifted by the
+///   capacitor's charge, which the diodes restore whenever F passes a supply rail.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
@@ -200,8 +209,11 @@ pub struct BusBend {
     pub function: Function,
     /// Coupling capacitor in microfarads.
     pub cap_uf: f64,
-    /// Potentiometer from node F to ground in kilohms; 0 grounds node F.
+    /// Potentiometer to ground in kilohms; 0 grounds its node.
     pub pot_kohm: f64,
+    /// The node the potentiometer loads: `"f"` (default) or `"s"`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub pot_node: PotNode,
     /// Patch resistor between each tapped pin and its bus in ohms; 0 is a direct wire.
     #[cfg_attr(feature = "serde", serde(default))]
     pub series_ohm: f64,
