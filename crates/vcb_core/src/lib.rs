@@ -32,7 +32,8 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! # let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 //! let camera: Camera = toml::from_str(&std::fs::read_to_string(format!("{root}/cameras/a520.toml"))?)?;
-//! let preset: Preset = toml::from_str(r#"camera = "a520""#)?;
+//! // The sensor takes the scene's size here; the default is the camera's native size.
+//! let preset: Preset = toml::from_str("camera = \"a520\"\n[readout]\nresolution = \"match-input\"")?;
 //!
 //! let scene = Scene::from_srgb8(64, 48, &vec![128; 64 * 48 * 3]);
 //! let mut sim = Simulator::builder((camera, preset)).input_size(64, 48).build()?;

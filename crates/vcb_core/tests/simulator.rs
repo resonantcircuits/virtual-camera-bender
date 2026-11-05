@@ -6,6 +6,13 @@ use vcb_core::preset::{Mode, Resolution};
 use vcb_core::readout::Direction;
 use vcb_core::{Camera, Frame, Preset, Scene, Simulator};
 
+/// A preset whose sensor takes the scene's size, as these tests assume.
+fn match_input(camera: &str) -> Preset {
+    let mut preset = Preset::new(camera);
+    preset.readout.resolution = Resolution::MatchInput;
+    preset
+}
+
 fn camera() -> Camera {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../cameras/a520.toml");
     toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
@@ -15,9 +22,13 @@ fn camera() -> Camera {
 ///
 /// Transfer loss at the camera's CTE moves up to 1.7 % of each packet into the next
 /// row, which is the other Bayer colour: visible crosstalk in a pure-colour chart.
+/// A preset file with the sensor set to the scene's size, as these tests assume
+/// unless they choose native explicitly.
 fn preset_file(name: &str) -> Preset {
     let path = format!("{}/../../presets/{name}.toml", env!("CARGO_MANIFEST_DIR"));
-    toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    let mut preset: Preset = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    preset.readout.resolution = Resolution::MatchInput;
+    preset
 }
 
 /// The A520 as an identity camera: no tone curve, noise reduction, sharpening,
@@ -306,7 +317,7 @@ fn build_rejects_inconsistent_configurations() {
             .unwrap_err()
     };
 
-    assert!(build(Preset::new("g2")).is_config());
+    assert!(build(match_input("g2")).is_config());
 
     let mut wide_pin = preset_file("a520-hpf");
     if let Some(bus) = wide_pin.bend.bus.as_mut() {
@@ -326,10 +337,10 @@ fn build_rejects_inconsistent_configurations() {
     }
     assert!(build(negative).is_config());
 
-    let no_size = Simulator::builder((camera.clone(), Preset::new("a520"))).build();
+    let no_size = Simulator::builder((camera.clone(), match_input("a520"))).build();
     assert!(no_size.unwrap_err().is_config());
 
-    let tiny = Simulator::builder((camera, Preset::new("a520")))
+    let tiny = Simulator::builder((camera, match_input("a520")))
         .input_size(1, 1)
         .build();
     assert!(tiny.unwrap_err().is_input());

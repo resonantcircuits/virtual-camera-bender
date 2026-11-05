@@ -6,10 +6,18 @@ use vcb_core::adc::{self, Codes};
 use vcb_core::afe::{self, Analog};
 use vcb_core::isp::{self, Raw};
 use vcb_core::plane::Plane;
+use vcb_core::preset::Resolution;
 use vcb_core::readout::{self, Direction, Layout, Stream};
 use vcb_core::scene::{self, Channel};
 use vcb_core::sensor::{self, Cfa, Charge};
 use vcb_core::{Camera, Preset, Scene, Timing};
+
+/// A preset whose sensor takes the scene's size, as these tests assume.
+fn match_input(camera: &str) -> Preset {
+    let mut preset = Preset::new(camera);
+    preset.readout.resolution = Resolution::MatchInput;
+    preset
+}
 
 fn camera() -> Camera {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../cameras/a520.toml");
@@ -17,7 +25,7 @@ fn camera() -> Camera {
 }
 
 fn timing(camera: &Camera, width: u32, height: u32) -> Timing {
-    Timing::derive(camera, &Preset::new("a520"), width, height).unwrap()
+    Timing::derive(camera, &match_input("a520"), width, height).unwrap()
 }
 
 #[test]
@@ -58,7 +66,7 @@ fn bayer_sites_sample_their_own_channel() {
 
     let camera = camera();
     let t = timing(&camera, 4, 4);
-    let mut params = sensor::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    let mut params = sensor::Params::resolve(&camera, &match_input("a520"), &t).unwrap();
     // A well this deep makes shot noise negligible; the fixed pattern is switched off.
     params.full_well_e = 1e14;
     params.prnu = 0.0;
@@ -89,7 +97,7 @@ fn bayer_sites_sample_their_own_channel() {
 fn charge_clips_at_full_well_and_never_goes_negative() {
     let camera = camera();
     let t = timing(&camera, 4, 2);
-    let mut params = sensor::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    let mut params = sensor::Params::resolve(&camera, &match_input("a520"), &t).unwrap();
     // Without dark signal, unlit photosites hold no charge at all.
     params.dark_e_per_s = 0.0;
     params.dsnu_e = 0.0;
@@ -125,7 +133,7 @@ fn readout_prefixes_every_line_with_dark_optical_black() {
     for (i, value) in charge.plane_mut().data_mut().iter_mut().enumerate() {
         *value = 100.0 + i as f32;
     }
-    let mut params = readout::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    let mut params = readout::Params::resolve(&camera, &match_input("a520"), &t).unwrap();
     params.cte = 1.0;
     let layout = params.layout.clone();
     let mut stream = Stream::new(layout.clone());
@@ -153,7 +161,7 @@ fn readout_prefixes_every_line_with_dark_optical_black() {
 fn adc_codes_rise_with_voltage_and_clip_at_full_scale() {
     let camera = camera();
     let t = timing(&camera, 4, 2);
-    let preset = Preset::new("a520");
+    let preset = match_input("a520");
     let params = adc::Params::resolve(&camera, &preset, &t).unwrap();
     let layout = Layout::from_timing(&t, Direction::TopDown);
     let mut analog = Analog::new(layout.clone());
@@ -172,7 +180,7 @@ fn adc_codes_rise_with_voltage_and_clip_at_full_scale() {
 fn analog_pedestal_lands_on_the_nominal_black_code() {
     let camera = camera();
     let t = timing(&camera, 4, 2);
-    let preset = Preset::new("a520");
+    let preset = match_input("a520");
     let layout = Layout::from_timing(&t, Direction::TopDown);
     let stream = Stream::new(layout.clone());
     let mut analog = Analog::new(layout.clone());
@@ -205,7 +213,7 @@ fn analog_pedestal_lands_on_the_nominal_black_code() {
 fn black_clamp_reads_the_bus_as_the_processor_does() {
     let camera = camera();
     let t = timing(&camera, 6, 4);
-    let params = isp::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    let params = isp::Params::resolve(&camera, &match_input("a520"), &t).unwrap();
     let shift = camera.adc.dsp_lsb;
     // Bus lines below `dsp_lsb` are not connected to the processor: set them all.
     let unread = (1u16 << shift) - 1;
@@ -244,7 +252,7 @@ fn checker(width: u32, height: u32) -> Scene {
 /// Scene parameters with an even lens and no highlight expansion, for geometry checks.
 fn scene_params(camera: &Camera, width: u32, height: u32) -> scene::Params {
     let t = timing(camera, width, height);
-    let mut params = scene::Params::resolve(camera, &Preset::new("a520"), &t).unwrap();
+    let mut params = scene::Params::resolve(camera, &match_input("a520"), &t).unwrap();
     params.headroom = 1.0;
     params.vignette_stops = 0.0;
     params
@@ -303,7 +311,7 @@ fn portrait_scenes_turn_clockwise_onto_the_sensor() {
     let camera = camera();
     let t = timing(&camera, 4, 6);
     assert!(t.rotated);
-    let mut params = scene::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    let mut params = scene::Params::resolve(&camera, &match_input("a520"), &t).unwrap();
     params.headroom = 1.0;
     params.vignette_stops = 0.0;
     let mut input = Scene::new(4, 6);

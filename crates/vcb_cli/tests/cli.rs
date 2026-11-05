@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
 
-use vcb_core::preset::Mode;
+use vcb_core::preset::{Mode, Resolution};
 use vcb_core::{Camera, Frame, Preset, Timing};
 use vcb_io::video::probe_video;
 
@@ -49,6 +49,8 @@ fn render_writes_the_upright_input_size() {
         path_arg(&output),
         "--preset",
         "presets/a520-clean.toml",
+        "--resolution",
+        "match-input",
     ]);
     assert!(run.status.success(), "stderr: {}", text(&run.stderr));
     let input = vcb_io::probe_image(root().join("samples/sample-01.jpg")).unwrap();
@@ -176,6 +178,8 @@ fn render_video_keeps_the_input_frame_count_and_size() {
         path_arg(&output),
         "--preset",
         "presets/a520-clean.toml",
+        "--resolution",
+        "match-input",
     ]);
     assert!(run.status.success(), "stderr: {}", text(&run.stderr));
     let input = probe_video(clip).unwrap();
@@ -202,6 +206,8 @@ fn render_video_in_movie_mode_writes_the_movie_size() {
         path_arg(&output),
         "--preset",
         "presets/a520-clean.toml",
+        "--resolution",
+        "match-input",
         "--mode",
         "movie",
         "--duration",
@@ -213,6 +219,7 @@ fn render_video_in_movie_mode_writes_the_movie_size() {
     let camera: Camera = toml::from_str(&read_text("cameras/a520.toml")).unwrap();
     let mut preset: Preset = toml::from_str(&read_text("presets/a520-clean.toml")).unwrap();
     preset.readout.mode = Mode::Movie;
+    preset.readout.resolution = Resolution::MatchInput;
     let input = probe_video(clip).unwrap();
     let timing = Timing::derive(&camera, &preset, input.width, input.height).unwrap();
     let written = probe_video(&output).unwrap();
@@ -284,6 +291,8 @@ fn sheet_tiles_renders_then_images_row_major() {
         "--preset",
         "presets/a520-clean.toml",
         "presets/a520-hpf.toml",
+        "--resolution",
+        "match-input",
         "--image",
         path_arg(&extra),
     ]);

@@ -7,7 +7,7 @@ seed = 1
 
 [readout]
 mode = "still"
-resolution = "match-input"
+resolution = "native"
 
 [scene]
 headroom = 1.5                      # PROVISIONAL: less highlight expansion keeps the cloud cores off the clip (tuning log)

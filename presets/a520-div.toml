@@ -7,7 +7,7 @@ seed = 1
 
 [readout]
 mode = "still"
-resolution = "match-input"
+resolution = "native"
 
 [bend.bus]
 source_pins = [8]

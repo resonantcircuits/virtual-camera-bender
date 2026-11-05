@@ -10,7 +10,7 @@
 //! seed = 1
 //! [readout]
 //! mode = "still"              # or "movie"
-//! resolution = "match-input"  # or "native"
+//! resolution = "native"       # or "match-input"
 //! orientation = "auto"        # or "landscape", "portrait"
 //! [scene]
 //! headroom = 2.5              # clipped white is 2.5 times reference white
@@ -84,9 +84,9 @@ impl FromStr for Mode {
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 pub enum Resolution {
     /// The sensor has the input's size; clocks scale so the frame period stays the camera's.
-    #[default]
     MatchInput,
     /// The sensor has the camera's real size and clocks; the input is cropped and resampled.
+    #[default]
     Native,
 }
 

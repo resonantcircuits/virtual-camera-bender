@@ -11,13 +11,20 @@ use vcb_core::readout::{self, Layout, Stream};
 use vcb_core::sensor::Charge;
 use vcb_core::{Camera, Preset, Timing};
 
+/// A preset whose sensor takes the scene's size, as these tests assume.
+fn match_input(camera: &str) -> Preset {
+    let mut preset = Preset::new(camera);
+    preset.readout.resolution = Resolution::MatchInput;
+    preset
+}
+
 fn camera() -> Camera {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../cameras/a520.toml");
     toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
 fn square(freq_hz: f64, amplitude_v: f64) -> Preset {
-    let mut preset = Preset::new("a520");
+    let mut preset = match_input("a520");
     preset.bend.afe = Some(AfeBend {
         inject: Some(Inject {
             wave: Wave::Square,
@@ -264,7 +271,7 @@ fn step_response(chain: &Chain, analog: &Analog, edge: usize, electrons: f32) ->
 #[test]
 fn bandwidth_sets_the_rise_time_in_pixels() {
     let (edge, electrons) = (200, 10_000.0);
-    let mut slow = Chain::new(&camera(), &Preset::new("a520"), 640, 480).quiet();
+    let mut slow = Chain::new(&camera(), &match_input("a520"), 640, 480).quiet();
     // A time constant of ten native pixel periods: ten pixels at every resolution.
     slow.afe.bandwidth_hz = 1.0 / (TAU * 10.0 * slow.afe.native_pixel_period_s);
     let analog = slow.analog(
@@ -280,7 +287,7 @@ fn bandwidth_sets_the_rise_time_in_pixels() {
         &rise[..12]
     );
 
-    let mut native_preset = Preset::new("a520");
+    let mut native_preset = match_input("a520");
     native_preset.readout.resolution = Resolution::Native;
     let native = Chain::new(&camera(), &native_preset, 1, 1).quiet();
     assert!((native.timing.pixel_period_s / native.afe.native_pixel_period_s - 1.0).abs() < 1e-12);
@@ -300,7 +307,7 @@ fn bandwidth_sets_the_rise_time_in_pixels() {
 #[test]
 fn slew_limit_turns_a_step_into_a_ramp() {
     let (edge, electrons) = (200, 10_000.0);
-    let mut chain = Chain::new(&camera(), &Preset::new("a520"), 640, 480).quiet();
+    let mut chain = Chain::new(&camera(), &match_input("a520"), 640, 480).quiet();
     chain.afe.slew_v_per_us = 2.0;
     let analog = chain.analog(
         &mut afe::State::default(),
@@ -325,7 +332,7 @@ fn slew_limit_turns_a_step_into_a_ramp() {
 #[test]
 fn late_reset_sample_echoes_edges() {
     let (edge, electrons) = (100, 5000.0);
-    let mut chain = Chain::new(&camera(), &Preset::new("a520"), 640, 480).quiet();
+    let mut chain = Chain::new(&camera(), &match_input("a520"), 640, 480).quiet();
     chain.afe.cds_lag_px = 3.0;
     chain.afe.cds_mix = 0.5;
     let analog = chain.analog(
@@ -345,7 +352,7 @@ fn late_reset_sample_echoes_edges() {
 
 #[test]
 fn gain_modulation_swings_the_signal_by_its_depth() {
-    let mut preset = Preset::new("a520");
+    let mut preset = match_input("a520");
     preset.bend.afe = Some(AfeBend {
         gain_mod: Some(GainMod {
             wave: Wave::Square,
@@ -369,7 +376,7 @@ fn gain_modulation_swings_the_signal_by_its_depth() {
 
 #[test]
 fn sample_and_hold_injection_holds_random_levels_within_its_amplitude() {
-    let mut preset = Preset::new("a520");
+    let mut preset = match_input("a520");
     let amplitude_v = 0.05;
     preset.bend.afe = Some(AfeBend {
         inject: Some(Inject {
@@ -405,7 +412,7 @@ fn lowered_cte_trails_grow_with_distance_from_the_register() {
     // Returns the trail length, the column profile, and the charge read, left in the
     // register and put in, in electrons.
     let trail = |cte: f64, row: u32| -> (usize, Vec<f32>, [f64; 3]) {
-        let mut chain = Chain::new(&camera, &Preset::new("a520"), 640, 480);
+        let mut chain = Chain::new(&camera, &match_input("a520"), 640, 480);
         chain.readout.cte = cte;
         let mut charge = chain.charge();
         charge.plane_mut().row_mut(row).fill(10_000.0);
@@ -478,7 +485,7 @@ fn rows_read(stream: &Stream) -> Vec<Option<u32>> {
 
 #[test]
 fn vertical_clock_faults_repeat_and_skip_rows() {
-    let mut chain = Chain::new(&camera(), &Preset::new("a520"), 640, 480);
+    let mut chain = Chain::new(&camera(), &match_input("a520"), 640, 480);
     chain.readout.cte = 1.0;
     let charge = numbered_rows(&chain);
 
@@ -510,7 +517,7 @@ fn vertical_clock_faults_repeat_and_skip_rows() {
 
 #[test]
 fn horizontal_glitches_shift_bands_with_wraparound() {
-    let mut chain = Chain::new(&camera(), &Preset::new("a520"), 640, 480);
+    let mut chain = Chain::new(&camera(), &match_input("a520"), 640, 480);
     chain.readout.cte = 1.0;
     let mut charge = chain.charge();
     for values in charge.plane_mut().rows_mut() {
@@ -576,7 +583,7 @@ fn code_statistics(codes: &Codes) -> (f64, f64, f64) {
 #[test]
 fn read_noise_has_the_camera_level_and_streaks_along_lines() {
     let camera = camera();
-    let mut white = Chain::new(&camera, &Preset::new("a520"), 1280, 960);
+    let mut white = Chain::new(&camera, &match_input("a520"), 1280, 960);
     white.afe.noise_1f_corner_hz = 0.0;
     let stream = white.flat(0.0);
     let codes = white.codes(&white.analog(&mut afe::State::default(), &stream, 0));
@@ -588,7 +595,7 @@ fn read_noise_has_the_camera_level_and_streaks_along_lines() {
         "code noise {sigma:.3}, expected {expected:.3}"
     );
 
-    let mut pink = Chain::new(&camera, &Preset::new("a520"), 1280, 960);
+    let mut pink = Chain::new(&camera, &match_input("a520"), 1280, 960);
     pink.afe.noise_1f_corner_hz = 20_000.0;
     let codes = pink.codes(&pink.analog(&mut afe::State::default(), &stream, 0));
     let (_, _, pink_lag) = code_statistics(&codes);
@@ -601,7 +608,7 @@ fn read_noise_has_the_camera_level_and_streaks_along_lines() {
 
 /// A preset that patches in every readout and analog bend.
 fn every_bend() -> Preset {
-    let mut preset = Preset::new("a520");
+    let mut preset = match_input("a520");
     preset.seed = 9;
     preset.bend.clocks = Some(ClockBend {
         cte: Some(0.999),
@@ -654,7 +661,7 @@ fn every_bend_replays_identically_from_power_on() {
 
 #[test]
 fn consecutive_frames_differ_in_noise_but_not_in_signal() {
-    let chain = Chain::new(&camera(), &Preset::new("a520"), 640, 480);
+    let chain = Chain::new(&camera(), &match_input("a520"), 640, 480);
     let mut charge = chain.charge();
     for values in charge.plane_mut().rows_mut() {
         for (x, value) in values.iter_mut().enumerate() {

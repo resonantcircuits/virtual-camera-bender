@@ -6,7 +6,7 @@ use vcb_core::adc::{self, Codes};
 use vcb_core::afe::{self, Analog};
 use vcb_core::bus::{self, Function, PotNode, Target};
 use vcb_core::noise;
-use vcb_core::preset::BusBend;
+use vcb_core::preset::{BusBend, Resolution};
 use vcb_core::readout::{self, Direction, Layout, Stream};
 use vcb_core::sensor::{self, Charge};
 use vcb_core::{Camera, Preset, Scene, Timing};
@@ -25,6 +25,7 @@ fn matched() -> Camera {
 
 fn preset(sources: &[u8], target: Target, function: Function) -> Preset {
     let mut preset = Preset::new("a520");
+    preset.readout.resolution = Resolution::MatchInput;
     preset.seed = 1;
     preset.bend.bus = Some(BusBend {
         source_pins: sources.to_vec(),
@@ -342,7 +343,8 @@ fn the_divider_toggles_on_slow_edges_and_skips_pixel_rate_edges() {
 #[test]
 fn without_a_bend_the_codes_pass_unchanged() {
     let camera = camera();
-    let preset = Preset::new("a520");
+    let mut preset = Preset::new("a520");
+    preset.readout.resolution = Resolution::MatchInput;
     let t = timing(&camera, &preset, 64, 48);
     assert!(
         bus::Params::resolve(&camera, &preset, &t)
@@ -381,7 +383,9 @@ fn a_bend_changes_only_the_lines_it_touches() {
 #[test]
 fn pins_outside_the_selector_banks_are_rejected() {
     let camera = camera();
-    let t = timing(&camera, &Preset::new("a520"), 64, 48);
+    let mut small = Preset::new("a520");
+    small.readout.resolution = Resolution::MatchInput;
+    let t = timing(&camera, &small, 64, 48);
     let cases = [
         (vec![1, 9], Target::Pin(10)),
         (vec![9, 12], Target::Pin(10)),

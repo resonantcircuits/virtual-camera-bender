@@ -5,11 +5,18 @@
 use vcb_core::adc::Codes;
 use vcb_core::codec::Quality;
 use vcb_core::isp::{self, AeMode, Demosaic, Raw, Tone};
-use vcb_core::preset::Mode;
+use vcb_core::preset::{Mode, Resolution};
 use vcb_core::readout::{Direction, Layout};
 use vcb_core::scene::{self, Channel};
 use vcb_core::sensor::{self, Charge};
 use vcb_core::{Camera, Frame, Preset, Scene, Simulator, Timing};
+
+/// A preset whose sensor takes the scene's size, as these tests assume.
+fn match_input(camera: &str) -> Preset {
+    let mut preset = Preset::new(camera);
+    preset.readout.resolution = Resolution::MatchInput;
+    preset
+}
 
 fn camera() -> Camera {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../cameras/a520.toml");
@@ -45,7 +52,7 @@ fn neutral_camera() -> Camera {
 
 /// A still preset that takes the input as scene radiance, without highlight headroom.
 fn neutral_preset() -> Preset {
-    let mut preset = Preset::new("a520");
+    let mut preset = match_input("a520");
     preset.seed = 1;
     preset.scene.headroom = 1.0;
     preset
@@ -268,7 +275,7 @@ fn the_a520_adds_contrast_softens_chroma_and_blocks_at_normal_quality() {
     let scene = Scene::from_srgb8(width, height, &input);
     let mut camera = camera();
     camera.still.jpeg = Quality::Normal;
-    let mut preset = Preset::new("a520");
+    let mut preset = match_input("a520");
     preset.seed = 1;
     let frame = render(camera, preset, &scene);
     let w = width as usize;
@@ -349,7 +356,7 @@ fn plane_stats(charge: &Charge) -> (f64, f64) {
 #[test]
 fn shot_noise_has_the_variance_of_the_charge() {
     let camera = camera();
-    let preset = Preset::new("a520");
+    let preset = match_input("a520");
     let params = quiet_sensor(&camera, &preset, 128, 128);
     let low = expose(&params, &flat_charge_scene(&params, 128, 128, 1000.0), 0);
     let (low_mean, low_std) = plane_stats(&low);
@@ -396,7 +403,7 @@ fn hot_pixels_and_prnu_belong_to_the_unit_not_the_frame_or_seed() {
     camera.sensor.hot_pixels_per_mpix = 2000.0;
     camera.sensor.prnu = 0.0;
     camera.still.exposure_s = 10.0;
-    let preset = Preset::new("a520");
+    let preset = match_input("a520");
     let t = timing(&camera, &preset, width, height);
     let base = sensor::Params::resolve(&camera, &preset, &t).unwrap();
     let dark = Scene::new(width, height);
@@ -440,7 +447,7 @@ fn movie_smear_lifts_the_columns_of_a_bright_bar_and_stills_do_not_smear() {
     }
     let mut camera = camera();
     camera.sensor.smear_db = -40.0;
-    let mut preset = Preset::new("a520");
+    let mut preset = match_input("a520");
     preset.readout.mode = Mode::Movie;
     let t = timing(&camera, &preset, width, height);
     let params = quiet_sensor(&camera, &preset, width, height);
@@ -479,7 +486,7 @@ fn movie_smear_lifts_the_columns_of_a_bright_bar_and_stills_do_not_smear() {
         }
     }
 
-    let still = quiet_sensor(&camera, &Preset::new("a520"), width, height);
+    let still = quiet_sensor(&camera, &match_input("a520"), width, height);
     assert!(
         !still.smear,
         "the mechanical shutter closes during the still readout"
@@ -499,7 +506,7 @@ fn only_gross_overexposure_blooms_and_only_along_the_column() {
     let (width, height) = (32, 64);
     let mut camera = camera();
     camera.sensor.antibloom_ratio = 100.0;
-    let preset = Preset::new("a520");
+    let preset = match_input("a520");
     let params = quiet_sensor(&camera, &preset, width, height);
     let full_well = params.full_well_e;
     let point = |overexposure: f32| {
@@ -542,7 +549,7 @@ fn only_gross_overexposure_blooms_and_only_along_the_column() {
 fn even_lens_scene(width: u32, height: u32) -> (scene::Params, Preset) {
     let mut camera = camera();
     camera.lens.vignette_stops = 0.0;
-    let preset = Preset::new("a520");
+    let preset = match_input("a520");
     let t = timing(&camera, &preset, width, height);
     (
         scene::Params::resolve(&camera, &preset, &t).unwrap(),
@@ -644,7 +651,7 @@ fn a_partly_clipped_sky_keeps_the_colour_of_the_sky_beside_it() {
 fn the_lens_darkens_the_corners_by_its_falloff_in_stops() {
     let (width, height) = (200, 150);
     let camera = camera();
-    let mut preset = Preset::new("a520");
+    let mut preset = match_input("a520");
     preset.scene.headroom = 1.0;
     let t = timing(&camera, &preset, width, height);
     let params = scene::Params::resolve(&camera, &preset, &t).unwrap();
@@ -800,7 +807,7 @@ fn demosaic_keeps_flat_fields_flat_and_malvar_cuts_edge_colour() {
 #[test]
 fn black_clamp_follows_each_line_with_a_loop_of_a_few_lines() {
     let camera = camera();
-    let preset = Preset::new("a520");
+    let preset = match_input("a520");
     let t = timing(&camera, &preset, 160, 120);
     let params = isp::Params::resolve(&camera, &preset, &t).unwrap();
     let shift = camera.adc.dsp_lsb;
@@ -838,7 +845,7 @@ fn scene_metering_exposes_the_mean_luminance_at_the_target() {
     let mut camera = camera();
     camera.isp.ae_mode = AeMode::Scene;
     camera.lens.vignette_stops = 0.0;
-    let preset = Preset::new("a520");
+    let preset = match_input("a520");
     let t = timing(&camera, &preset, width, height);
     let scene_params = scene::Params::resolve(&camera, &preset, &t).unwrap();
     let params = sensor::Params::resolve(&camera, &preset, &t).unwrap();
@@ -884,7 +891,7 @@ fn scene_metering_exposes_the_mean_luminance_at_the_target() {
 fn the_same_frames_from_reset_are_identical_and_frames_differ_in_grain() {
     let (width, height) = (96, 64);
     let scene = Scene::from_srgb8(width, height, &textured_scene(width, height));
-    let mut preset = Preset::new("a520");
+    let mut preset = match_input("a520");
     preset.seed = 3;
     let mut sim = Simulator::builder((camera(), preset.clone()))
         .input_size(width, height)

@@ -146,7 +146,7 @@ fn minimal_preset_is_an_unmodified_still_camera() {
     let preset: Preset = toml::from_str("camera = \"a520\"").unwrap();
     assert_eq!(preset, Preset::new("a520"));
     assert_eq!(preset.readout.mode, Mode::Still);
-    assert_eq!(preset.readout.resolution, Resolution::MatchInput);
+    assert_eq!(preset.readout.resolution, Resolution::Native);
 }
 
 #[test]
