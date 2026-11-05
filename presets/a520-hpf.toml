@@ -1,6 +1,7 @@
 # Canon PowerShot A520 with the ADC-bus bend: high-pass contours from the coupling capacitor.
-# Source bank D9, D8, D7 through a 1 uF capacitor and a 0.5 kOhm setting of the
-# 1 kOhm pot, function "bypass", target D10.
+# Source bank D10, D9 through the 1 uF capacitor, the 1 kOhm pot near its low end loading
+# the source bus as the schematic draws it, function "bypass", target D11.
+# Tuned against the reference HPF quadrant: docs/research/a520-tuning-log.md.
 camera = "a520"
 seed = 1
 
@@ -8,11 +9,15 @@ seed = 1
 mode = "still"
 resolution = "match-input"
 
+[scene]
+headroom = 1.5                      # PROVISIONAL: less highlight expansion keeps the cloud cores off the clip (tuning log)
+
 [bend.bus]
-source_pins = [9, 8, 7]
-target = "pin:10"
+source_pins = [10, 9]
+target = "pin:11"
 function = "bypass"
 cap_uf = 1.0
-pot_kohm = 0.5                      # PROVISIONAL: mid-travel of the 1 kOhm pot in the schematic
+pot_kohm = 0.05                     # PROVISIONAL: low end of the 1 kOhm pot; above 0.07 the source bus sits at the latch threshold and resolves in bistable blocks (tuning log)
+pot_node = "s"                      # as the schematic draws it
 series_ohm = 0.0
 common_bus = false
