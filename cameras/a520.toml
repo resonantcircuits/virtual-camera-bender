@@ -56,6 +56,7 @@ pga_gain_db = 6.2                   # D: 463 mV saturation scaled to 95 % of a 1
 pedestal_v = 0.0303                 # D: 124 / 4095 of 1.0 V
 bandwidth_hz = 40_000_000.0         # PROVISIONAL
 slew_v_per_us = 200.0               # PROVISIONAL
+noise_1f_corner_hz = 20_000.0       # PROVISIONAL: CCD output amplifier flicker corner, class typical
 oversample = 4
 
 [adc]

@@ -115,7 +115,8 @@ fn readout_prefixes_every_line_with_dark_optical_black() {
     for (i, value) in charge.plane_mut().data_mut().iter_mut().enumerate() {
         *value = 100.0 + i as f32;
     }
-    let params = readout::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    let mut params = readout::Params::resolve(&camera, &Preset::new("a520"), &t).unwrap();
+    params.cte = 1.0;
     let layout = params.layout.clone();
     let mut stream = Stream::new(layout.clone());
     readout::read(
@@ -127,8 +128,13 @@ fn readout_prefixes_every_line_with_dark_optical_black() {
     );
     let line_len = layout.line_len() as usize;
     let ob = layout.ob_cols() as usize;
+    assert!(params.dark_e > 0.0);
     for (line, samples) in stream.samples().chunks_exact(line_len).enumerate() {
-        assert!(samples[..ob].iter().all(|&s| s == 0.0));
+        assert!(
+            samples[..ob]
+                .iter()
+                .all(|&s| (s - params.dark_e).abs() <= f32::EPSILON)
+        );
         assert_eq!(&samples[ob..], charge.plane().row(line as u32));
     }
 }
@@ -160,7 +166,9 @@ fn analog_pedestal_lands_on_the_nominal_black_code() {
     let layout = Layout::from_timing(&t, Direction::TopDown);
     let stream = Stream::new(layout.clone());
     let mut analog = Analog::new(layout.clone());
-    let afe_params = afe::Params::resolve(&camera, &preset, &t).unwrap();
+    let mut afe_params = afe::Params::resolve(&camera, &preset, &t).unwrap();
+    afe_params.read_noise_e = 0.0;
+    afe_params.noise_1f_corner_hz = 0.0;
     afe::process(
         &afe_params,
         &mut afe::State::default(),

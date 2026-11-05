@@ -11,6 +11,18 @@ fn camera() -> Camera {
     toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+/// The camera without read noise and transfer loss, for tests of the deterministic signal path.
+///
+/// Transfer loss at the camera's CTE moves up to 1.7 % of each packet into the next
+/// row, which is the other Bayer colour: visible crosstalk in a pure-colour chart.
+fn quiet_camera() -> Camera {
+    let mut camera = camera();
+    camera.sensor.read_noise_e = 0.0;
+    camera.sensor.cte = 1.0;
+    camera.afe.noise_1f_corner_hz = 0.0;
+    camera
+}
+
 fn preset_file(name: &str) -> Preset {
     let path = format!("{}/../../presets/{name}.toml", env!("CARGO_MANIFEST_DIR"));
     toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
@@ -90,7 +102,7 @@ fn marked_portrait() -> Scene {
 fn flat_grey_scene_develops_to_a_flat_frame() {
     let (width, height) = (96, 64);
     let scene = uniform(width, height, [128, 128, 128]);
-    let mut sim = simulator(camera(), preset_file("a520-clean"), width, height);
+    let mut sim = simulator(quiet_camera(), preset_file("a520-clean"), width, height);
     let frame = sim.frame(&scene, 0);
     let first = frame.pixel(0, 0);
     assert!(
@@ -108,7 +120,7 @@ fn smooth_gradient_round_trips_through_the_clean_camera() {
     let (width, height) = (256, 192);
     let input = gradient(width, height);
     let scene = Scene::from_srgb8(width, height, &input);
-    let mut sim = simulator(camera(), preset_file("a520-clean"), width, height);
+    let mut sim = simulator(quiet_camera(), preset_file("a520-clean"), width, height);
     let frame = sim.frame(&scene, 0);
     assert_eq!((frame.width(), frame.height()), (width, height));
     let quality = psnr(&input, frame.rgb());
@@ -165,7 +177,7 @@ fn movie_mode_keeps_the_bayer_phase() {
 
 #[test]
 fn native_movie_mode_delivers_the_camera_movie_size() {
-    let camera = camera();
+    let camera = quiet_camera();
     let size = (camera.movie.output_width, camera.movie.output_height);
     let mut preset = preset_file("a520-clean");
     preset.readout.mode = Mode::Movie;
@@ -224,10 +236,10 @@ fn portrait_input_at_match_input_keeps_its_size_and_marks() {
 fn readout_direction_changes_time_order_not_the_image() {
     let (width, height) = (64, 48);
     let scene = Scene::from_srgb8(width, height, &gradient(width, height));
-    let top_down = simulator(camera(), preset_file("a520-clean"), width, height)
+    let top_down = simulator(quiet_camera(), preset_file("a520-clean"), width, height)
         .frame(&scene, 0)
         .clone();
-    let mut flipped = camera();
+    let mut flipped = quiet_camera();
     flipped.still.direction = Direction::BottomUp;
     let mut sim = simulator(flipped, preset_file("a520-clean"), width, height);
     assert_eq!(sim.frame(&scene, 0), &top_down);

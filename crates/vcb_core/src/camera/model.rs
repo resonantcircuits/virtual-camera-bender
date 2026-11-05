@@ -152,6 +152,7 @@ impl Camera {
         finite("afe.pga_gain_db", afe.pga_gain_db)?;
         positive("afe.bandwidth_hz", afe.bandwidth_hz)?;
         positive("afe.slew_v_per_us", afe.slew_v_per_us)?;
+        non_negative("afe.noise_1f_corner_hz", afe.noise_1f_corner_hz)?;
         at_least("afe.oversample", afe.oversample, 1)?;
 
         let adc = &self.adc;

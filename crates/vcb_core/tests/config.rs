@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use vcb_core::afe::{Inject, Wave};
+use vcb_core::afe::{GainMod, Inject, Wave};
 use vcb_core::bus::{Function, Target};
 use vcb_core::codec::Quality;
 use vcb_core::isp::WbMode;
@@ -48,14 +48,24 @@ fn full_preset() -> Preset {
     preset.bend.clocks = Some(ClockBend {
         cte: Some(0.9995),
         v_pulse_drop_hz: 3.0,
+        v_stall_lines: 2.5,
         h_glitch_hz: 0.5,
+        h_shift_frac: 0.1,
     });
     preset.bend.afe = Some(AfeBend {
         inject: Some(Inject {
             wave: Wave::Saw,
             freq_hz: 1200.0,
             amplitude_v: 0.15,
+            phase_skew: 0.01,
         }),
+        gain_mod: Some(GainMod {
+            wave: Wave::Sine,
+            freq_hz: 30.0,
+            depth: 0.2,
+        }),
+        cds_lag_px: 1.5,
+        cds_mix: 0.4,
     });
     preset.isp = Some(IspOverride {
         wb: Some(WbMode::Auto),
@@ -228,4 +238,56 @@ fn preset_validation_rejects_unphysical_values() {
         ..ClockBend::default()
     });
     assert!(preset.validate().unwrap_err().is_config());
+}
+
+#[test]
+fn analog_bends_parse_as_inline_tables_with_defaults() {
+    let text = r#"
+        camera = "a520"
+        [bend.clocks]
+        v_pulse_drop_hz = 2.0
+        h_glitch_hz = 1.0
+        [bend.afe]
+        inject = { wave = "noise", freq_hz = 300.0, amplitude_v = 0.1 }
+        gain_mod = { wave = "sine", freq_hz = 12.0, depth = 0.25 }
+        cds_lag_px = 2.0
+        cds_mix = 0.5
+    "#;
+    let preset: Preset = toml::from_str(text).unwrap();
+    preset.validate().unwrap();
+    let clocks = preset.bend.clocks.unwrap();
+    let defaults = ClockBend::default();
+    assert!(clocks.cte.is_none());
+    assert!((clocks.v_stall_lines - defaults.v_stall_lines).abs() < f64::EPSILON);
+    assert!((clocks.h_shift_frac - defaults.h_shift_frac).abs() < f64::EPSILON);
+    let afe = preset.bend.afe.unwrap();
+    let inject = afe.inject.unwrap();
+    assert_eq!(inject.wave, Wave::Noise);
+    assert!(inject.phase_skew.abs() < f64::EPSILON);
+    assert_eq!(afe.gain_mod.unwrap().wave, Wave::Sine);
+}
+
+#[test]
+fn analog_bend_validation_rejects_unphysical_values() {
+    let broken: [fn(&mut Preset); 5] = [
+        |p| p.bend.clocks.as_mut().unwrap().v_stall_lines = 0.5,
+        |p| p.bend.clocks.as_mut().unwrap().h_shift_frac = 1.5,
+        |p| p.bend.afe.as_mut().unwrap().cds_mix = -0.1,
+        |p| p.bend.afe.as_mut().unwrap().cds_lag_px = f64::NAN,
+        |p| {
+            if let Some(gain_mod) = p.bend.afe.as_mut().unwrap().gain_mod.as_mut() {
+                gain_mod.depth = 1.5;
+            }
+        },
+    ];
+    for (case, breaks) in broken.iter().enumerate() {
+        let mut preset = full_preset();
+        breaks(&mut preset);
+        let error = preset.validate().unwrap_err();
+        assert!(error.is_config(), "case {case}: {error}");
+    }
+
+    let mut camera = camera();
+    camera.afe.noise_1f_corner_hz = -1.0;
+    assert!(camera.validate().unwrap_err().is_config());
 }

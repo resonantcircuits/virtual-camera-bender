@@ -2,7 +2,7 @@
 
 use crate::Error;
 use crate::preset::{Bend, IspOverride, Readout};
-use crate::validate::{fraction, non_negative, positive, within};
+use crate::validate::{finite, fraction, non_negative, positive, within};
 
 /// A camera, a readout mode, the bends patched into it and processing overrides.
 ///
@@ -84,11 +84,27 @@ impl Preset {
                 fraction("bend.clocks.cte", cte)?;
             }
             non_negative("bend.clocks.v_pulse_drop_hz", clocks.v_pulse_drop_hz)?;
+            if !(clocks.v_stall_lines.is_finite() && clocks.v_stall_lines >= 1.0) {
+                return Err(Error::config(format!(
+                    "bend.clocks.v_stall_lines must be at least 1, got {}",
+                    clocks.v_stall_lines
+                )));
+            }
             non_negative("bend.clocks.h_glitch_hz", clocks.h_glitch_hz)?;
+            within("bend.clocks.h_shift_frac", clocks.h_shift_frac, 0.0, 1.0)?;
         }
-        if let Some(inject) = self.bend.afe.as_ref().and_then(|afe| afe.inject.as_ref()) {
-            non_negative("bend.afe.inject.freq_hz", inject.freq_hz)?;
-            non_negative("bend.afe.inject.amplitude_v", inject.amplitude_v)?;
+        if let Some(afe) = &self.bend.afe {
+            if let Some(inject) = &afe.inject {
+                non_negative("bend.afe.inject.freq_hz", inject.freq_hz)?;
+                non_negative("bend.afe.inject.amplitude_v", inject.amplitude_v)?;
+                finite("bend.afe.inject.phase_skew", inject.phase_skew)?;
+            }
+            if let Some(gain_mod) = &afe.gain_mod {
+                non_negative("bend.afe.gain_mod.freq_hz", gain_mod.freq_hz)?;
+                within("bend.afe.gain_mod.depth", gain_mod.depth, 0.0, 1.0)?;
+            }
+            non_negative("bend.afe.cds_lag_px", afe.cds_lag_px)?;
+            within("bend.afe.cds_mix", afe.cds_mix, 0.0, 1.0)?;
         }
         if let Some(isp) = &self.isp {
             validate_isp(isp)?;
