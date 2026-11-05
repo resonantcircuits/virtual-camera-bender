@@ -1,10 +1,13 @@
-//! Camera discovery and preset files.
+//! Camera discovery, preset files and the app's resources.
 //!
-//! Camera files live in one directory, `$VCB_CAMERAS` if set and `cameras/` in the
-//! working directory otherwise, as `<name>.toml`; a preset names its camera by that
-//! stem, as the command line does. Presets are listed from `presets/` in the working
-//! directory and opened or saved anywhere through file dialogs. A preset written by
-//! the app holds the values only: TOML comments of a hand-written file are not kept.
+//! Camera files live in one directory as `<name>.toml`; a preset names its camera by
+//! that stem, as the command line does. The directory is `$VCB_CAMERAS` if set, else
+//! `cameras/` in the working directory, else `cameras/` in the resources of the app
+//! bundle the binary runs from (`Contents/Resources`, where `scripts/bundle-macos.sh`
+//! puts it). Presets are listed from `presets/` and the sample photo is found in
+//! `samples/`, looked up the same way, and presets are opened or saved anywhere
+//! through file dialogs. A preset written by the app holds the values only: TOML
+//! comments of a hand-written file are not kept.
 
 use std::fs;
 use std::io;
@@ -19,8 +22,48 @@ pub const CAMERAS_ENV: &str = "VCB_CAMERAS";
 /// Camera directory used when [`CAMERAS_ENV`] is not set, relative to the working directory.
 pub const CAMERAS_DIR: &str = "cameras";
 
-/// Directory of the preset list, relative to the working directory.
+/// Directory of the preset list, relative to the working directory or the bundle's resources.
 pub const PRESETS_DIR: &str = "presets";
+
+/// The sample photo, relative to the working directory or the bundle's resources.
+pub const SAMPLE_PHOTO: &str = "samples/sample-01.jpg";
+
+/// Finds `relative` in the working directory, else in the app bundle's resources.
+///
+/// Returns `None` if neither exists.
+#[must_use]
+pub fn resource(relative: &str) -> Option<PathBuf> {
+    let here = PathBuf::from(relative);
+    if here.exists() {
+        return Some(here);
+    }
+    let bundled = std::env::current_exe()
+        .ok()?
+        .parent()?
+        .parent()?
+        .join("Resources")
+        .join(relative);
+    bundled.exists().then_some(bundled)
+}
+
+/// Returns the directory of the preset list: `presets/` here or in the bundle.
+#[must_use]
+pub fn presets_dir() -> PathBuf {
+    resource(PRESETS_DIR).unwrap_or_else(|| PathBuf::from(PRESETS_DIR))
+}
+
+/// Returns the sample photo, if the repository or the bundle holds it.
+#[must_use]
+pub fn sample_photo() -> Option<PathBuf> {
+    resource(SAMPLE_PHOTO)
+}
+
+/// Whether `dir` lies inside an app bundle, where saved files would be lost on update.
+fn in_bundle(dir: &Path) -> bool {
+    absolute(dir)
+        .components()
+        .any(|part| part.as_os_str().to_string_lossy().ends_with(".app"))
+}
 
 /// A configuration file found in a directory: its stem and its path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,10 +107,13 @@ impl Current {
     }
 }
 
-/// Returns the camera directory: `$VCB_CAMERAS`, else `cameras/`.
+/// Returns the camera directory: `$VCB_CAMERAS`, else `cameras/` here or in the bundle.
 #[must_use]
 pub fn camera_dir() -> PathBuf {
-    std::env::var_os(CAMERAS_ENV).map_or_else(|| PathBuf::from(CAMERAS_DIR), PathBuf::from)
+    std::env::var_os(CAMERAS_ENV).map_or_else(
+        || resource(CAMERAS_DIR).unwrap_or_else(|| PathBuf::from(CAMERAS_DIR)),
+        PathBuf::from,
+    )
 }
 
 /// Lists the `.toml` files directly inside `dir`, sorted by name.
@@ -170,18 +216,26 @@ pub fn pick_open() -> Option<PathBuf> {
     rfd::FileDialog::new()
         .set_title("Load preset")
         .add_filter("Preset", &["toml"])
-        .set_directory(absolute(Path::new(PRESETS_DIR)))
+        .set_directory(absolute(&presets_dir()))
         .pick_file()
 }
 
 /// Asks where to save a preset, suggesting `name.toml`.
+///
+/// The dialog opens in the preset's own folder, else the preset list's folder, unless
+/// that lies inside the app bundle; then it opens in the home folder.
 #[must_use]
 pub fn pick_save(current: &Current) -> Option<PathBuf> {
     let directory = current
         .path
         .as_deref()
         .and_then(Path::parent)
-        .map_or_else(|| PathBuf::from(PRESETS_DIR), Path::to_path_buf);
+        .map_or_else(presets_dir, Path::to_path_buf);
+    let directory = if in_bundle(&directory) {
+        std::env::var_os("HOME").map_or(directory, PathBuf::from)
+    } else {
+        directory
+    };
     rfd::FileDialog::new()
         .set_title("Save preset")
         .add_filter("Preset", &["toml"])

@@ -1,10 +1,12 @@
 //! Opening source files, exporting renders, and running both off the UI thread.
 //!
 //! JPEG and PNG files are decoded by [`vcb_io::read_image`] with their EXIF
-//! orientation. Any other file is treated as a video: its first frame, read through
-//! [`vcb_io::video::VideoReader`] (which needs `ffmpeg`), becomes the working scene.
-//! Exports go through [`vcb_io::write_frame`] as PNG or JPEG, chosen by extension.
-//! A [`Task`] runs a file operation on its own thread and wakes the UI when done.
+//! orientation. Any other file is treated as a video: it is probed, and its first
+//! frame, read through [`vcb_io::video::VideoReader`] (which needs `ffmpeg`), becomes
+//! the working scene; later frames are read on demand ([`video`](crate::video)).
+//! Still exports go through [`vcb_io::write_frame`] as PNG or JPEG, chosen by
+//! extension. A [`Task`] runs a file operation on its own thread and wakes the UI when
+//! done.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,6 +19,7 @@ use vcb_core::{Frame, Scene};
 use vcb_io::Format;
 use vcb_io::video::{ReadOptions, VideoReader};
 
+use crate::video::Clip;
 use crate::viewport;
 
 /// File extensions opened as still images.
@@ -57,12 +60,14 @@ pub struct Source {
     pub path: PathBuf,
     /// Whether it is an image or a video.
     pub kind: Kind,
-    /// The linear-light scene, upright.
+    /// The linear-light scene, upright; a video's frame on screen.
     pub scene: Arc<Scene>,
     /// The scene as an egui image, for showing the original.
     pub original: ColorImage,
     /// The file's size in bytes.
     pub bytes: u64,
+    /// A video's stream parameters; `None` for an image.
+    pub clip: Option<Clip>,
 }
 
 impl std::fmt::Debug for Source {
@@ -73,6 +78,7 @@ impl std::fmt::Debug for Source {
             .field("kind", &self.kind)
             .field("scene", &self.scene)
             .field("bytes", &self.bytes)
+            .field("clip", &self.clip)
             .finish_non_exhaustive()
     }
 }
@@ -99,13 +105,15 @@ pub fn open(path: &Path) -> Result<Source> {
     let bytes = std::fs::metadata(path)
         .with_context(|| format!("cannot open {}", path.display()))?
         .len();
-    let scene = match kind {
-        Kind::Image => vcb_io::read_image(path)?,
+    let (scene, clip) = match kind {
+        Kind::Image => (vcb_io::read_image(path)?, None),
         Kind::Video => {
             let mut reader = VideoReader::open(path, ReadOptions::default())?;
-            reader
+            let clip = Clip::new(path, *reader.info());
+            let scene = reader
                 .next_frame()?
-                .ok_or_else(|| anyhow!("{} has no video frames", path.display()))?
+                .ok_or_else(|| anyhow!("{} has no video frames", path.display()))?;
+            (scene, Some(clip))
         }
     };
     let original = viewport::texture_image(scene.width(), scene.height(), &scene.to_srgb8());
@@ -122,6 +130,7 @@ pub fn open(path: &Path) -> Result<Source> {
         scene: Arc::new(scene),
         original,
         bytes,
+        clip,
     })
 }
 

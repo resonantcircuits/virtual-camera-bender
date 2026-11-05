@@ -3,7 +3,8 @@
 use std::fs;
 use std::path::Path;
 
-use vcb_app::panels::bus::{BusPanel, Gate, Route, significant};
+use vcb_app::panels::bus::{BusPanel, Gate, Route};
+use vcb_app::panels::significant;
 use vcb_app::presets;
 use vcb_core::Preset;
 use vcb_core::bus::{Function, PotNode, Target};

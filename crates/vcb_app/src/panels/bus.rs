@@ -10,15 +10,12 @@
 
 use std::ops::RangeInclusive;
 
-use eframe::egui::{
-    self, Align, CornerRadius, Grid, Layout, Rect, Response, Sense, Slider, SliderClamping, Stroke,
-    StrokeKind, Ui, WidgetInfo,
-};
+use eframe::egui::{self, CornerRadius, Rect, Response, Sense, Stroke, StrokeKind, Ui, WidgetInfo};
 use vcb_core::Preset;
 use vcb_core::bus::{Function, PotNode, Target};
 use vcb_core::preset::BusBend;
 
-use crate::panels::{self, Edit};
+use crate::panels::{self, Edit, Knob};
 use crate::theme;
 
 /// Data lines on the source DIP bank, in panel order.
@@ -47,9 +44,6 @@ const SLIDE_HEIGHT: f32 = 32.0;
 
 /// Gap between switch positions, in points.
 const SLOT_GAP: f32 = 4.0;
-
-/// Width of the sliders in the panel, in points.
-const SLIDER_WIDTH: f32 = 136.0;
 
 /// The "Bypass / Function" switch: whether node F reaches the target through a gate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -219,21 +213,17 @@ impl BusPanel {
     /// Draws the front panel and returns what the user did.
     pub fn show(&mut self, ui: &mut Ui) -> Edit {
         let mut edit = Edit::default();
-        ui.horizontal(|ui| {
-            panels::title(ui, "Bus bend");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                edit.record(&panels::power(
-                    ui,
-                    &mut self.enabled,
-                    "Patch the bend into the bus",
-                ));
-            });
-        });
+        if let Some(response) = panels::header(
+            ui,
+            "Bus bend",
+            Some((&mut self.enabled, "Patch the bend into the bus")),
+        ) {
+            edit.record(&response);
+        }
         ui.scope(|ui| {
             if !self.enabled {
-                ui.multiply_opacity(0.45);
+                ui.multiply_opacity(panels::OFF_OPACITY);
             }
-            ui.spacing_mut().slider_width = SLIDER_WIDTH;
             edit |= self.show_source(ui);
             edit |= self.show_filter(ui);
             edit |= self.show_function(ui);
@@ -255,62 +245,44 @@ impl BusPanel {
     fn show_filter(&mut self, ui: &mut Ui) -> Edit {
         let mut edit = Edit::default();
         panels::section(ui, "Variable high-pass");
-        Grid::new("bus-filter")
-            .num_columns(2)
-            .spacing([theme::GRID, theme::GRID])
-            .show(ui, |ui| {
-                ui.label("Capacitor");
-                edit.record(
-                    &ui.add(
-                        Slider::new(&mut self.cap_uf, CAP_RANGE_UF)
-                            .logarithmic(true)
-                            .clamping(SliderClamping::Edits)
-                            .custom_formatter(|value, _| significant(value, 3))
-                            .suffix(" µF"),
-                    )
-                    .on_hover_text("Coupling capacitor from the source bus S to node F"),
-                );
-                ui.end_row();
+        panels::grid(ui, "bus-filter", |ui| {
+            panels::knob_row(
+                ui,
+                &mut edit,
+                "Capacitor",
+                "Coupling capacitor from the source bus S to node F",
+                &mut self.cap_uf,
+                &Knob::log(CAP_RANGE_UF, 0.0, " µF"),
+            );
+            panels::knob_row(
+                ui,
+                &mut edit,
+                "Pot",
+                "The 1 kΩ potentiometer to ground; 0 grounds its node",
+                &mut self.pot_kohm,
+                &Knob::log(POT_RANGE_KOHM, POT_SMALLEST_KOHM, " kΩ").decimals(3),
+            );
 
-                ui.label("Pot");
-                edit.record(
-                    &ui.add(
-                        Slider::new(&mut self.pot_kohm, POT_RANGE_KOHM)
-                            .logarithmic(true)
-                            .smallest_positive(POT_SMALLEST_KOHM)
-                            .clamping(SliderClamping::Edits)
-                            .fixed_decimals(3)
-                            .suffix(" kΩ"),
-                    )
-                    .on_hover_text("The 1 kΩ potentiometer to ground; 0 grounds its node"),
-                );
-                ui.end_row();
+            let hover = "F: after the capacitor, a high-pass. S: on the source bus, as the schematic draws it";
+            panels::row_label(ui, "Pot node").on_hover_text(hover);
+            let mut on_s = self.pot_node == PotNode::S;
+            let response = panels::switch(ui, &mut on_s, "F", "S").on_hover_text(hover);
+            if response.changed() {
+                self.pot_node = if on_s { PotNode::S } else { PotNode::F };
+            }
+            edit.record(&response);
+            ui.label("");
+            ui.end_row();
 
-                ui.label("Pot node");
-                let mut on_s = self.pot_node == PotNode::S;
-                let response = panels::switch(ui, &mut on_s, "F", "S").on_hover_text(
-                    "F: after the capacitor, a high-pass. S: on the source bus, as the schematic draws it",
-                );
-                if response.changed() {
-                    self.pot_node = if on_s { PotNode::S } else { PotNode::F };
-                }
-                edit.record(&response);
-                ui.end_row();
-
-                ui.label("Patch resistor");
-                edit.record(
-                    &ui.add(
-                        Slider::new(&mut self.series_ohm, SERIES_RANGE_OHM)
-                            .logarithmic(true)
-                            .smallest_positive(1.0)
-                            .clamping(SliderClamping::Edits)
-                            .fixed_decimals(0)
-                            .suffix(" Ω"),
-                    )
-                    .on_hover_text("Resistor between each tapped pin and its bus; 0 is a direct wire"),
-                );
-                ui.end_row();
-            });
+            panels::knob_row(
+                ui,
+                &mut edit,
+                "Patch resistor",
+                "Resistor between each tapped pin and its bus; 0 is a direct wire",
+                &mut self.series_ohm,
+                &Knob::log(SERIES_RANGE_OHM, 1.0, " Ω").decimals(0),
+            );
+        });
         edit
     }
 
@@ -479,15 +451,4 @@ fn slot_rect(housing: Rect, i: usize) -> Rect {
         egui::pos2(left, housing.top()),
         egui::vec2(SLOT_WIDTH, housing.height()),
     )
-}
-
-/// Formats `value` with `digits` significant digits, without an exponent.
-#[must_use]
-pub fn significant(value: f64, digits: u8) -> String {
-    if value == 0.0 || !value.is_finite() {
-        return format!("{value}");
-    }
-    let magnitude = value.abs().log10().floor() as i32;
-    let decimals = usize::try_from(i32::from(digits) - 1 - magnitude).unwrap_or(0);
-    format!("{value:.decimals$}")
 }

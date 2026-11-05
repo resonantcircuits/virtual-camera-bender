@@ -1,6 +1,6 @@
 [package]
 name = "vcb_app"
-description = "Desktop app for the virtual camera bender: live renders behind a bus-bend front panel."
+description = "Desktop app for the virtual camera bender: the bent camera's front panels, live renders and video export."
 keywords = ["camera", "ccd", "simulation", "circuit-bending", "gui"]
 categories = ["multimedia::images", "gui"]
 version.workspace = true
@@ -28,6 +28,10 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 vcb_core = { workspace = true, features = ["serde"] }
 vcb_io.workspace = true
+
+[dev-dependencies]
+# For `examples/icon.rs`, which writes the icon set; the same features vcb_io enables.
+image = { workspace = true, features = ["jpeg", "png"] }
 
 [lints]
 workspace = true
