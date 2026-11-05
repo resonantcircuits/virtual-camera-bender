@@ -16,6 +16,7 @@ vcb_core = { path = "crates/vcb_core", default-features = false }
 vcb_io = { path = "crates/vcb_io" }
 anyhow = "1.0.104"
 clap = "4.6.7"
+divan = "0.1.21"
 image = { version = "0.25.10", default-features = false }
 kamadak-exif = "0.6.1"
 mimalloc = "0.1.52"
