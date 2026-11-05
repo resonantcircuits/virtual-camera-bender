@@ -10,3 +10,5 @@ docs/research/downloads/
 *.log
 # derived from the local reference images
 validation/
+# agent worktrees
+.claude/worktrees/
