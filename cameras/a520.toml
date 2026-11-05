@@ -86,6 +86,9 @@ ff_fmax_hz = 15_000_000.0           # C: 74HC74 at 3.0 V (section 6)
 ff_min_pulse_ns = 25.0              # C: 74HC74 clock pulse width (section 6)
 ff_setup_ns = 35.0                  # C: 74HC74 setup time (section 6)
 ff_prop_delay_ns = 40.0             # C: 74HC74 typical, 75 ns max (section 6)
+clamp_diode_v = 0.5                 # C: 74HC input range -0.5 V to VCC + 0.5 V before the protection diodes conduct (section 6 datasheets)
+clamp_r_ohm = 50.0                  # PROVISIONAL: series resistance of a conducting input protection diode
+input_leak_mohm = 3.3               # C: 74HC input leakage, 1 uA over temperature (section 6 lists 0.1 uA at 25 C); PROVISIONAL
 
 [isp]
 wb_r_gain = 2.0                     # PROVISIONAL: daylight

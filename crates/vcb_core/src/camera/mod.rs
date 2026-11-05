@@ -215,6 +215,12 @@ pub struct Logic {
     pub ff_setup_ns: f64,
     /// Clock-to-output propagation delay of the flip-flop in nanoseconds.
     pub ff_prop_delay_ns: f64,
+    /// Forward voltage of a gate input's protection diodes, beyond ground or the supply.
+    pub clamp_diode_v: f64,
+    /// Series resistance of a conducting input protection diode in ohms.
+    pub clamp_r_ohm: f64,
+    /// Input leakage of a gate input as a resistance to half the supply, in megohms.
+    pub input_leak_mohm: f64,
 }
 
 /// The `[isp]` section: the image processor's colour and detail pipeline.

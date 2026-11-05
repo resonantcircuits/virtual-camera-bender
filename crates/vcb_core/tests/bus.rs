@@ -4,7 +4,7 @@
 
 use vcb_core::adc::{self, Codes};
 use vcb_core::afe::{self, Analog};
-use vcb_core::bus::{self, Function, Target};
+use vcb_core::bus::{self, Function, PotNode, Target};
 use vcb_core::noise;
 use vcb_core::preset::BusBend;
 use vcb_core::readout::{self, Direction, Layout, Stream};
@@ -32,6 +32,7 @@ fn preset(sources: &[u8], target: Target, function: Function) -> Preset {
         function,
         cap_uf: 1.0,
         pot_kohm: 0.5,
+        pot_node: PotNode::F,
         series_ohm: 0.0,
         common_bus: false,
     });
@@ -674,4 +675,74 @@ fn divide_holds_runs_longer_than_the_source_edge_spacing() {
         run_length > edge_spacing,
         "runs of {run_length:.1} pixels, source edges every {edge_spacing:.1} pixels"
     );
+}
+
+#[cfg(feature = "test-util")]
+#[test]
+fn with_the_pot_on_s_the_clamp_diodes_restore_f_between_the_rails() {
+    // With the pot on S, F has only the gate inputs' leakage to half the supply. A short
+    // pulse train lets the leakage centre F on half the supply, so its pulses reach past
+    // the supply rail, where the diodes clamp them and recharge the capacitor. 1 nF
+    // makes the leakage time constant 1.65 ms, so the trace sees it settle.
+    let camera = matched();
+    let mut preset = preset(&[9, 8, 7], Target::Pin(10), Function::Invert);
+    bus_of(&mut preset).pot_node = PotNode::S;
+    bus_of(&mut preset).cap_uf = 0.001;
+    let t = timing(&camera, &preset, 64, 48);
+    let params = params(&camera, &preset, &t);
+    let high = word(&[9, 8, 7]);
+    let pixels: Vec<u16> = (0..8000)
+        .map(|n| if n % 20 < 2 { high } else { 0 })
+        .collect();
+    let mut probes = Vec::new();
+    bus::trace(&params, &mut bus::State::default(), &pixels, &mut probes);
+
+    let (low, highest) = probes.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
+        (lo.min(p.f_v), hi.max(p.f_v))
+    });
+    assert!(
+        low >= -0.6 && highest <= 3.9,
+        "F spans {low} to {highest} V"
+    );
+    assert!(
+        highest > camera.adc.v_oh,
+        "F never rose past the supply ({highest} V)"
+    );
+    assert!(
+        probes.iter().any(|p| p.clamp_a < -1e-6),
+        "the supply-side diodes never conducted"
+    );
+    // At the end of every pixel the inverter shows the complement of the source edge.
+    let os = t.oversample as usize;
+    for (n, (&code, pixel)) in pixels.iter().zip(probes.chunks(os)).enumerate() {
+        let last = pixel[os - 1];
+        assert_eq!(
+            last.gate_high,
+            code != high,
+            "pixel {n}, F at {} V",
+            last.f_v
+        );
+    }
+}
+
+#[cfg(feature = "test-util")]
+#[test]
+fn with_the_pot_on_f_no_clamp_diode_conducts_on_a_gradient() {
+    // A 16-row frame at match-input resolution has milliseconds of blanking per line,
+    // which returns the capacitor to its black-level charge before every line; F then
+    // stays between the rails. On native-length lines the charge carries over and
+    // every drop of the source mix below its running mean pulls F under ground.
+    let camera = camera();
+    for function in [Function::Bypass, Function::Invert, Function::Divide] {
+        let preset = preset(&[9, 8, 7], Target::Pin(10), function);
+        let (t, mut codes) = ramp_codes(&camera, &preset, 256, 16);
+        let mut state = bus::State::default();
+        bus::bend(
+            Some(&params(&camera, &preset, &t)),
+            &mut state,
+            0,
+            &mut codes,
+        );
+        assert_eq!(state.clamped_steps(), 0, "{function:?}");
+    }
 }
