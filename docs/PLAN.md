@@ -365,3 +365,57 @@ Module `bus.rs` plus a small `circuit.rs` nodal solver.
 5. Post stage per the policy; preset library rebuilt from the old presets' spirit.
 6. Capture input, virtual camera output, MIDI/OSC, audio-reactive injection.
 7. WASM/WebGPU demo build of `vcb_core`.
+
+## Milestone 2: the desktop app (direction approved 2026-11-05)
+
+Goal: an installable macOS app in which the user loads a photo or a clip, picks a
+camera and a preset, turns physical controls and sees the result live, and exports
+stills and video. The user tests it directly; sheets are no longer the main surface.
+
+Framework: `eframe`/`egui` 0.37 with the wgpu backend (the frame is uploaded as a
+texture; a future GPU path renders straight into it), `rfd` for file dialogs. Native
+look is the default resolution; interactive drags render a reduced-size preview and
+the release renders at full size.
+
+### Stage 7: core support for interactivity and two model gaps (parallel with 8)
+
+- `Simulator::set_preset(preset)` re-resolves stage parameters without reallocating
+  when the readout geometry is unchanged, keeps analog state unless a stage's topology
+  changed (bus wiring, oscillator wave), and reallocates otherwise.
+  `Simulator::set_scene_size(width, height)` for match-input previews.
+- Bus line capacitance and driver slew: `[adc] line_pf` and `driver_slew_v_per_us`,
+  so a line mid-transition at the latch instant can read either way; the candidate
+  mechanism for the HPF reference's bright sky (tuning log).
+- Lagging auto-exposure and auto-white-balance servos for video: `[isp] ae_mode =
+  "servo"` and `wb = "servo"` with time constants in seconds, metered on the bent raw
+  of the previous frame, as DIGIC does.
+
+### Stage 8: the app shell and the bus-bend front panel (parallel with 7)
+
+Crate `vcb_app`, binary `vcb-app`. Window: viewport in the centre, inspector on the
+right, file and transport bar on top, status line at the bottom. Open by drag and drop
+or dialog (images and video). A render worker thread owns the `Simulator`; the UI
+sends the latest preset and gets frames back (latest wins, stale results dropped).
+Preview scale during drags, full render on release, both with timing in the status
+line. Zoom, pan, fit; hold a key to see the original. Camera picker from `cameras/`,
+preset open and save as TOML, export still as PNG or JPEG. First panel: readout
+(mode, resolution, seed) and the bus bend drawn as a front panel: DIP source switches
+D11..D2, target selector D11..D4 and GND, bypass/function and invert/divide
+switches, pot in kΩ, capacitor in µF, pot node, patch resistor in Ω, common bus.
+
+Visual rules: neutral dark greys, one accent colour, egui's sans font with a clear
+size hierarchy, 8-pixel spacing grid, units on every control, physical values shown
+as numbers, controls grouped by stage in signal order, no uppercase shouting, no
+monospace except numeric readouts, no neon.
+
+### Stage 9: the full instrument and video
+
+Panels for clocks (CTE, stalls, glitches), AFE (injection, gain modulation, CDS skew),
+scene (headroom), sensor exposure, ISP overrides (white balance, tone, NR, sharpening),
+each in physical units. Video: frame scrubber, play-through preview at reduced size,
+movie or still readout, export with progress through `vcb_io`'s writer on a thread.
+A signal-path strip showing stage order. Keyboard shortcuts. A macOS app bundle.
+
+### Stage 10: user testing round
+
+The user plays; findings become fixes; `docs/USER-GUIDE.md`; tag `v0.2.0`.
