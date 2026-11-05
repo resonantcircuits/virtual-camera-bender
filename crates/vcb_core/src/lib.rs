@@ -76,6 +76,6 @@ pub use preset::model::Preset;
 #[doc(inline)]
 pub use scene::model::Scene;
 #[doc(inline)]
-pub use simulator::{SimDeps, Simulator, SimulatorBuilder};
+pub use simulator::{Reconfigured, SimDeps, Simulator, SimulatorBuilder};
 #[doc(inline)]
 pub use timing::Timing;

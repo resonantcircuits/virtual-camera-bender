@@ -17,7 +17,19 @@ All notable changes to this project are recorded here. The format follows
 - `Simulator::set_preset` and `Simulator::set_scene_size`, which reconfigure a running
   simulator and keep buffers and analog state where the readout geometry and the bus
   wiring allow, with the accessors `preset`, `camera`, `scene_size` and
-  `exposure_scale`.
+  `exposure_scale`. Both return a `Reconfigured`: `Kept`, flagging a bus bend returned
+  to power-on and a servo that forgot its value, or `Rebuilt` after a new geometry.
+- Physical exposure: `[sensor] nominal_exposure_s` (1/125 s on the A520,
+  PROVISIONAL) is the exposure at which reference white fills `white_fraction` of the
+  well, and the collected charge scales with `exposure_s / nominal_exposure_s`, so a
+  longer exposure brightens and clips, raises the dark charge and lowers the smear
+  relative to the signal. Auto-exposure scales on top of it and compensates a changed
+  time within its two stops; `sensor::Params::white_e` gives reference white's charge.
+- `[movie] exposure_s`, the electronic shutter's integration time, at most `1 / fps`
+  (1/125 s on the A520, PROVISIONAL).
+- The preset's `[sensor]` section with an optional `exposure_s`, which replaces the
+  camera's exposure in either readout mode (limited to one frame period in movie mode)
+  and takes effect through `set_preset` without a rebuild.
 - Bus line capacitance and driver slew, `[adc] line_pf` and `driver_slew_v_per_us`
   (15 pF and 600 V/µs on the A520, PROVISIONAL): the image processor latches each
   line's actual voltage, which can be mid-transition.
@@ -37,6 +49,13 @@ All notable changes to this project are recorded here. The format follows
   evaluated in closed form.
 - The HPF and INV golden frames, which the line capacitance and slew move in a few
   percent of their pixels.
+- The movie readout integrates for `[movie] exposure_s` instead of a whole frame
+  period: the same brightness, about eight times the smear relative to the signal
+  at 15 fps and an eighth of the dark charge. The still goldens are unchanged.
+- A servo that the preset turns off forgets its value at once, so the next frame is
+  exposed and balanced as the new setting says, not by the stopped servo.
+- `docs/ARCHITECTURE.md` describes `vcb_app` among the crates, physical exposure and
+  what reconfiguration reports.
 
 ### Milestone 1: the validated core
 

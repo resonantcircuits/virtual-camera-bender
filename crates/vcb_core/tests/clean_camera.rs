@@ -5,7 +5,7 @@
 use vcb_core::adc::Codes;
 use vcb_core::codec::Quality;
 use vcb_core::isp::{self, AeMode, Demosaic, Raw, Tone};
-use vcb_core::preset::{Mode, Resolution};
+use vcb_core::preset::{Mode, Resolution, SensorOverride};
 use vcb_core::readout::{Direction, Layout};
 use vcb_core::scene::{self, Channel};
 use vcb_core::sensor::{self, Charge};
@@ -68,6 +68,14 @@ fn render(camera: Camera, preset: Preset, scene: &Scene) -> Frame {
 
 fn timing(camera: &Camera, preset: &Preset, width: u32, height: u32) -> Timing {
     Timing::derive(camera, preset, width, height).unwrap()
+}
+
+/// `preset` with its `[sensor]` exposure time set to `exposure_s`.
+fn with_exposure(mut preset: Preset, exposure_s: f64) -> Preset {
+    preset.sensor = Some(SensorOverride {
+        exposure_s: Some(exposure_s),
+    });
+    preset
 }
 
 /// Interleaved sRGB bytes from a function of `(x, y)` returning encoded `[r, g, b]` in `[0, 1]`.
@@ -338,7 +346,7 @@ fn expose(params: &sensor::Params, scene: &Scene, index: u64) -> Charge {
 fn flat_charge_scene(params: &sensor::Params, width: u32, height: u32, electrons: f32) -> Scene {
     let mut scene = Scene::new(width, height);
     for plane in scene.planes_mut() {
-        plane.fill(electrons / (params.white_fraction * params.full_well_e));
+        plane.fill(electrons / params.white_e());
     }
     scene
 }
@@ -456,10 +464,11 @@ fn movie_smear_lifts_the_columns_of_a_bright_bar_and_stills_do_not_smear() {
 
     // V/10 smear: the leak ratio over a window a tenth of the height, scaled by the
     // time a packet takes to cross the array relative to the exposure.
-    let electrons = f64::from(radiance) * camera.sensor.white_fraction * camera.sensor.full_well_e;
+    let electrons = f64::from(radiance) * f64::from(params.white_e());
     let column_mean = electrons * bar_y.len() as f64 / f64::from(height);
     let readout_s = f64::from(t.rows_read) * t.line_period_s;
-    let expected = 10f64.powf(-40.0 / 20.0) / 0.1 * column_mean * readout_s * camera.movie.fps;
+    let expected =
+        10f64.powf(-40.0 / 20.0) / 0.1 * column_mean * readout_s / f64::from(params.exposure_s);
     for x in 0..width {
         let in_bar = bar_x.contains(&x);
         let column: Vec<f64> = (0..height)
@@ -499,6 +508,148 @@ fn movie_smear_lifts_the_columns_of_a_bright_bar_and_stills_do_not_smear() {
                 .all(|y| charge.plane().get(x, y) == 0.0)
         );
     }
+}
+
+#[test]
+fn the_smear_streak_follows_the_light_not_the_exposure_time() {
+    let (width, height) = (128, 96);
+    let (bar_x, bar_y) = (40..60u32, 30..50u32);
+    let mut scene = Scene::new(width, height);
+    for plane in scene.planes_mut() {
+        for y in bar_y.clone() {
+            for x in bar_x.clone() {
+                plane.set(x, y, 0.5);
+            }
+        }
+    }
+    let mut camera = camera();
+    camera.sensor.smear_db = -40.0;
+    let mut movie = match_input("a520");
+    movie.readout.mode = Mode::Movie;
+    let short_s = camera.movie.exposure_s / 2.0;
+    let short = quiet_sensor(
+        &camera,
+        &with_exposure(movie.clone(), short_s),
+        width,
+        height,
+    );
+    let long = quiet_sensor(&camera, &with_exposure(movie, 2.0 * short_s), width, height);
+    let (short, long) = (expose(&short, &scene, 0), expose(&long, &scene, 0));
+    let mean_of = |charge: &Charge, rows: &dyn Fn(u32) -> bool| {
+        let values: Vec<f64> = bar_x
+            .clone()
+            .flat_map(|x| (0..height).filter(|&y| rows(y)).map(move |y| (x, y)))
+            .map(|(x, y)| f64::from(charge.plane().get(x, y)))
+            .collect();
+        mean(&values)
+    };
+    let in_bar = |y: u32| bar_y.contains(&y);
+    let outside = |y: u32| !bar_y.contains(&y);
+    let (streak_short, streak_long) = (mean_of(&short, &outside), mean_of(&long, &outside));
+    assert!(streak_short > 1.0, "no smear: {streak_short:.2} e");
+    assert!(
+        (streak_long / streak_short - 1.0).abs() < 0.03,
+        "the streak changed with the exposure: {streak_short:.1} e and {streak_long:.1} e"
+    );
+    // The streak lies on the bar too; the photo-charge beneath it doubles.
+    let signal =
+        (mean_of(&long, &in_bar) - streak_long) / (mean_of(&short, &in_bar) - streak_short);
+    assert!(
+        (signal - 2.0).abs() < 0.02,
+        "twice the exposure collected {signal:.3} times the charge"
+    );
+}
+
+#[test]
+fn a_longer_exposure_collects_more_charge_until_the_well_clips() {
+    let (width, height) = (64, 48);
+    let camera = camera();
+    let nominal_s = camera.sensor.nominal_exposure_s;
+    let charge_at = |exposure_s: f64| {
+        let preset = with_exposure(match_input("a520"), exposure_s);
+        let params = quiet_sensor(&camera, &preset, width, height);
+        let mut scene = Scene::new(width, height);
+        for plane in scene.planes_mut() {
+            plane.fill(0.2);
+        }
+        plane_stats(&expose(&params, &scene, 0)).0
+    };
+    let nominal = charge_at(nominal_s);
+    let reference = 0.2 * camera.sensor.white_fraction * camera.sensor.full_well_e;
+    assert!(
+        (nominal / reference - 1.0).abs() < 0.01,
+        "at the nominal exposure 0.2 of white collected {nominal:.0} e"
+    );
+    let doubled = charge_at(2.0 * nominal_s);
+    assert!(
+        (doubled / nominal - 2.0).abs() < 0.01,
+        "twice the exposure collected {:.3} times the charge",
+        doubled / nominal
+    );
+    let full_well = camera.sensor.full_well_e;
+    assert!(
+        (charge_at(8.0 * nominal_s) - full_well).abs() < 1e-6 * full_well,
+        "eight times the exposure did not fill every well"
+    );
+}
+
+#[test]
+fn the_dark_charge_grows_with_the_exposure_time() {
+    let (width, height) = (128, 96);
+    let mut camera = camera();
+    camera.sensor.prnu = 0.0;
+    camera.sensor.dsnu_e = 0.0;
+    camera.sensor.hot_pixels_per_mpix = 0.0;
+    camera.sensor.dark_e_per_s = 50.0;
+    let dark = Scene::new(width, height);
+    let mean_at = |exposure_s: f64| {
+        let preset = with_exposure(match_input("a520"), exposure_s);
+        let t = timing(&camera, &preset, width, height);
+        let params = sensor::Params::resolve(&camera, &preset, &t).unwrap();
+        plane_stats(&expose(&params, &dark, 0)).0
+    };
+    // 50 e/s for 2 s and 8 s: 100 e and 400 e of dark charge, with its shot noise.
+    let (short, long) = (mean_at(2.0), mean_at(8.0));
+    assert!((short / 100.0 - 1.0).abs() < 0.02, "{short:.1} e in 2 s");
+    assert!((long / 400.0 - 1.0).abs() < 0.02, "{long:.1} e in 8 s");
+}
+
+#[test]
+fn the_movie_shutter_integrates_at_most_one_frame() {
+    let (width, height) = (64, 48);
+    let camera = camera();
+    let mut movie = match_input("a520");
+    movie.readout.mode = Mode::Movie;
+    let resolve = |preset: &Preset| {
+        let t = timing(&camera, preset, width, height);
+        sensor::Params::resolve(&camera, preset, &t).unwrap()
+    };
+    let default = resolve(&movie);
+    assert!((f64::from(default.exposure_s) / camera.movie.exposure_s - 1.0).abs() < 1e-6);
+    let long = resolve(&with_exposure(movie, 1.0));
+    let frame_s = 1.0 / camera.movie.fps;
+    assert!(
+        (f64::from(long.exposure_s) / frame_s - 1.0).abs() < 1e-6,
+        "a one-second movie exposure integrated {} s",
+        long.exposure_s
+    );
+    let still = resolve(&with_exposure(match_input("a520"), 1.0));
+    assert!(
+        (still.exposure_s - 1.0).abs() < f32::EPSILON,
+        "the mechanical shutter holds any exposure"
+    );
+
+    let mut invalid = with_exposure(match_input("a520"), 0.0);
+    let t = timing(&camera, &invalid, width, height);
+    assert!(
+        sensor::Params::resolve(&camera, &invalid, &t)
+            .unwrap_err()
+            .is_config()
+    );
+    invalid.sensor = Some(SensorOverride {
+        exposure_s: Some(f64::NAN),
+    });
+    assert!(invalid.validate().unwrap_err().is_config());
 }
 
 #[test]
@@ -872,6 +1023,24 @@ fn scene_metering_exposes_the_mean_luminance_at_the_target() {
         "darkness is not clamped at two stops over"
     );
     assert!((meter(0.5) - target / 0.5).abs() < 0.01);
+
+    // The meter sees the light of the set exposure: twice the time, half the scale.
+    let longer = with_exposure(preset.clone(), 2.0 * camera.sensor.nominal_exposure_s);
+    let doubled = sensor::Params::resolve(&camera, &longer, &t).unwrap();
+    let mut input = Scene::new(width, height);
+    for plane in input.planes_mut() {
+        plane.fill(0.3);
+    }
+    let mut prepared = Scene::new(width, height);
+    scene::prepare(&scene_params, &input, &mut prepared);
+    let mut charge = Charge::new(width, height);
+    let mut state = sensor::State::default();
+    sensor::expose(&doubled, &mut state, &prepared, 0, &mut charge);
+    assert!(
+        (state.exposure_scale() / meter(0.3) - 0.5).abs() < 1e-3,
+        "twice the exposure was metered at {} of the scale",
+        state.exposure_scale() / meter(0.3)
+    );
 
     camera.isp.ae_mode = AeMode::Fixed;
     let fixed = sensor::Params::resolve(&camera, &preset, &t).unwrap();

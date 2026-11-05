@@ -1,5 +1,7 @@
 //! The stateful simulator that runs the signal chain frame by frame.
 
+use std::fmt::{self, Display, Formatter};
+
 use crate::adc::{self, Codes};
 use crate::afe::{self, Analog};
 use crate::isp::{self, Raw};
@@ -189,6 +191,116 @@ impl Buffers {
     }
 }
 
+/// What reconfiguring a running [`Simulator`] kept of its buffers and state.
+///
+/// [`Simulator::set_preset`] and [`Simulator::set_scene_size`] return it. A
+/// reconfiguration that keeps the readout geometry keeps every buffer and the memory of
+/// every stage except those it reports reset; one that changes the geometry rebuilds
+/// the simulator as [`SimulatorBuilder::build`] does, at power-on.
+///
+/// # Examples
+///
+/// ```
+/// use vcb_core::preset::{Mode, Resolution, SensorOverride};
+/// use vcb_core::{Camera, Preset, Reconfigured, Simulator};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../cameras/a520.toml");
+/// let camera: Camera = toml::from_str(&std::fs::read_to_string(path)?)?;
+/// let mut preset = Preset::new("a520");
+/// preset.readout.resolution = Resolution::MatchInput;
+/// let mut sim = Simulator::builder((camera, preset.clone()))
+///     .input_size(32, 24)
+///     .build()?;
+///
+/// // A longer exposure is a knob on the running camera.
+/// preset.sensor = Some(SensorOverride { exposure_s: Some(0.03) });
+/// let longer = sim.set_preset(preset.clone())?;
+/// assert_eq!(longer, Reconfigured::Kept { bus_reset: false, servo_reset: false });
+/// assert!(longer.state_kept());
+///
+/// // Another readout mode is another geometry.
+/// preset.readout.mode = Mode::Movie;
+/// assert_eq!(sim.set_preset(preset)?, Reconfigured::Rebuilt);
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Reconfigured {
+    /// The readout geometry stayed: every buffer is kept, and every stage's state but
+    /// the ones flagged.
+    Kept {
+        /// The bus bend returned to power-on, because its wiring changed or the bend was
+        /// added or removed.
+        bus_reset: bool,
+        /// A servo of the image processor forgot its value, because the preset turned
+        /// it off.
+        servo_reset: bool,
+    },
+    /// The readout geometry changed: buffers were reallocated and every stage is at
+    /// power-on, as after [`Simulator::reset`].
+    Rebuilt,
+}
+
+impl Reconfigured {
+    /// Returns whether every buffer kept its allocation.
+    #[must_use]
+    pub fn buffers_kept(self) -> bool {
+        matches!(self, Self::Kept { .. })
+    }
+
+    /// Returns whether every stage kept its state.
+    #[must_use]
+    pub fn state_kept(self) -> bool {
+        self == Self::Kept {
+            bus_reset: false,
+            servo_reset: false,
+        }
+    }
+
+    /// Returns whether the bus bend returned to power-on.
+    #[must_use]
+    pub fn bus_reset(self) -> bool {
+        match self {
+            Self::Kept { bus_reset, .. } => bus_reset,
+            Self::Rebuilt => true,
+        }
+    }
+
+    /// Returns whether the image processor's servos lost a value.
+    #[must_use]
+    pub fn servo_reset(self) -> bool {
+        match self {
+            Self::Kept { servo_reset, .. } => servo_reset,
+            Self::Rebuilt => true,
+        }
+    }
+}
+
+impl Display for Reconfigured {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(match *self {
+            Self::Kept {
+                bus_reset: false,
+                servo_reset: false,
+            } => "kept buffers and state",
+            Self::Kept {
+                bus_reset: true,
+                servo_reset: false,
+            } => "kept buffers and state, reset the bus bend",
+            Self::Kept {
+                bus_reset: false,
+                servo_reset: true,
+            } => "kept buffers and state, reset a servo",
+            Self::Kept {
+                bus_reset: true,
+                servo_reset: true,
+            } => "kept buffers and state, reset the bus bend and a servo",
+            Self::Rebuilt => "rebuilt at power-on",
+        })
+    }
+}
+
 /// A simulated camera that turns scenes into frames, one call per frame.
 ///
 /// The simulator owns the camera, the preset, the resolved parameters of every stage,
@@ -333,11 +445,12 @@ impl Simulator {
     ///   the injection or gain modulation becomes, so a new waveform continues from the
     ///   old one's phase.
     /// - Running clock faults run on, and the exposure and white-balance servos keep
-    ///   their values; a servo that the preset turns off forgets its value after the
-    ///   next frame.
+    ///   their values; a servo that the preset turns off forgets its value at once.
     ///
-    /// Otherwise parameters, buffers and state are rebuilt as `build` would, as after
-    /// [`reset`](Self::reset).
+    /// Everything else, the exposure time of the preset's `[sensor]` section included,
+    /// takes effect with the next frame. Otherwise parameters, buffers and state are
+    /// rebuilt as `build` would, as after [`reset`](Self::reset). The returned
+    /// [`Reconfigured`] says which of the two happened and which stages were reset.
     ///
     /// # Errors
     ///
@@ -345,42 +458,56 @@ impl Simulator {
     /// size: a configuration error if a preset value is invalid, the preset names
     /// another camera or a bus pin does not exist on the camera's ADC, and an input error
     /// if the scene size is too small for the readout.
-    pub fn set_preset(&mut self, preset: Preset) -> Result<(), Error> {
+    pub fn set_preset(&mut self, preset: Preset) -> Result<Reconfigured, Error> {
         self.reconfigure(preset, self.scene_size)
     }
 
     /// Changes the size of the scenes to come, under the rules of [`set_preset`](Self::set_preset).
     ///
     /// The size decides the sensor at match-input resolution and the orientation when
-    /// it is `auto`; at native resolution in a fixed orientation nothing changes.
+    /// it is `auto`; at native resolution in a fixed orientation nothing changes and
+    /// everything is kept.
     ///
     /// # Errors
     ///
     /// Returns an input error if the size is too small for the readout; the simulator
     /// then keeps its previous size.
-    pub fn set_scene_size(&mut self, width: u32, height: u32) -> Result<(), Error> {
+    pub fn set_scene_size(&mut self, width: u32, height: u32) -> Result<Reconfigured, Error> {
         self.reconfigure(self.preset.clone(), (width, height))
     }
 
     /// Applies a preset and scene size, keeping what the geometry allows.
-    fn reconfigure(&mut self, preset: Preset, scene_size: (u32, u32)) -> Result<(), Error> {
+    fn reconfigure(
+        &mut self,
+        preset: Preset,
+        scene_size: (u32, u32),
+    ) -> Result<Reconfigured, Error> {
         check_preset(&self.camera, &preset)?;
         let timing = Timing::derive(&self.camera, &preset, scene_size.0, scene_size.1)?;
         let params = Stages::resolve(&self.camera, &preset, &timing)?;
-        if same_geometry(&self.timing, &timing) {
-            if !bus::same_wiring(self.preset.bend.bus.as_ref(), preset.bend.bus.as_ref()) {
+        let outcome = if same_geometry(&self.timing, &timing) {
+            let bus_reset =
+                !bus::same_wiring(self.preset.bend.bus.as_ref(), preset.bend.bus.as_ref());
+            if bus_reset {
                 self.state.bus = bus::State::default();
+            }
+            let servo_reset = isp::stops_servo(&self.params.isp, &params.isp);
+            self.state.isp.forget_stopped_servos(&params.isp);
+            Reconfigured::Kept {
+                bus_reset,
+                servo_reset,
             }
         } else {
             self.buffers = Buffers::new(&params, &timing);
             self.state = States::default();
             trace_timing("sim.reconfigure.done", &self.camera, &timing);
-        }
+            Reconfigured::Rebuilt
+        };
         self.params = params;
         self.timing = timing;
         self.preset = preset;
         self.scene_size = scene_size;
-        Ok(())
+        Ok(outcome)
     }
 
     /// Returns the camera model.

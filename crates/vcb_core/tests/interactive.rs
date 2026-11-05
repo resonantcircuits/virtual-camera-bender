@@ -4,11 +4,24 @@
 
 use vcb_core::afe::{Inject, Wave};
 use vcb_core::bus;
-use vcb_core::preset::{AfeBend, Mode, Resolution};
-use vcb_core::{Camera, Frame, Preset, Scene, Simulator};
+use vcb_core::isp::{AeMode, WbMode};
+use vcb_core::preset::{AfeBend, IspOverride, Mode, Resolution, SensorOverride};
+use vcb_core::{Camera, Frame, Preset, Reconfigured, Scene, Simulator};
 
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 48;
+
+/// The outcome of a reconfiguration that keeps every buffer and all state.
+const KEPT: Reconfigured = Reconfigured::Kept {
+    bus_reset: false,
+    servo_reset: false,
+};
+
+/// The outcome of a reconfiguration that returns the bus bend to power-on.
+const BUS_RESET: Reconfigured = Reconfigured::Kept {
+    bus_reset: true,
+    servo_reset: false,
+};
 
 fn camera() -> Camera {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../cameras/a520.toml");
@@ -76,7 +89,9 @@ fn a_new_pot_value_keeps_the_capacitor_charge() {
     assert!(charged.abs() > 1e-3, "the capacitor holds only {charged} V");
 
     let turned = with_pot(preset("a520-inv"), 0.8);
-    sim.set_preset(turned.clone()).unwrap();
+    let outcome = sim.set_preset(turned.clone()).unwrap();
+    assert_eq!(outcome, KEPT);
+    assert!(outcome.buffers_kept() && outcome.state_kept());
     assert_eq!(sim.preset(), &turned);
     assert_eq!(
         sim.bus_state().cap_v().to_bits(),
@@ -109,7 +124,9 @@ fn new_source_pins_return_the_bend_to_power_on() {
 
     let mut rewired = preset("a520-hpf");
     rewired.bend.bus.as_mut().unwrap().source_pins = vec![10, 8];
-    sim.set_preset(rewired).unwrap();
+    let outcome = sim.set_preset(rewired).unwrap();
+    assert_eq!(outcome, BUS_RESET);
+    assert!(outcome.buffers_kept() && !outcome.state_kept() && !outcome.servo_reset());
     assert_eq!(sim.bus_state(), &bus::State::default());
     assert_eq!(sim.afe_state(), &afe, "the AFE lost its state with the bus");
 
@@ -118,7 +135,7 @@ fn new_source_pins_return_the_bend_to_power_on() {
     let mut reordered = sim.preset().clone();
     reordered.bend.bus.as_mut().unwrap().source_pins = vec![8, 10];
     let kept = sim.bus_state().clone();
-    sim.set_preset(reordered).unwrap();
+    assert_eq!(sim.set_preset(reordered).unwrap(), KEPT);
     assert_eq!(sim.bus_state(), &kept);
 }
 
@@ -129,10 +146,10 @@ fn removing_and_restoring_the_bend_starts_it_from_power_on() {
     run(&mut sim, &scene, 2);
     let mut plain = preset("a520-div");
     plain.bend.bus = None;
-    sim.set_preset(plain).unwrap();
+    assert_eq!(sim.set_preset(plain).unwrap(), BUS_RESET);
     assert_eq!(sim.bus_state(), &bus::State::default());
     sim.frame(&scene, 2);
-    sim.set_preset(preset("a520-div")).unwrap();
+    assert_eq!(sim.set_preset(preset("a520-div")).unwrap(), BUS_RESET);
     assert_eq!(sim.bus_state(), &bus::State::default());
 }
 
@@ -157,7 +174,7 @@ fn a_new_waveform_continues_from_the_oscillator_phase() {
 
     let mut square = preset("a520-clean");
     square.bend.afe = Some(inject(Wave::Square));
-    sim.set_preset(square).unwrap();
+    assert_eq!(sim.set_preset(square).unwrap(), KEPT);
     assert_eq!(sim.afe_state(), &afe, "the oscillator restarted");
 }
 
@@ -168,7 +185,9 @@ fn a_new_mode_rebuilds_as_a_fresh_simulator() {
     run(&mut sim, &scene, 2);
     let mut movie = preset("a520-hpf");
     movie.readout.mode = Mode::Movie;
-    sim.set_preset(movie.clone()).unwrap();
+    let outcome = sim.set_preset(movie.clone()).unwrap();
+    assert_eq!(outcome, Reconfigured::Rebuilt);
+    assert!(!outcome.buffers_kept() && outcome.bus_reset() && outcome.servo_reset());
     assert_eq!(sim.bus_state(), &bus::State::default());
 
     let mut fresh = build(camera(), movie);
@@ -188,7 +207,10 @@ fn a_new_resolution_rebuilds_as_a_fresh_simulator() {
     run(&mut sim, &scene, 2);
     let mut native = preset("a520-inv");
     native.readout.resolution = Resolution::Native;
-    sim.set_preset(native.clone()).unwrap();
+    assert_eq!(
+        sim.set_preset(native.clone()).unwrap(),
+        Reconfigured::Rebuilt
+    );
     assert_eq!(sim.timing().sensor_width, 96);
 
     let mut fresh = build(small_camera(), native);
@@ -202,7 +224,7 @@ fn a_new_scene_size_at_match_input_rebuilds_for_that_size() {
     let small = Scene::from_srgb8(40, 30, &[120; 40 * 30 * 3]);
     let mut sim = build(camera(), preset("a520-div"));
     run(&mut sim, &scene(), 2);
-    sim.set_scene_size(40, 30).unwrap();
+    assert_eq!(sim.set_scene_size(40, 30).unwrap(), Reconfigured::Rebuilt);
     assert_eq!(sim.scene_size(), (40, 30));
     assert_eq!(sim.bus_state(), &bus::State::default());
 
@@ -225,9 +247,100 @@ fn at_native_resolution_a_new_scene_size_keeps_the_state() {
     let kept = sim.bus_state().clone();
     let timing = sim.timing().clone();
     // A landscape input of another size leaves the native readout as it is.
-    sim.set_scene_size(80, 60).unwrap();
+    assert_eq!(sim.set_scene_size(80, 60).unwrap(), KEPT);
     assert_eq!(sim.timing(), &timing);
     assert_eq!(sim.bus_state(), &kept);
+}
+
+/// Returns the mean of all channels of a frame, in 8-bit codes.
+fn mean_code(frame: &Frame) -> f64 {
+    frame.rgb().iter().map(|&v| f64::from(v)).sum::<f64>() / frame.rgb().len() as f64
+}
+
+#[test]
+fn a_longer_exposure_keeps_the_running_camera_and_brightens_the_next_frame() {
+    let scene = scene();
+    let camera = camera();
+    let clean = preset("a520-clean");
+    let mut sim = build(camera.clone(), clean.clone());
+    run(&mut sim, &scene, 2);
+    let mut reference = sim.clone();
+    let afe = sim.afe_state().clone();
+
+    let mut longer = clean;
+    longer.sensor = Some(SensorOverride {
+        exposure_s: Some(2.0 * camera.sensor.nominal_exposure_s),
+    });
+    assert_eq!(sim.set_preset(longer).unwrap(), KEPT);
+    assert_eq!(sim.afe_state(), &afe, "the exposure reset the AFE");
+    let brighter = mean_code(sim.frame(&scene, 2));
+    let before = mean_code(reference.frame(&scene, 2));
+    assert!(
+        brighter > before + 10.0,
+        "twice the exposure developed at {brighter:.1}, the set exposure at {before:.1}"
+    );
+
+    let mut invalid = sim.preset().clone();
+    invalid.sensor = Some(SensorOverride {
+        exposure_s: Some(-1.0),
+    });
+    assert!(sim.set_preset(invalid).unwrap_err().is_config());
+}
+
+#[test]
+fn turning_a_servo_off_forgets_its_value_at_once() {
+    let scene = scene();
+    let servos = |ae_mode, wb| {
+        let mut preset = preset("a520-clean");
+        preset.isp = Some(IspOverride {
+            ae_mode: Some(ae_mode),
+            wb: Some(wb),
+            ..IspOverride::default()
+        });
+        preset
+    };
+    let mut sim = build(camera(), servos(AeMode::Servo, WbMode::Servo));
+    run(&mut sim, &scene, 3);
+    assert!(sim.isp_state().servo_exposure().is_some());
+    let gains = sim.isp_state().servo_gains();
+    assert!(gains.is_some());
+
+    let outcome = sim
+        .set_preset(servos(AeMode::Fixed, WbMode::Servo))
+        .unwrap();
+    assert_eq!(
+        outcome,
+        Reconfigured::Kept {
+            bus_reset: false,
+            servo_reset: true
+        }
+    );
+    assert!(outcome.buffers_kept() && outcome.servo_reset() && !outcome.bus_reset());
+    assert_eq!(sim.isp_state().servo_exposure(), None);
+    assert_eq!(
+        sim.isp_state().servo_gains(),
+        gains,
+        "the other servo forgot"
+    );
+    sim.frame(&scene, 3);
+    assert_eq!(
+        sim.exposure_scale().to_bits(),
+        1.0f32.to_bits(),
+        "the next frame kept the servo's exposure"
+    );
+
+    assert!(
+        sim.set_preset(servos(AeMode::Fixed, WbMode::Daylight))
+            .unwrap()
+            .servo_reset()
+    );
+    assert_eq!(sim.isp_state().servo_gains(), None);
+    assert_eq!(
+        sim.set_preset(servos(AeMode::Servo, WbMode::Daylight))
+            .unwrap(),
+        KEPT,
+        "turning a servo on resets nothing"
+    );
 }
 
 #[test]

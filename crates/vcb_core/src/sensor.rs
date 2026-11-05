@@ -5,12 +5,17 @@
 //! two columns and rows. [`expose`] computes the electrons of every photosite in this
 //! order (research section 3 for the numbers):
 //!
-//! 1. Exposure: `radiance[filter] * white_fraction * full_well_e * exposure_scale`, so
-//!    reference white fills `white_fraction` of the well. `exposure_scale` is 1 unless
-//!    auto-exposure meters the scene ([`Ae::Scene`]): then it is `target / mean
-//!    luminance` of the prepared scene, clamped to two stops either way. The
-//!    image processor's auto-exposure servo sets it instead once it has metered a
-//!    frame ([`Params::exposure_scale`]).
+//! 1. Exposure: `radiance[filter] * white_fraction * full_well_e * exposure_s /
+//!    nominal_exposure_s * exposure_scale`, so at the nominal exposure reference white
+//!    fills `white_fraction` of the well and a longer exposure collects
+//!    proportionally more charge. `exposure_scale` is auto-exposure's correction on
+//!    top of the set exposure: 1 unless auto-exposure meters the scene
+//!    ([`Ae::Scene`]), when it is `target / luminance`, the luminance being the
+//!    prepared scene's mean times `exposure_s / nominal_exposure_s`, clamped to two
+//!    stops either way. The image processor's auto-exposure servo sets it instead once
+//!    it has metered a frame ([`Params::exposure_scale`]). Auto-exposure therefore
+//!    compensates a changed exposure time within its two stops, as the camera's
+//!    aperture would; with a fixed exposure the time alone sets the brightness.
 //! 2. Photo-response non-uniformity: a fixed gain `1 + prnu * N(0, 1)` per photosite.
 //! 3. Dark signal: `dark_e_per_s * exposure_s`, times 50 to 500 (log-uniform) at the
 //!    `hot_pixels_per_mpix` hot photosites, plus a fixed offset `dsnu_e * N(0, 1)`.
@@ -43,11 +48,13 @@
 //!
 //! where `mean_e` is the mean photo-charge of the column before the well limit (the
 //! register sees the light, not the clipped well), `readout_s` the time the frame's
-//! rows take to read and `exposure_s` the integration time. Assumptions: the leak is
-//! uniform along the column (one streak of constant height, no gradient from the
-//! position of the packet), the register does not saturate, and the smear charge
-//! carries its own shot noise. With the mechanical shutter (still mode) the array is
-//! dark during the transfer and there is no smear.
+//! rows take to read and `exposure_s` the integration time. Since `mean_e` grows with
+//! the exposure time, the smear charge depends only on the light and the transfer
+//! time: a shorter exposure leaves the same streak on a weaker signal. Assumptions:
+//! the leak is uniform along the column (one streak of constant height, no gradient
+//! from the position of the packet), the register does not saturate, and the smear
+//! charge carries its own shot noise. With the mechanical shutter (still mode) the
+//! array is dark during the transfer and there is no smear.
 //!
 //! [`expose`] writes a [`Charge`] plane in electrons at sensor resolution, which
 //! [`readout::read`](crate::readout::read) transfers out of the array.
@@ -61,6 +68,7 @@ use crate::noise;
 use crate::plane::Plane;
 use crate::preset::Mode;
 use crate::scene::Channel;
+use crate::validate::positive;
 use crate::{Camera, Error, Preset, Scene, Timing, colour};
 
 /// Salt of the sensor's temporal noise sources.
@@ -175,7 +183,7 @@ impl Charge {
 pub enum Ae {
     /// The light is integrated as configured.
     Fixed,
-    /// The light is scaled so the scene's mean luminance lands on `target`.
+    /// The light is scaled so the scene's mean luminance, at the set exposure, lands on `target`.
     Scene {
         /// Mean linear luminance of the developed frame, reference white 1.0.
         target: f32,
@@ -189,8 +197,10 @@ pub enum Ae {
 pub struct Params {
     /// Full-well capacity in electrons; charge clips here.
     pub full_well_e: f32,
-    /// Fraction of the full well that reference white fills.
+    /// Fraction of the full well that reference white fills at the nominal exposure.
     pub white_fraction: f32,
+    /// Exposure time at which reference white fills `white_fraction` of the well, in seconds.
+    pub nominal_exposure_s: f32,
     /// Mean dark current in electrons per second.
     pub dark_e_per_s: f32,
     /// Photo-response non-uniformity, relative gain spread (one standard deviation).
@@ -205,7 +215,7 @@ pub struct Params {
     pub hot_pixels_per_mpix: f32,
     /// Colour filter array layout.
     pub cfa: Cfa,
-    /// Integration time in seconds.
+    /// Integration time in seconds; the collected charge scales with it.
     pub exposure_s: f32,
     /// Time the vertical transfer takes to read the frame's rows, in seconds.
     pub readout_s: f32,
@@ -228,19 +238,31 @@ pub struct Params {
 impl Params {
     /// Resolves the sensor parameters from the camera, preset and derived timing.
     ///
-    /// Movie mode integrates for one frame period; still mode uses the still exposure.
-    /// Each mode's camera section says whether interline smear is present. Scene
-    /// metering weighs the scene's channels as the image processor will see them
-    /// after the daylight white balance and colour matrix.
+    /// The exposure time is the preset's `[sensor] exposure_s` if set, otherwise the
+    /// `exposure_s` of the readout mode's camera section; the movie readout's
+    /// electronic shutter integrates at most one frame period, `1 / fps`. Each mode's
+    /// camera section says whether interline smear is present. Scene metering weighs
+    /// the scene's channels as the image processor will see them after the daylight
+    /// white balance and colour matrix.
     ///
     /// # Errors
     ///
-    /// Returns a configuration error if the camera's colour matrix is not invertible.
+    /// Returns a configuration error if the preset's exposure time is not positive and
+    /// finite, or the camera's colour matrix is not invertible.
     pub fn resolve(camera: &Camera, preset: &Preset, timing: &Timing) -> Result<Self, Error> {
         let sensor = &camera.sensor;
+        let set_s = preset.sensor.and_then(|o| o.exposure_s);
+        if let Some(exposure_s) = set_s {
+            positive("sensor.exposure_s", exposure_s)?;
+        }
         let (exposure_s, smear) = match timing.mode {
-            Mode::Still => (camera.still.exposure_s, camera.still.smear),
-            Mode::Movie => (1.0 / camera.movie.fps, camera.movie.smear),
+            Mode::Still => (set_s.unwrap_or(camera.still.exposure_s), camera.still.smear),
+            Mode::Movie => (
+                set_s
+                    .unwrap_or(camera.movie.exposure_s)
+                    .min(1.0 / camera.movie.fps),
+                camera.movie.smear,
+            ),
         };
         let isp = &camera.isp;
         let mode = preset
@@ -270,6 +292,7 @@ impl Params {
         Ok(Self {
             full_well_e: sensor.full_well_e as f32,
             white_fraction: sensor.white_fraction as f32,
+            nominal_exposure_s: sensor.nominal_exposure_s as f32,
             dark_e_per_s: sensor.dark_e_per_s as f32,
             prnu: sensor.prnu as f32,
             dsnu_e: sensor.dsnu_e as f32,
@@ -285,6 +308,20 @@ impl Params {
             seed: noise::stage_seed(preset.seed, SALT),
             unit_seed: sensor.unit_seed,
         })
+    }
+
+    /// Returns the electrons reference white collects at the set exposure, before auto-exposure.
+    ///
+    /// `white_fraction * full_well_e` at the nominal exposure, scaled by
+    /// `exposure_s / nominal_exposure_s`.
+    #[must_use]
+    pub fn white_e(&self) -> f32 {
+        self.white_fraction * self.full_well_e * self.relative_exposure()
+    }
+
+    /// Returns the exposure time relative to the nominal exposure.
+    fn relative_exposure(&self) -> f32 {
+        self.exposure_s / self.nominal_exposure_s
     }
 
     /// Returns the smear charge per electron of mean column photo-charge.
@@ -348,7 +385,7 @@ pub fn expose(params: &Params, state: &mut State, scene: &Scene, index: u64, out
         .exposure_scale
         .unwrap_or_else(|| exposure_scale(params, scene, &mut state.rows));
     state.exposure_scale = scale;
-    let electrons_per_unit = params.white_fraction * params.full_well_e * scale;
+    let electrons_per_unit = params.white_e() * scale;
     let spill_level = (1.0 + params.antibloom_ratio) * params.full_well_e;
     let any_spill = integrate(params, scene, index, electrons_per_unit, spill_level, out);
     if any_spill {
@@ -386,6 +423,9 @@ pub fn expose(params: &Params, state: &mut State, scene: &Scene, index: u64, out
 }
 
 /// Returns the exposure scale for `scene`, metering it when auto-exposure is on.
+///
+/// The meter sees the scene's light integrated for the set exposure time, so the
+/// scale it returns compensates a longer or shorter exposure within its two stops.
 fn exposure_scale(params: &Params, scene: &Scene, rows: &mut Vec<f64>) -> f32 {
     let Ae::Scene { target, weights } = params.ae else {
         return 1.0;
@@ -406,7 +446,7 @@ fn exposure_scale(params: &Params, scene: &Scene, rows: &mut Vec<f64>) -> f32 {
             .sum();
     });
     let count = height as f64 * f64::from(scene.width());
-    let mean = rows.iter().sum::<f64>() / count;
+    let mean = rows.iter().sum::<f64>() / count * f64::from(params.relative_exposure());
     if mean > 0.0 {
         ((f64::from(target) / mean) as f32).clamp(AE_MIN_SCALE, AE_MAX_SCALE)
     } else {

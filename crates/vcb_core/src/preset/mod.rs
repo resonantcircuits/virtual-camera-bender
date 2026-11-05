@@ -1,9 +1,10 @@
-//! Sections of a preset file: readout mode, bends and image-processor overrides.
+//! Sections of a preset file: readout mode, exposure, bends and image-processor overrides.
 //!
 //! A [`Preset`](crate::Preset) references a camera by name, picks a readout mode and
-//! resolution, declares the circuit bends patched into the camera, and optionally
-//! overrides image-processor settings. Only `camera` is required; every other section
-//! defaults to the unmodified camera in still mode at the input's resolution:
+//! resolution, optionally sets the exposure time, declares the circuit bends patched
+//! into the camera, and optionally overrides image-processor settings. Only `camera` is
+//! required; every other section defaults to the unmodified camera in still mode at the
+//! camera's native resolution:
 //!
 //! ```toml
 //! camera = "a520"
@@ -15,6 +16,8 @@
 //! [scene]
 //! headroom = 2.5              # clipped white is 2.5 times reference white
 //! shoulder_start = 0.8
+//! [sensor]
+//! exposure_s = 0.004          # replaces the camera's exposure of the readout mode
 //! [bend.bus]
 //! source_pins = [9, 8, 7]
 //! target = "pin:10"           # or "gnd"
@@ -193,6 +196,23 @@ impl Default for SceneInput {
             shoulder_start: 0.8,
         }
     }
+}
+
+/// The `[sensor]` section of a preset: replacements for the camera's sensor settings.
+///
+/// Every field is optional; `None` keeps the camera's value for the readout mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+pub struct SensorOverride {
+    /// Exposure (integration) time in seconds, replacing the camera's `exposure_s`.
+    ///
+    /// The collected charge scales with it over the camera's `nominal_exposure_s`, and
+    /// so does the dark charge; the smear relative to the signal scales inversely. The
+    /// movie readout's electronic shutter integrates at most one frame period, `1 / fps`,
+    /// so a longer value is limited to that in movie mode.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub exposure_s: Option<f64>,
 }
 
 /// The `[bend]` section: circuit modifications patched into the camera.

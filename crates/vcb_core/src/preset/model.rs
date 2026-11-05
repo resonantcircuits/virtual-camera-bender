@@ -1,7 +1,7 @@
 //! The preset: a camera reference plus readout mode, bends and overrides.
 
 use crate::Error;
-use crate::preset::{Bend, IspOverride, Readout, SceneInput};
+use crate::preset::{Bend, IspOverride, Readout, SceneInput, SensorOverride};
 use crate::validate::{finite, fraction, non_negative, positive, within};
 
 /// Largest accepted scene headroom in multiples of reference white.
@@ -40,6 +40,12 @@ pub struct Preset {
     /// How the input image maps to scene radiance.
     #[cfg_attr(feature = "serde", serde(default))]
     pub scene: SceneInput,
+    /// Sensor overrides: the exposure time.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub sensor: Option<SensorOverride>,
     /// Circuit bends.
     #[cfg_attr(feature = "serde", serde(default))]
     pub bend: Bend,
@@ -60,6 +66,7 @@ impl Preset {
             seed: 0,
             readout: Readout::default(),
             scene: SceneInput::default(),
+            sensor: None,
             bend: Bend::default(),
             isp: None,
         }
@@ -85,6 +92,9 @@ impl Preset {
                 "scene.shoulder_start must lie in (0, 1), got {}",
                 self.scene.shoulder_start
             )));
+        }
+        if let Some(exposure_s) = self.sensor.and_then(|sensor| sensor.exposure_s) {
+            positive("sensor.exposure_s", exposure_s)?;
         }
         if let Some(bus) = &self.bend.bus {
             if bus.source_pins.is_empty() {
