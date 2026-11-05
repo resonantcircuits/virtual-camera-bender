@@ -99,6 +99,13 @@
 //! match-input resolution, where the line capacitance is scaled up with the pixel
 //! period, that share grows with it.
 //!
+//! Within a pixel period the drivers change only at its start, so while the gate's
+//! output and the diode state hold, node F at every sub-step, the latched pins and the
+//! state at the end are each a fixed linear function of the state at the start, which
+//! `Params::resolve` tabulates per driver pattern. Such a pixel costs one product with
+//! the start state per voltage and no voltage waits on another; a pixel in which the
+//! gate switches or a diode changes runs sub-step by sub-step instead.
+//!
 //! A gate output changes at a sub-step boundary: from the first sub-step that ends at
 //! or after its due time, and at least one sub-step after the input crossing that
 //! causes it. The latch reads the voltages of the first sub-step that ends at or
@@ -134,7 +141,7 @@ use crate::noise::{self, Pcg32};
 use crate::preset::BusBend;
 use crate::validate::{non_negative, positive, within};
 use crate::{Camera, Error, Preset, Timing};
-use circuit::{Clamp, Drive, Kernel, Line, Network, Topology, Vector};
+use circuit::{Clamp, Drive, Kernel, Line, Network, Pixel, Sampling, Topology, Vector};
 use gates::{Chips, FlipFlop, Gate, Inverter, Wire};
 
 /// Salt of the bus circuit's noise sources.
@@ -359,6 +366,8 @@ impl Params {
                 timing.native_pixel_period_s * 1e9
             )));
         }
+        let ramp = Ramp::new(ramp_s, dt_s);
+        let latch = latch_step(adc.latch_phase, oversample);
         let net = Network::build(&Topology {
             lines: &lines,
             sources,
@@ -378,6 +387,11 @@ impl Params {
             dt_s,
             latched,
             bits: adc.bits,
+            sampling: Sampling {
+                oversample: oversample as usize,
+                ramp: &ramp.weights,
+                latch: latch as usize,
+            },
         })?;
         let noise_v = adc.dsp_noise_mv * 1e-3;
         Ok(Some(Self {
@@ -394,10 +408,10 @@ impl Params {
                 threshold_v: adc.dsp_threshold_v,
                 noise_v,
                 reach_v: NOISE_REACH * noise_v,
-                step: latch_step(adc.latch_phase, oversample),
+                step: latch,
                 mask: latched,
             },
-            ramp: Ramp::new(ramp_s, dt_s),
+            ramp,
         }))
     }
 
@@ -720,11 +734,13 @@ struct Run<'a, G, const M: usize> {
     z: [f64; M],
     /// The sub-step arithmetic of every diode state.
     kernels: [Kernel<'a, M>; 3],
+    /// Whole pixel periods by diode state and gate level.
+    pixels: [[Pixel<'a, M>; 2]; 3],
     /// Driver pattern of the last pixel period; blanking, and so the black code, at the start.
     last: usize,
 }
 
-impl<'a, G: Gate, const M: usize> Run<'a, G, M> {
+impl<'a, G: Gate + Clone, const M: usize> Run<'a, G, M> {
     fn new(
         params: &'a Params,
         gate: &'a mut G,
@@ -739,6 +755,7 @@ impl<'a, G: Gate, const M: usize> Run<'a, G, M> {
             z: std::array::from_fn(|k| state.z[k]),
             state,
             kernels: params.net.kernels(),
+            pixels: params.net.pixels(),
             last: params.net.pattern(params.dark_code),
         }
     }
@@ -754,7 +771,7 @@ impl<'a, G: Gate, const M: usize> Run<'a, G, M> {
             #[cfg(feature = "test-util")]
             Work::Words(codes) => {
                 for code in codes {
-                    *code = self.pixel(*code, |_, _, _, _| {});
+                    *code = self.period(*code);
                 }
             }
             #[cfg(feature = "test-util")]
@@ -769,7 +786,7 @@ impl<'a, G: Gate, const M: usize> Run<'a, G, M> {
         let lines = words.len() / line_len;
         for (line, samples) in words.chunks_exact_mut(line_len).enumerate() {
             for word in samples {
-                *word = self.pixel(*word, |_, _, _, _| {});
+                *word = self.period(*word);
             }
             self.blank(if line + 1 == lines {
                 blank.frame
@@ -780,6 +797,50 @@ impl<'a, G: Gate, const M: usize> Run<'a, G, M> {
     }
 
     /// Runs one pixel period with `code` on the drivers and returns the latched word.
+    ///
+    /// While the gate's output and the diode state hold through the pixel, which is
+    /// the rule, the whole period is evaluated in closed form from its start state:
+    /// node F at every sub-step for the diodes and gates, the latched pins, the end
+    /// state. When the gate's output changes or a diode would switch inside the pixel,
+    /// the gate is put back and the pixel runs sub-step by sub-step. Both give the same
+    /// voltages to rounding.
+    #[inline]
+    fn period(&mut self, code: u16) -> u16 {
+        let params = self.params;
+        let net = &params.net;
+        let pattern = net.pattern(code);
+        let from = std::mem::replace(&mut self.last, pattern);
+        let ramp = (from != pattern).then_some(from);
+        let clamp = self.coupling.clamp;
+        let high = self.gate.high();
+        let pixel = &self.pixels[clamp.index()][usize::from(high)];
+        let start = self.z;
+        let gate = self.gate.clone();
+        let mut holds = true;
+        for f_v in pixel.f(pattern, ramp, &start) {
+            self.gate.tick();
+            if self.gate.high() != high || !net.consistent(clamp, f_v) {
+                holds = false;
+                break;
+            }
+            self.gate.sense(f_v, &params.chips);
+        }
+        if !holds {
+            *self.gate = gate;
+            self.last = from;
+            return self.pixel(code, |_, _, _, _| {});
+        }
+        let latch = &params.latch;
+        let mut bits = 0;
+        for (bit, volts) in pixel.pins(pattern, ramp, &start) {
+            bits |= u16::from(read(latch, self.noise, volts)) << bit;
+        }
+        self.z = pixel.end(pattern, ramp, &start);
+        count_clamped(&mut self.coupling, u64::from(params.oversample));
+        (code & !latch.mask) | bits
+    }
+
+    /// Runs one pixel period sub-step by sub-step and returns the latched word.
     ///
     /// `probe` sees the diode state, driver levels, previous state and gate level of
     /// every sub-step, from which every node voltage of that sub-step follows.
@@ -814,13 +875,7 @@ impl<'a, G: Gate, const M: usize> Run<'a, G, M> {
         let kernel = Network::kernel(&self.kernels, self.coupling.clamp);
         let mut bits = 0;
         for (bit, volts) in kernel.pins(drive, &self.z, gate) {
-            let margin = volts - latch.threshold_v;
-            let high = if margin.abs() >= latch.reach_v {
-                margin > 0.0
-            } else {
-                margin > latch.noise_v * f64::from(self.noise.gauss())
-            };
-            bits |= u16::from(high) << bit;
+            bits |= u16::from(read(latch, self.noise, volts)) << bit;
         }
         bits
     }
@@ -875,6 +930,19 @@ impl<'a, G: Gate, const M: usize> Run<'a, G, M> {
             self.gate.idle(quiet);
             steps -= quiet;
         }
+    }
+}
+
+/// Returns whether a pin at `volts` reads high, against the threshold plus thermal noise.
+///
+/// A draw from the noise stream is taken only where the noise can change the reading.
+#[inline]
+fn read(latch: &Latch, noise: &mut Pcg32, volts: f64) -> bool {
+    let margin = volts - latch.threshold_v;
+    if margin.abs() >= latch.reach_v {
+        margin > 0.0
+    } else {
+        margin > latch.noise_v * f64::from(noise.gauss())
     }
 }
 
@@ -935,7 +1003,7 @@ pub fn latch_words(params: &Params, state: &mut State, index: u64, codes: &mut [
 }
 
 #[cfg(feature = "test-util")]
-impl<G: Gate, const M: usize> Run<'_, G, M> {
+impl<G: Gate + Clone, const M: usize> Run<'_, G, M> {
     fn trace(&mut self, codes: &[u16], probes: &mut Vec<Probe>) {
         let net = &self.params.net;
         for &code in codes {

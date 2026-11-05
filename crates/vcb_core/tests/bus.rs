@@ -1039,3 +1039,50 @@ fn a_slew_longer_than_the_pixel_period_is_rejected() {
     camera.adc.line_pf = -1.0;
     assert!(camera.validate().unwrap_err().is_config());
 }
+
+#[cfg(feature = "test-util")]
+#[test]
+fn whole_pixel_periods_agree_with_stepping_through_them() {
+    // `latch_words` evaluates each pixel period in closed form wherever the gate and the
+    // diodes hold, `trace` steps through every sub-step; the latched bits and the
+    // capacitor's charge must agree, through gate transitions and diode clamps alike.
+    let mut camera = camera();
+    camera.adc.dsp_noise_mv = 0.0;
+    let codes: Vec<u16> = (0..3000)
+        .map(|i| (noise::hash_u32(i / 3, 0, noise::salt("periods"), 5) & 0x0fff) as u16)
+        .collect();
+    for function in [Function::Bypass, Function::Invert, Function::Divide] {
+        for (pot_node, series_ohm) in [(PotNode::F, 0.0), (PotNode::S, 0.0), (PotNode::S, 47.0)] {
+            let mut preset = preset(&[10, 9, 8], Target::Pin(7), function);
+            bus_of(&mut preset).pot_node = pot_node;
+            bus_of(&mut preset).series_ohm = series_ohm;
+            let t = timing(&camera, &preset, 64, 48);
+            let params = params(&camera, &preset, &t);
+            let mut words = codes.clone();
+            let mut closed = bus::State::default();
+            bus::latch_words(&params, &mut closed, 0, &mut words);
+            let mut stepped = bus::State::default();
+            let mut probes = Vec::new();
+            bus::trace(&params, &mut stepped, &codes, &mut probes);
+            let case = format!("{function:?}, pot on {pot_node:?}, {series_ohm} ohm");
+            assert!(
+                (closed.cap_v() - stepped.cap_v()).abs() < 1e-9,
+                "{case}: {} V against {} V",
+                closed.cap_v(),
+                stepped.cap_v()
+            );
+            let volts = latched_volts(&camera, &preset, &t, &codes);
+            let threshold = camera.adc.dsp_threshold_v;
+            for (n, (word, pins)) in words.iter().zip(&volts).enumerate() {
+                for bit in [10, 9, 8, 7] {
+                    let expected = pins[bit] > threshold;
+                    assert_eq!(
+                        (word >> bit) & 1 == 1,
+                        expected,
+                        "{case}: pixel {n}, D{bit}"
+                    );
+                }
+            }
+        }
+    }
+}

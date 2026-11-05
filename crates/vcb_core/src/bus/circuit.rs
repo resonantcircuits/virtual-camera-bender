@@ -133,7 +133,7 @@ impl Clamp {
     /// All states, in the order of [`index`](Self::index).
     const ALL: [Self; 3] = [Self::Off, Self::Ground, Self::Rail];
 
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         match self {
             Self::Off => 0,
             Self::Ground => 1,
@@ -190,6 +190,19 @@ pub(crate) struct Topology<'a> {
     pub latched: u16,
     /// Width of the ADC codes in bits.
     pub bits: u8,
+    /// How a pixel period falls onto sub-steps.
+    pub sampling: Sampling<'a>,
+}
+
+/// How a pixel period falls onto sub-steps: their number, the drivers' slew, the latch.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Sampling<'a> {
+    /// Sub-steps per pixel period.
+    pub oversample: usize,
+    /// Mean fraction of a driver transition completed in each sub-step it spans.
+    pub ramp: &'a [f64],
+    /// Sub-step whose voltages the image processor latches.
+    pub latch: usize,
 }
 
 impl Topology<'_> {
@@ -868,6 +881,242 @@ fn affine<const M: usize>(constant: f64, a: &[f64; M], b: &[f64; M]) -> f64 {
     constant + a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>()
 }
 
+/// One pixel period with the driver pattern, the gate level and the diode state held.
+///
+/// Within a pixel the drivers change only at its start (slewing over the first
+/// sub-steps), so node F at every sub-step, the latched pins and the state at the end
+/// are each linear in the state at the start of the pixel. With `Φ` the exact step,
+/// `S_k = I + Φ + ... + Φ^(k-1)` and `Q_k = Σ_(j<k) Φ^(k-1-j) (1 - w_j)` for the ramp's
+/// weights `w_j`, the state after `k` sub-steps is
+/// `z_k = Φ^k z_0 + S_k T[to] + Q_k (T[from] - T[to])`, where `T` is the driven part of
+/// the next state for a pattern. Every table here folds one such term into a value per
+/// pattern, so a pixel costs one product with the start state per voltage, and no
+/// voltage waits for another.
+#[derive(Clone, PartialEq)]
+pub(crate) struct Period {
+    /// Node F at sub-step `k` per volt of each start state variable, `states` per sub-step.
+    f_gain: Box<[f64]>,
+    /// Node F at every sub-step for a steady pattern, `oversample` per pattern.
+    f_steady: Box<[f64]>,
+    /// The share of a slewing pixel's old pattern in node F, `oversample` per pattern.
+    f_ramp: Box<[f64]>,
+    /// The latched pins per volt of each start state variable, `states` per pin.
+    pin_gain: Box<[f64]>,
+    /// The latched pins for a steady pattern, one per pin and pattern.
+    pin_steady: Box<[f64]>,
+    /// The share of a slewing pixel's old pattern in the latched pins.
+    pin_ramp: Box<[f64]>,
+    /// The state at the end per volt of the start state, `Φ^oversample`.
+    end_gain: Box<[f64]>,
+    /// The end state for a steady pattern, `states` per pattern.
+    end_steady: Box<[f64]>,
+    /// The share of a slewing pixel's old pattern in the end state.
+    end_ramp: Box<[f64]>,
+}
+
+impl Period {
+    /// Tabulates a pixel period of `solution` with the gate at `gate` (0 low, 1 high).
+    fn new(solution: &Solution, gate: usize, sampling: &Sampling<'_>, patterns: usize) -> Self {
+        let next = &solution.next;
+        let m = next.states;
+        let pins = solution.latched.bits.len();
+        let steps = sampling.oversample;
+        let slew = |k: usize| 1.0 - sampling.ramp.get(k).copied().unwrap_or(1.0);
+        let phi = &next.state;
+        // Φ^k, S_k and Q_k for k = 0 ..= oversample.
+        let mut powers = vec![identity(m)];
+        let mut sums = vec![vec![0.0; m * m]];
+        let mut ramps = vec![vec![0.0; m * m]];
+        for k in 0..steps {
+            powers.push(product(phi, &powers[k], m, m));
+            sums.push(add(&product(phi, &sums[k], m, m), &identity(m)));
+            let scaled: Vec<f64> = identity(m).iter().map(|v| v * slew(k)).collect();
+            ramps.push(add(&product(phi, &ramps[k], m, m), &scaled));
+        }
+        let driven = |p: usize| &next.gated[((p << 1) | gate) * m..(((p << 1) | gate) + 1) * m];
+        let apply = |matrix: &[f64], vector: &[f64]| -> Vec<f64> {
+            (0..m)
+                .map(|r| (0..m).map(|c| matrix[r * m + c] * vector[c]).sum())
+                .collect()
+        };
+        let row_times = |row: &[f64], vector: &[f64]| -> f64 {
+            row.iter().zip(vector).map(|(a, b)| a * b).sum()
+        };
+        let row_matrix = |row: &[f64], matrix: &[f64]| -> Vec<f64> {
+            (0..m)
+                .map(|c| (0..m).map(|k| row[k] * matrix[k * m + c]).sum())
+                .collect()
+        };
+        let f_row: Vec<f64> = (0..m).map(|j| solution.f.coefficient(0, j)).collect();
+        let f_at = |p: usize| solution.f.gated[(p << 1) | gate];
+        let mut f_gain = Vec::with_capacity(steps * m);
+        for power in &powers[..steps] {
+            f_gain.extend(row_matrix(&f_row, power));
+        }
+        let mut f_steady = Vec::with_capacity(patterns * steps);
+        let mut f_ramp = Vec::with_capacity(patterns * steps);
+        for p in 0..patterns {
+            for k in 0..steps {
+                f_steady.push(f_at(p) + row_times(&f_row, &apply(&sums[k], driven(p))));
+                f_ramp.push(slew(k) * f_at(p) + row_times(&f_row, &apply(&ramps[k], driven(p))));
+            }
+        }
+        let latch = sampling.latch;
+        let pin_rows: Vec<Vec<f64>> = (0..pins)
+            .map(|i| {
+                (0..m)
+                    .map(|j| solution.latched.volts.coefficient(i, j))
+                    .collect()
+            })
+            .collect();
+        let pin_at =
+            |p: usize, i: usize| solution.latched.volts.gated[((p << 1) | gate) * pins + i];
+        let pin_gain = pin_rows
+            .iter()
+            .flat_map(|row| row_matrix(row, &powers[latch]))
+            .collect();
+        let mut pin_steady = Vec::with_capacity(patterns * pins);
+        let mut pin_ramp = Vec::with_capacity(patterns * pins);
+        for p in 0..patterns {
+            let steady = apply(&sums[latch], driven(p));
+            let ramp = apply(&ramps[latch], driven(p));
+            for (i, row) in pin_rows.iter().enumerate() {
+                pin_steady.push(pin_at(p, i) + row_times(row, &steady));
+                pin_ramp.push(slew(latch) * pin_at(p, i) + row_times(row, &ramp));
+            }
+        }
+        let end_steady = (0..patterns)
+            .flat_map(|p| apply(&sums[steps], driven(p)))
+            .collect();
+        let end_ramp = (0..patterns)
+            .flat_map(|p| apply(&ramps[steps], driven(p)))
+            .collect();
+        Self {
+            f_gain: f_gain.into_boxed_slice(),
+            f_steady: f_steady.into_boxed_slice(),
+            f_ramp: f_ramp.into_boxed_slice(),
+            pin_gain,
+            pin_steady: pin_steady.into_boxed_slice(),
+            pin_ramp: pin_ramp.into_boxed_slice(),
+            end_gain: powers[steps].clone().into_boxed_slice(),
+            end_steady,
+            end_ramp,
+        }
+    }
+}
+
+/// A pixel period in fixed-size arithmetic for `M` state variables.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Pixel<'a, const M: usize> {
+    /// Sub-steps per pixel period.
+    steps: usize,
+    /// Number of latched pins.
+    pin_count: usize,
+    /// Bit number of every latched pin.
+    pin_bits: [u8; MAX_PINS],
+    /// Node F at every sub-step per volt of the start state.
+    f_gain: &'a [[f64; M]],
+    /// Node F for steady patterns.
+    f_steady: &'a [f64],
+    /// The old pattern's share of node F.
+    f_ramp: &'a [f64],
+    /// The latched pins per volt of the start state.
+    pin_gain: [[f64; M]; MAX_PINS],
+    /// The latched pins for steady patterns.
+    pin_steady: &'a [f64],
+    /// The old pattern's share of the latched pins.
+    pin_ramp: &'a [f64],
+    /// The end state per volt of the start state.
+    end_gain: [[f64; M]; M],
+    /// The end state for steady patterns.
+    end_steady: &'a [f64],
+    /// The old pattern's share of the end state.
+    end_ramp: &'a [f64],
+}
+
+impl<'a, const M: usize> Pixel<'a, M> {
+    fn new(period: &'a Period, bits: &[u8], steps: usize) -> Self {
+        let pin_count = bits.len();
+        Self {
+            steps,
+            pin_count,
+            pin_bits: std::array::from_fn(|i| bits.get(i).copied().unwrap_or(0)),
+            f_gain: period.f_gain.as_chunks::<M>().0,
+            f_steady: &period.f_steady,
+            f_ramp: &period.f_ramp,
+            pin_gain: std::array::from_fn(|i| {
+                std::array::from_fn(|j| {
+                    if i < pin_count {
+                        period.pin_gain[i * M + j]
+                    } else {
+                        0.0
+                    }
+                })
+            }),
+            pin_steady: &period.pin_steady,
+            pin_ramp: &period.pin_ramp,
+            end_gain: std::array::from_fn(|k| std::array::from_fn(|j| period.end_gain[k * M + j])),
+            end_steady: &period.end_steady,
+            end_ramp: &period.end_ramp,
+        }
+    }
+
+    /// Returns node F at every sub-step of a pixel driving `to`, slewing from `from` if set.
+    #[inline]
+    pub(crate) fn f<'k>(
+        &'k self,
+        to: usize,
+        from: Option<usize>,
+        z: &'k [f64; M],
+    ) -> impl Iterator<Item = f64> + 'k {
+        let n = self.steps;
+        let row = |table: &'k [f64], pattern: usize| &table[pattern * n..(pattern + 1) * n];
+        let steady = row(self.f_steady, to);
+        let ramp = from.map(|from| (row(self.f_ramp, from), row(self.f_ramp, to)));
+        self.f_gain
+            .iter()
+            .zip(steady)
+            .enumerate()
+            .map(move |(k, (gain, &base))| {
+                let constant = match ramp {
+                    Some((old, new)) => base + (old[k] - new[k]),
+                    None => base,
+                };
+                affine(constant, gain, z)
+            })
+    }
+
+    /// Returns `(bit, volts)` for every latched pin of a pixel, from its start state.
+    #[inline]
+    pub(crate) fn pins<'k>(
+        &'k self,
+        to: usize,
+        from: Option<usize>,
+        z: &'k [f64; M],
+    ) -> impl Iterator<Item = (u8, f64)> + 'k {
+        let n = self.pin_count;
+        (0..n).map(move |i| {
+            let mut constant = self.pin_steady[to * n + i];
+            if let Some(from) = from {
+                constant += self.pin_ramp[from * n + i] - self.pin_ramp[to * n + i];
+            }
+            (self.pin_bits[i], affine(constant, &self.pin_gain[i], z))
+        })
+    }
+
+    /// Returns the state at the end of a pixel, from its start state.
+    #[inline]
+    pub(crate) fn end(&self, to: usize, from: Option<usize>, z: &[f64; M]) -> [f64; M] {
+        std::array::from_fn(|k| {
+            let mut constant = self.end_steady[to * M + k];
+            if let Some(from) = from {
+                constant += self.end_ramp[from * M + k] - self.end_ramp[to * M + k];
+            }
+            affine(constant, &self.end_gain[k], z)
+        })
+    }
+}
+
 /// The resolved bend circuit: every needed voltage as a function of the sources.
 #[derive(Clone, PartialEq)]
 pub(crate) struct Network {
@@ -879,6 +1128,10 @@ pub(crate) struct Network {
     states: usize,
     /// The network in every state of the protection diodes, indexed by [`Clamp::index`].
     solutions: [Solution; 3],
+    /// Pixel periods by diode state and gate level.
+    periods: [[Period; 2]; 3],
+    /// Sub-steps per pixel period.
+    oversample: usize,
     /// Voltage of node F below which the diodes to ground conduct.
     floor_v: f64,
     /// Voltage of node F above which the diodes to the supply conduct.
@@ -917,6 +1170,10 @@ impl Network {
             solve(top, &nodes, rail)?,
         ];
         let code_mask = ((1u32 << top.bits) - 1) as u16;
+        let count = 1 << top.lines.len();
+        let periods = solutions
+            .each_ref()
+            .map(|solution| [0, 1].map(|gate| Period::new(solution, gate, &top.sampling, count)));
         let patterns = (0..=code_mask)
             .map(|code| {
                 top.lines
@@ -932,6 +1189,8 @@ impl Network {
             patterns,
             states,
             solutions,
+            periods,
+            oversample: top.sampling.oversample,
             floor_v: top.clamp_source_v(Clamp::Ground),
             ceiling_v: top.clamp_source_v(Clamp::Rail),
             #[cfg(feature = "test-util")]
@@ -967,7 +1226,7 @@ impl Network {
     }
 
     /// Returns whether `clamp` is the diode state of node F at `f_v` volts.
-    fn consistent(&self, clamp: Clamp, f_v: f64) -> bool {
+    pub(crate) fn consistent(&self, clamp: Clamp, f_v: f64) -> bool {
         match clamp {
             Clamp::Off => (self.floor_v..=self.ceiling_v).contains(&f_v),
             Clamp::Ground => f_v <= self.floor_v,
@@ -1004,6 +1263,23 @@ impl Network {
     /// Panics if the network does not have `M` state variables.
     pub(crate) fn kernels<const M: usize>(&self) -> [Kernel<'_, M>; 3] {
         self.solutions.each_ref().map(Kernel::new)
+    }
+
+    /// Returns the pixel periods of every diode state and gate level for `M` state variables.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the network does not have `M` state variables.
+    pub(crate) fn pixels<const M: usize>(&self) -> [[Pixel<'_, M>; 2]; 3] {
+        assert_eq!(
+            self.states, M,
+            "pixels of {M} states for a network of {}",
+            self.states
+        );
+        std::array::from_fn(|c| {
+            let bits = &self.solutions[c].latched.bits;
+            std::array::from_fn(|g| Pixel::new(&self.periods[c][g], bits, self.oversample))
+        })
     }
 
     /// Solves node F with `kernels` and moves `clamp` to the diode state consistent with it.
@@ -1498,6 +1774,11 @@ mod tests {
             dt_s: 1e-8,
             latched: 0b111 << 8,
             bits: 12,
+            sampling: Sampling {
+                oversample: 4,
+                ramp: &[0.7],
+                latch: 2,
+            },
         }
     }
 
