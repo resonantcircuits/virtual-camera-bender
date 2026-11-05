@@ -31,7 +31,7 @@ smear_db = -90.0                    # C: ICX452 high-frame-rate mode (section 3)
 cte = 0.99999                       # C: interline CCDs (section 4)
 hot_pixels_per_mpix = 5.0           # PROVISIONAL
 cfa = "RGGB"                        # PROVISIONAL: phase of the A520 mosaic unconfirmed
-unit_seed = 1                       # this unit's fixed pattern (PRNU, DSNU, hot photosites)
+unit_seed = 1                       # this unit's fixed pattern (PRNU, DSNU, hot photosites, bus driver spread)
 
 [still]
 pixel_clock_hz = 27_000_000.0       # B: ICX498 horizontal drive (key constants)
