@@ -1,0 +1,35 @@
+[package]
+name = "vcb_app"
+description = "Desktop app for the virtual camera bender: live renders behind a bus-bend front panel."
+keywords = ["camera", "ccd", "simulation", "circuit-bending", "gui"]
+categories = ["multimedia::images", "gui"]
+version.workspace = true
+edition.workspace = true
+# eframe 0.37 needs Rust 1.95; the library crates keep the workspace's older minimum.
+rust-version = "1.95"
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "vcb-app"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+# Not enabled: `accesskit`, `clipboard` and `wayland`. Through cargo metadata's
+# workspace-wide feature view they enable `tracing/attributes` and `image/tiff`, which
+# put syn 2 beside serde's syn 3 in vcb_core's and vcb_io's graphs and fail their
+# `multiple_crate_versions` lint. Enabling them needs "syn" in clippy.toml's
+# `allowed-duplicate-crates`.
+eframe = { workspace = true, features = ["default_fonts", "links", "wgpu", "x11"] }
+mimalloc.workspace = true
+rfd = { workspace = true, features = ["xdg-portal"] }
+toml = { workspace = true, features = ["parse", "serde", "display"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+vcb_core = { workspace = true, features = ["serde"] }
+vcb_io.workspace = true
+
+[lints]
+workspace = true

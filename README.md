@@ -58,6 +58,17 @@ vcb inspect --preset presets/a520-hpf.toml --input samples/sample-01.jpg
 preset; `render-video` also takes `--max-dimension`, `--quality`, `--codec h264|prores`
 and `--fps`. `vcb help <command>` lists the rest.
 
+## Desktop app
+
+`cargo run --release -p vcb_app -- samples/sample-01.jpg` opens the app (binary
+`vcb-app`, Rust 1.95 or later) with the sample photo in front of the camera; without a
+file, open an image or a video's first frame with "Open…" or drop it on the window. Run
+it from the repository root so it finds `cameras/` (or set `VCB_CAMERAS`) and the
+`presets/` list. The inspector holds the readout settings and the bus bend as a front
+panel; dragging a control shows a 720-pixel preview, releasing it renders the full
+frame, holding the space bar shows the original, and "Export image…" writes the full
+render as PNG or JPEG.
+
 ## Cameras and presets
 
 A camera file (`cameras/a520.toml`) describes the hardware in physical units: sensor
@@ -78,6 +89,7 @@ crates/vcb_core/   the simulation library: configuration, timing, stages, bus ci
                    image processor, JPEG model; no I/O
 crates/vcb_io/     image decode and encode with EXIF orientation, ffmpeg video pipes
 crates/vcb_cli/    the vcb command line
+crates/vcb_app/    the vcb-app desktop app
 cameras/           camera files
 presets/           preset files
 scripts/           validate-a520.sh, the A520 validation sheet
