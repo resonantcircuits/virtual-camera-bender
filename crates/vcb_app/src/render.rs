@@ -18,10 +18,13 @@
 //! [`Simulator::set_scene_size`], so the camera's analog memory (oscillator phases,
 //! capacitor charge, servos, running clock faults) carries from one render to the
 //! next as in a camera that keeps running, and each render is the next frame of its
-//! simulator's sequence. A job whose [`power_cycle`](Job::power_cycle) count is
-//! higher than any seen before resets both simulators to their power-on state first;
-//! the full render after a power cycle is frame 0 of a fresh simulator, byte for
-//! byte what `vcb render` writes for the same input and preset.
+//! simulator's sequence. Each [`Output`] carries the [`Reconfigured`] report of that
+//! update: a new readout geometry rebuilds the simulator at power-on and restarts the
+//! sequence, and rewiring the bus bend resets the bend alone. A job whose
+//! [`power_cycle`](Job::power_cycle) count is higher than any seen before resets both
+//! simulators to their power-on state first; the full render after a power cycle is
+//! frame 0 of a fresh simulator, byte for byte what `vcb render` writes for the same
+//! input and preset.
 
 use std::any::Any;
 use std::fmt::{self, Debug, Formatter};
@@ -36,7 +39,7 @@ use eframe::egui::ColorImage;
 use vcb_core::plane::Plane;
 use vcb_core::preset::Resolution;
 use vcb_core::scene::Channel;
-use vcb_core::{Camera, Frame, Preset, Scene, Simulator, Timing};
+use vcb_core::{Camera, Frame, Preset, Reconfigured, Scene, Simulator, Timing};
 
 use crate::viewport;
 
@@ -74,6 +77,8 @@ pub struct Output {
     pub sensor: [u32; 2],
     /// Index of the frame in its simulator's sequence since power-on, from 0.
     pub index: u64,
+    /// What configuring the simulator for this job kept; [`Reconfigured::Rebuilt`] for a new one.
+    pub reconfigured: Reconfigured,
     /// Wall-clock time of the render, configuring the simulator included.
     pub elapsed: Duration,
 }
@@ -85,6 +90,7 @@ impl Debug for Output {
             .field("frame", &self.frame)
             .field("sensor", &self.sensor)
             .field("index", &self.index)
+            .field("reconfigured", &self.reconfigured)
             .field("elapsed", &self.elapsed)
             .finish_non_exhaustive()
     }
@@ -262,19 +268,23 @@ impl Live {
     /// A simulator for the same camera is updated in place, keeping its analog state
     /// where [`Simulator::set_preset`] allows; another camera, or a configuration the
     /// running simulator refuses, builds a new one, whose error is then reported.
+    /// Returns the simulator and what the update kept ([`Reconfigured::Rebuilt`] for a
+    /// new simulator).
     fn configure<'a>(
         slot: &'a mut Option<Self>,
         camera: &Arc<Camera>,
         preset: &Preset,
         size: (u32, u32),
-    ) -> Result<&'a mut Self, String> {
+    ) -> Result<(&'a mut Self, Reconfigured), String> {
         let updated = match slot.as_mut() {
             Some(live) if Arc::ptr_eq(&live.camera, camera) || *live.camera == **camera => {
                 live.update(preset, size)
             }
-            _ => false,
+            _ => None,
         };
-        if !updated {
+        let reconfigured = if let Some(reconfigured) = updated {
+            reconfigured
+        } else {
             let simulator = Simulator::builder(((**camera).clone(), preset.clone()))
                 .input_size(size.0, size.1)
                 .build()
@@ -284,42 +294,57 @@ impl Live {
                 simulator,
                 frames: 0,
             });
-        }
-        Ok(slot
+            Reconfigured::Rebuilt
+        };
+        let live = slot
             .as_mut()
-            .expect("the slot holds a configured simulator"))
+            .expect("the slot holds a configured simulator");
+        Ok((live, reconfigured))
     }
 
-    /// Applies `preset` and `size` to the running simulator; `false` if it refuses either.
+    /// Applies `size` and `preset` to the running simulator; `None` if it refuses either.
     ///
-    /// A new readout geometry powers the simulator on afresh, so the frame count restarts.
-    fn update(&mut self, preset: &Preset, size: (u32, u32)) -> bool {
+    /// A rebuilt simulator is at power-on, so the frame count restarts.
+    fn update(&mut self, preset: &Preset, size: (u32, u32)) -> Option<Reconfigured> {
         let sim = &mut self.simulator;
-        let before = geometry(sim.timing());
-        if sim.scene_size() != size && sim.set_scene_size(size.0, size.1).is_err() {
-            return false;
+        let mut reconfigured = UNCHANGED;
+        if sim.scene_size() != size {
+            reconfigured = merge(reconfigured, sim.set_scene_size(size.0, size.1).ok()?);
         }
-        let updated = sim.preset() == preset || sim.set_preset(preset.clone()).is_ok();
-        if geometry(sim.timing()) != before {
+        if sim.preset() != preset {
+            reconfigured = merge(reconfigured, sim.set_preset(preset.clone()).ok()?);
+        }
+        if reconfigured == Reconfigured::Rebuilt {
             self.frames = 0;
         }
-        updated
+        Some(reconfigured)
     }
 }
 
-/// The parts of a timing whose change makes the simulator reallocate and power on.
-fn geometry(timing: &Timing) -> [u64; 9] {
-    [
-        u64::from(timing.mode == vcb_core::preset::Mode::Movie),
-        u64::from(timing.rotated),
-        u64::from(timing.sensor_width),
-        u64::from(timing.sensor_height),
-        u64::from(timing.rows_read),
-        u64::from(timing.cols),
-        u64::from(timing.output_width),
-        u64::from(timing.output_height),
-        timing.pixel_period_s.to_bits(),
-    ]
+/// A reconfiguration that kept everything.
+const UNCHANGED: Reconfigured = Reconfigured::Kept {
+    bus_reset: false,
+    servo_reset: false,
+};
+
+/// What two reconfigurations in a row kept together.
+fn merge(first: Reconfigured, second: Reconfigured) -> Reconfigured {
+    match (first, second) {
+        (Reconfigured::Rebuilt, _) | (_, Reconfigured::Rebuilt) => Reconfigured::Rebuilt,
+        (
+            Reconfigured::Kept {
+                bus_reset: bus_a,
+                servo_reset: servo_a,
+            },
+            Reconfigured::Kept {
+                bus_reset: bus_b,
+                servo_reset: servo_b,
+            },
+        ) => Reconfigured::Kept {
+            bus_reset: bus_a || bus_b,
+            servo_reset: servo_a || servo_b,
+        },
+    }
 }
 
 impl Renderer {
@@ -394,7 +419,7 @@ impl Renderer {
             &mut self.full
         };
         let size = (scene.width(), scene.height());
-        let live = Live::configure(slot, &job.camera, &preset, size)?;
+        let (live, reconfigured) = Live::configure(slot, &job.camera, &preset, size)?;
         let timing = live.simulator.timing();
         let sensor = [timing.sensor_width, timing.sensor_height];
         let index = live.frames;
@@ -406,6 +431,7 @@ impl Renderer {
             image,
             sensor,
             index,
+            reconfigured,
             elapsed: started.elapsed(),
         })
     }

@@ -50,6 +50,11 @@ const RATE_WINDOW: usize = 16;
 /// How often the status line refreshes while a video export runs.
 const EXPORT_REFRESH: Duration = Duration::from_millis(250);
 
+/// How long the status line says "circuit reset" after rewiring reset the bus bend.
+///
+/// Long enough to be read after letting go of a switch, short enough not to linger.
+const CIRCUIT_RESET_NOTICE: Duration = Duration::from_secs(2);
+
 /// The frame on screen and how it was made.
 #[derive(Debug, Clone)]
 struct Shown {
@@ -136,12 +141,7 @@ pub struct App {
     camera_dir: PathBuf,
     cameras: Vec<Entry>,
     presets: Vec<Entry>,
-    /// The camera as its file describes it.
-    base_camera: Option<Arc<Camera>>,
-    /// The camera that renders: the base camera with the sensor panel's exposure.
     camera: Option<Arc<Camera>>,
-    /// The still exposure time set on the sensor panel; `None` keeps the camera's.
-    exposure_s: Option<f64>,
     preset: Preset,
     current: Current,
     panels: Panels,
@@ -173,6 +173,8 @@ pub struct App {
     title: String,
     /// Whether a control was being dragged in the last ui pass.
     dragging: bool,
+    /// When a render last reported that rewiring returned the bus bend to power-on.
+    circuit_reset: Option<Instant>,
 }
 
 /// What the app starts with: the first file, the camera folder and the screenshot switch.
@@ -227,9 +229,7 @@ impl App {
         let mut app = Self {
             cameras: Vec::new(),
             presets: presets::discover(&presets::presets_dir()).unwrap_or_default(),
-            base_camera: None,
             camera: None,
-            exposure_s: None,
             preset: Preset::new(""),
             current: Current::unsaved("untitled", &Preset::new("")),
             panels: Panels::default(),
@@ -258,6 +258,7 @@ impl App {
             screenshot,
             title: String::new(),
             dragging: false,
+            circuit_reset: None,
             camera_dir,
         };
         match worker {
@@ -297,22 +298,13 @@ impl App {
             Ok(camera) => {
                 let mut preset = Preset::new(name);
                 preset.seed = 1;
-                self.base_camera = Some(Arc::new(camera));
-                self.refresh_camera();
+                self.camera = Some(Arc::new(camera));
                 self.current = Current::unsaved("untitled", &preset);
                 self.panels = Panels::from_preset(&preset);
                 self.preset = preset;
             }
             Err(error) => self.message = Message::error(format!("{error:#}")),
         }
-    }
-
-    /// Rebuilds the rendering camera from the base camera and the exposure adjustment.
-    fn refresh_camera(&mut self) {
-        self.camera = self.base_camera.as_ref().map(|base| match self.exposure_s {
-            None => Arc::clone(base),
-            Some(exposure_s) => Arc::new(panels::sensor::adjusted(base, Some(exposure_s))),
-        });
     }
 
     /// Starts opening `path` in the background.
@@ -461,6 +453,14 @@ impl App {
                 })
             })
             .is_some();
+        // Even a stale reply reports a reset its simulator went through.
+        if let Ok(output) = &reply.outcome
+            && output.reconfigured.buffers_kept()
+            && output.reconfigured.bus_reset()
+        {
+            self.circuit_reset = Some(Instant::now());
+            ctx.request_repaint_after(CIRCUIT_RESET_NOTICE);
+        }
         if !self.generations.accept(reply.generation) {
             return;
         }
@@ -636,9 +636,7 @@ impl App {
     fn select_camera(&mut self, name: &str) {
         match presets::load_camera(&self.camera_dir, name) {
             Ok(camera) => {
-                self.base_camera = Some(Arc::new(camera));
-                self.exposure_s = None;
-                self.refresh_camera();
+                self.camera = Some(Arc::new(camera));
                 name.clone_into(&mut self.preset.camera);
             }
             Err(error) => self.message = Message::error(format!("{error:#}")),
@@ -648,16 +646,12 @@ impl App {
     /// Makes `preset` the one under edit, loading its camera; errors keep the old state.
     fn adopt(&mut self, preset: Preset, current: Current) {
         let same_camera = self
-            .base_camera
+            .camera
             .as_ref()
             .is_some_and(|camera| camera.info.name == preset.camera);
         if !same_camera {
             match presets::load_camera(&self.camera_dir, &preset.camera) {
-                Ok(camera) => {
-                    self.base_camera = Some(Arc::new(camera));
-                    self.exposure_s = None;
-                    self.refresh_camera();
-                }
+                Ok(camera) => self.camera = Some(Arc::new(camera)),
                 Err(error) => {
                     self.message = Message::error(format!("{error:#}"));
                     return;
@@ -1270,25 +1264,7 @@ impl App {
                     shown.elapsed.as_secs_f64() * 1e3
                 )));
             }
-            let busy = self.generations.is_pending()
-                || self.opening.is_some()
-                || self.writing.is_some()
-                || self.waiting.is_some();
-            if busy {
-                ui.spinner();
-            }
-            if let Some(error) = &self.render_error {
-                ui.separator();
-                ui.label(RichText::new(error).color(theme::ERROR));
-            } else if !self.message.text.is_empty() {
-                ui.separator();
-                let colour = if self.message.error {
-                    theme::ERROR
-                } else {
-                    theme::TEXT
-                };
-                ui.label(RichText::new(&self.message.text).color(colour));
-            }
+            self.notices(ui);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let zoom = match self.content_size() {
                     Some(content) if !self.view.is_fit() => format!(
@@ -1308,6 +1284,39 @@ impl App {
         });
     }
 
+    /// The status line's notices: a recent circuit reset, work in progress, the message.
+    fn notices(&self, ui: &mut Ui) {
+        if self
+            .circuit_reset
+            .is_some_and(|at| at.elapsed() < CIRCUIT_RESET_NOTICE)
+        {
+            ui.separator();
+            ui.label(RichText::new("circuit reset").color(theme::ACCENT))
+                .on_hover_text(
+                    "The bus wiring changed, so the bend's capacitor and gates started from power-on",
+                );
+        }
+        let busy = self.generations.is_pending()
+            || self.opening.is_some()
+            || self.writing.is_some()
+            || self.waiting.is_some();
+        if busy {
+            ui.spinner();
+        }
+        if let Some(error) = &self.render_error {
+            ui.separator();
+            ui.label(RichText::new(error).color(theme::ERROR));
+        } else if !self.message.text.is_empty() {
+            ui.separator();
+            let colour = if self.message.error {
+                theme::ERROR
+            } else {
+                theme::TEXT
+            };
+            ui.label(RichText::new(&self.message.text).color(colour));
+        }
+    }
+
     fn inspector(&mut self, ui: &mut Ui) -> Edit {
         let mut edit = Edit::default();
         if let Some(panel) = panels::strip::show(ui, &self.preset) {
@@ -1318,7 +1327,7 @@ impl App {
         ui.add_space(theme::GRID * 0.5);
         ui.separator();
         let target = self.scroll_to.take();
-        let Some(base) = self.base_camera.clone() else {
+        let Some(base) = self.camera.clone() else {
             panels::hint(ui, "No camera is loaded.");
             return edit;
         };
@@ -1338,7 +1347,7 @@ impl App {
                     panels::scene::show(ui, &mut self.preset.scene)
                 });
                 edit |= section(ui, target, PanelId::Sensor, |ui| {
-                    panels::sensor::show(ui, &mut self.exposure_s, &base, self.preset.readout.mode)
+                    panels::sensor::show(ui, &mut self.preset, &base)
                 });
                 edit |= section(ui, target, PanelId::Readout, |ui| {
                     panels::readout::show(ui, &mut self.preset, timing.as_ref(), self.running)
@@ -1449,7 +1458,6 @@ impl eframe::App for App {
         self.drive_play();
         // Everything below may change the preset: shortcuts, file pickers, panels, camera choice.
         let before = self.preset.clone();
-        let exposure_before = self.exposure_s;
         let dropped = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -1512,16 +1520,12 @@ impl eframe::App for App {
         if edit.changed {
             self.panels.apply(&mut self.preset);
         }
-        let camera_changed = self.exposure_s != exposure_before;
-        if camera_changed {
-            self.refresh_camera();
-        }
         if edit.power_cycle {
             self.power_cycle += 1;
             self.running = None;
             self.refresh_timing();
             self.request(false);
-        } else if self.preset != before || camera_changed {
+        } else if self.preset != before {
             self.refresh_timing();
             self.request(true);
         }

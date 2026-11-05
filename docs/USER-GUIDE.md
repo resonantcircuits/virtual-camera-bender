@@ -25,10 +25,10 @@ it took. Scroll to zoom, drag to pan, double-click or F to fit, 1 for one image 
 screen pixel; hold the space bar to see the original.
 
 The camera keeps running between renders, as a real one does: oscillator phases,
-the bus capacitor's charge, the exposure and white-balance servos and running clock
-faults carry over, and each render is the next frame. Readout → "Reset circuit"
-powers the camera off and on; the full render right after a reset is exactly what
-`vcb render` writes for the same file and preset.
+the bus capacitor's charge, the servos and running clock faults carry over, and each
+render is the next frame. Rewiring the bus bend resets the bend alone ("circuit
+reset" in the status line). Readout → "Reset circuit" powers the camera off and on;
+the next full render is exactly what `vcb render` writes.
 
 ## The panels
 
@@ -41,12 +41,12 @@ have an on/off switch in their title and remember their settings while off.
 input's clipped white really was; 1 takes the photo as it is. *Shoulder start* (% of
 white, 50 to 90 is typical): where the source camera began to roll off highlights.
 
-**Sensor.** *Exposure* (ms, 0.1 to 1000): the still's integration time. Brightness
-follows reference white and auto-exposure, so long times show as dark charge and
-glowing hot pixels. It is a camera setting and is not saved in presets; the movie
-readout always integrates one frame (66.7 ms at 15 fps). *Smear* shows whether the
-readout's shutter lets light reach the CCD during transfer: off for stills, on for
-movie.
+**Sensor.** *Exposure* (ms, 1 to 100 is typical; the camera's is 8): the
+integration time, saved with the preset. Light scales with it, so doubling it
+brightens by a stop until the well or converter clips, unless auto-exposure
+compensates; dark charge and hot pixels grow too. Movie mode shows the shutter's
+time read-only, at most one frame (66.7 ms at 15 fps). *Smear* shows whether light
+reaches the CCD during transfer: off for stills, on for movie.
 
 **Readout.** *Mode*: still reads every row; movie reads one row pair in four and
 bins columns into the 640 × 480 movie frame, with smear. *Resolution*: native uses
