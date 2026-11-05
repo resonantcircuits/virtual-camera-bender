@@ -1,0 +1,80 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "MIT"
+repository = "https://github.com/resonantcircuits/virtual-camera-bender"
+publish = false
+
+# Versions only; crates opt in to the features they need.
+[workspace.dependencies]
+vcb_core = { path = "crates/vcb_core", default-features = false }
+vcb_io = { path = "crates/vcb_io" }
+anyhow = "1.0.104"
+clap = "4.6.7"
+image = { version = "0.25.10", default-features = false }
+kamadak-exif = "0.6.1"
+mimalloc = "0.1.52"
+rayon = "1.12.0"
+serde = "1.0.229"
+toml = { version = "1.2.0", default-features = false, features = ["std"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = "0.3.23"
+
+[workspace.lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+
+# Restriction lints that keep the code consistent and brief.
+allow_attributes_without_reason = "warn"
+as_pointer_underscore = "warn"
+assertions_on_result_states = "warn"
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+disallowed_script_idents = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+fn_to_numeric_cast_any = "warn"
+if_then_some_else_none = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+semicolon_outside_block = "warn"
+too_long_first_doc_paragraph = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unneeded_field_pattern = "warn"
+unused_result_ok = "warn"
+
+# Project-wide opt-outs.
+# Signal processing converts constantly between sample counts (u32/usize), codes (u16)
+# and physical values (f32/f64); the guidelines allow opting out of the numeric-cast
+# lints for such code. Value ranges are validated where configuration enters the core.
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+# Physics code uses paired names by convention (r_gain/b_gain, x0/x1, row/rows).
+similar_names = "allow"
+# Stage modules name their types after the stage (`sensor::Params`, `readout::Layout`).
+module_name_repetitions = "allow"

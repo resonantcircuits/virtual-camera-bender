@@ -1,0 +1,27 @@
+[package]
+name = "vcb_core"
+description = "Physical simulation of a circuit-bent early-2000s CCD compact camera."
+keywords = ["camera", "ccd", "simulation", "circuit-bending", "glitch"]
+categories = ["multimedia::images", "simulation"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = ["serde"]
+# Serialize and deserialize the configuration types (camera files, presets).
+serde = ["dep:serde"]
+
+[dependencies]
+rayon.workspace = true
+serde = { workspace = true, optional = true, features = ["derive"] }
+tracing.workspace = true
+
+[dev-dependencies]
+toml = { workspace = true, features = ["parse", "serde", "display"] }
+
+[lints]
+workspace = true

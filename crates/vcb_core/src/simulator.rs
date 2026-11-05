@@ -1,0 +1,255 @@
+//! The stateful simulator that runs the signal chain frame by frame.
+
+use crate::adc::{self, Codes};
+use crate::afe::{self, Analog};
+use crate::isp::{self, Raw};
+use crate::preset::Resolution;
+use crate::readout::{self, Stream};
+use crate::sensor::{self, Charge};
+use crate::{Camera, Error, Frame, Preset, Scene, Timing, bus, codec, scene};
+
+/// The required inputs of a [`Simulator`]: the camera and the preset.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimDeps {
+    /// The camera model.
+    pub camera: Camera,
+    /// The preset; its `camera` must name the camera model.
+    pub preset: Preset,
+}
+
+impl From<(Camera, Preset)> for SimDeps {
+    fn from(value: (Camera, Preset)) -> Self {
+        let (camera, preset) = value;
+        Self { camera, preset }
+    }
+}
+
+/// Builder of a [`Simulator`], created by [`Simulator::builder`].
+#[derive(Debug, Clone)]
+pub struct SimulatorBuilder {
+    deps: SimDeps,
+    input_size: Option<(u32, u32)>,
+}
+
+impl SimulatorBuilder {
+    /// Sets the size of the input images, which match-input resolution needs.
+    #[must_use]
+    pub fn input_size(mut self, width: u32, height: u32) -> Self {
+        self.input_size = Some((width, height));
+        self
+    }
+
+    /// Validates the configuration, derives the timing and allocates every buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error if a camera or preset value is invalid, the preset
+    /// names another camera, a bus pin does not exist on the camera's ADC, or the
+    /// preset uses match-input resolution without an input size. Returns an input
+    /// error if the input size is too small for the readout.
+    pub fn build(self) -> Result<Simulator, Error> {
+        let SimDeps { camera, preset } = self.deps;
+        camera.validate()?;
+        preset.validate()?;
+        if preset.camera != camera.info.name {
+            return Err(Error::config(format!(
+                "preset is for camera \"{}\" but the camera model is \"{}\"",
+                preset.camera, camera.info.name
+            )));
+        }
+        let (width, height) = match (self.input_size, preset.readout.resolution) {
+            (Some(size), _) => size,
+            (None, Resolution::Native) => (camera.sensor.native_width, camera.sensor.native_height),
+            (None, Resolution::MatchInput) => {
+                return Err(Error::config(
+                    "match-input resolution needs the input size; call input_size()",
+                ));
+            }
+        };
+        let timing = Timing::derive(&camera, &preset, width, height)?;
+        let params = Stages::resolve(&camera, &preset, &timing)?;
+        let buffers = Buffers::new(&params, &timing);
+        tracing::debug!(
+            name: "sim.build.done",
+            camera = %camera.info.name,
+            mode = %timing.mode,
+            resolution = %timing.resolution,
+            sensor_width = timing.sensor_width,
+            sensor_height = timing.sensor_height,
+            frame_period_s = timing.frame_period_s,
+            "simulator built"
+        );
+        Ok(Simulator {
+            timing,
+            params,
+            state: States::default(),
+            buffers,
+        })
+    }
+}
+
+/// The resolved parameters of every stage.
+#[derive(Debug, Clone)]
+struct Stages {
+    scene: scene::Params,
+    sensor: sensor::Params,
+    readout: readout::Params,
+    afe: afe::Params,
+    adc: adc::Params,
+    bus: Option<bus::Params>,
+    isp: isp::Params,
+    codec: codec::Params,
+}
+
+impl Stages {
+    fn resolve(camera: &Camera, preset: &Preset, timing: &Timing) -> Result<Self, Error> {
+        Ok(Self {
+            scene: scene::Params::resolve(camera, preset, timing)?,
+            sensor: sensor::Params::resolve(camera, preset, timing)?,
+            readout: readout::Params::resolve(camera, preset, timing)?,
+            afe: afe::Params::resolve(camera, preset, timing)?,
+            adc: adc::Params::resolve(camera, preset, timing)?,
+            bus: bus::Params::resolve(camera, preset, timing)?,
+            isp: isp::Params::resolve(camera, preset, timing)?,
+            codec: codec::Params::resolve(camera, preset, timing)?,
+        })
+    }
+}
+
+/// The persistent state of every stage, as at power-on when default.
+#[derive(Debug, Clone, Default)]
+struct States {
+    sensor: sensor::State,
+    readout: readout::State,
+    afe: afe::State,
+    bus: bus::State,
+    isp: isp::State,
+    codec: codec::State,
+}
+
+/// The intermediate signal of every stage, allocated once.
+#[derive(Debug, Clone)]
+struct Buffers {
+    scene: Scene,
+    charge: Charge,
+    stream: Stream,
+    analog: Analog,
+    codes: Codes,
+    raw: Raw,
+    frame: Frame,
+}
+
+impl Buffers {
+    fn new(params: &Stages, timing: &Timing) -> Self {
+        let layout = &params.readout.layout;
+        Self {
+            scene: Scene::new(timing.sensor_width, timing.sensor_height),
+            charge: Charge::new(timing.sensor_width, timing.sensor_height),
+            stream: Stream::new(layout.clone()),
+            analog: Analog::new(layout.clone()),
+            codes: Codes::new(layout.clone()),
+            raw: Raw::new(layout.cols(), layout.rows()),
+            frame: Frame::new(params.isp.output.width, params.isp.output.height),
+        }
+    }
+}
+
+/// A simulated camera that turns scenes into frames, one call per frame.
+///
+/// The simulator owns the resolved parameters of every stage, the persistent analog
+/// state that carries from frame to frame (oscillator phase, circuit nodes) and all
+/// working buffers, so rendering a frame does not allocate.
+///
+/// # Examples
+///
+/// ```
+/// use vcb_core::{Camera, Preset, Scene, Simulator};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../cameras/a520.toml");
+/// let camera: Camera = toml::from_str(&std::fs::read_to_string(path)?)?;
+/// let mut sim = Simulator::builder((camera, Preset::new("a520")))
+///     .input_size(32, 24)
+///     .build()?;
+/// let scene = Scene::from_srgb8(32, 24, &[90; 32 * 24 * 3]);
+/// let first = sim.frame(&scene, 0).clone();
+/// sim.reset();
+/// assert_eq!(sim.frame(&scene, 0), &first);
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct Simulator {
+    timing: Timing,
+    params: Stages,
+    state: States,
+    buffers: Buffers,
+}
+
+impl Simulator {
+    /// Starts building a simulator for a camera and a preset.
+    pub fn builder(deps: impl Into<SimDeps>) -> SimulatorBuilder {
+        SimulatorBuilder {
+            deps: deps.into(),
+            input_size: None,
+        }
+    }
+
+    /// Renders `scene` as frame `index` of a sequence and returns the developed frame.
+    ///
+    /// The scene may have any non-zero size; it is cropped to the sensor's aspect ratio
+    /// and resampled to the sensor. `index` selects the temporal noise of the frame.
+    /// Analog state persists from the previous call, so a sequence rendered in order
+    /// from a fresh or [`reset`](Self::reset) simulator is reproducible byte for byte.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `scene` is empty.
+    pub fn frame(&mut self, scene: &Scene, index: u64) -> &Frame {
+        let Self {
+            params,
+            state,
+            buffers: b,
+            ..
+        } = self;
+        scene::prepare(&params.scene, scene, &mut b.scene);
+        sensor::expose(
+            &params.sensor,
+            &mut state.sensor,
+            &b.scene,
+            index,
+            &mut b.charge,
+        );
+        readout::read(
+            &params.readout,
+            &mut state.readout,
+            &b.charge,
+            index,
+            &mut b.stream,
+        );
+        afe::process(&params.afe, &mut state.afe, &b.stream, index, &mut b.analog);
+        adc::convert(&params.adc, &b.analog, &mut b.codes);
+        bus::bend(params.bus.as_ref(), &mut state.bus, index, &mut b.codes);
+        isp::clamp_black(&b.codes, &mut b.raw);
+        isp::develop(&params.isp, &mut state.isp, &b.raw, &mut b.frame);
+        codec::encode(&params.codec, &mut state.codec, &mut b.frame);
+        tracing::trace!(
+            name: "sim.frame.done",
+            index,
+            black_level = b.raw.black_level(),
+            "frame rendered"
+        );
+        &b.frame
+    }
+
+    /// Returns the derived readout timing.
+    #[must_use]
+    pub fn timing(&self) -> &Timing {
+        &self.timing
+    }
+
+    /// Returns every stage to its power-on state.
+    pub fn reset(&mut self) {
+        self.state = States::default();
+    }
+}

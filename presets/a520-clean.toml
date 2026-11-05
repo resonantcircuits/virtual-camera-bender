@@ -1,0 +1,7 @@
+# Canon PowerShot A520, unmodified: full-sensor still at the input's resolution.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "match-input"

@@ -8,3 +8,5 @@ docs/research/downloads/
 # OS / editor
 .DS_Store
 *.log
+# derived from the local reference images
+validation/

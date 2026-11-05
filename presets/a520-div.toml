@@ -1,0 +1,18 @@
+# Canon PowerShot A520 with the ADC-bus bend: horizontal streaks from the divide-by-two flip-flop.
+# Source bank D9, D8, D7 through a 1 uF capacitor and a 10 kOhm pot, function
+# "divide", target D10.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "match-input"
+
+[bend.bus]
+source_pins = [9, 8, 7]
+target = "pin:10"
+function = "divide"
+cap_uf = 1.0
+pot_kohm = 10.0
+series_ohm = 0.0
+common_bus = false

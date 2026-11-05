@@ -1,0 +1,197 @@
+//! Parsing, round-tripping and validation of camera and preset files.
+
+#![cfg(feature = "serde")]
+
+use std::path::PathBuf;
+
+use vcb_core::afe::{Inject, Wave};
+use vcb_core::bus::{Function, Target};
+use vcb_core::isp::WbMode;
+use vcb_core::preset::{AfeBend, BusBend, ClockBend, IspOverride, Mode, Resolution};
+use vcb_core::{Camera, Preset};
+
+fn root() -> PathBuf {
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+}
+
+fn camera() -> Camera {
+    let text = std::fs::read_to_string(root().join("cameras/a520.toml")).unwrap();
+    toml::from_str(&text).unwrap()
+}
+
+fn preset_files() -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(root().join("presets"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "toml"))
+        .collect();
+    files.sort();
+    files
+}
+
+fn full_preset() -> Preset {
+    let mut preset = Preset::new("a520");
+    preset.seed = 77;
+    preset.readout.mode = Mode::Movie;
+    preset.readout.resolution = Resolution::Native;
+    preset.bend.bus = Some(BusBend {
+        source_pins: vec![9, 8, 7],
+        target: Target::Gnd,
+        function: Function::Divide,
+        cap_uf: 0.47,
+        pot_kohm: 22.0,
+        series_ohm: 47.0,
+        common_bus: true,
+    });
+    preset.bend.clocks = Some(ClockBend {
+        cte: Some(0.9995),
+        v_pulse_drop_hz: 3.0,
+        h_glitch_hz: 0.5,
+    });
+    preset.bend.afe = Some(AfeBend {
+        inject: Some(Inject {
+            wave: Wave::Saw,
+            freq_hz: 1200.0,
+            amplitude_v: 0.15,
+        }),
+    });
+    preset.isp = Some(IspOverride {
+        wb: Some(WbMode::Auto),
+        ccm: Some([[1.5, -0.3, -0.2], [-0.2, 1.4, -0.2], [0.0, -0.5, 1.5]]),
+        sharpen_gain: Some(1.2),
+        ..IspOverride::default()
+    });
+    preset
+}
+
+#[test]
+fn camera_file_parses_and_validates() {
+    let camera = camera();
+    camera.validate().unwrap();
+    assert_eq!(camera.info.name, "a520");
+}
+
+#[test]
+fn camera_round_trips_through_toml() {
+    let camera = camera();
+    let text = toml::to_string(&camera).unwrap();
+    let back: Camera = toml::from_str(&text).unwrap();
+    assert_eq!(back, camera);
+}
+
+#[test]
+fn every_preset_file_parses_validates_and_names_the_camera() {
+    let files = preset_files();
+    assert!(
+        files.len() >= 4,
+        "expected the A520 presets, found {files:?}"
+    );
+    let camera = camera();
+    for path in files {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let preset: Preset = toml::from_str(&text)
+            .unwrap_or_else(|error| panic!("{} does not parse: {error}", path.display()));
+        preset.validate().unwrap();
+        assert_eq!(preset.camera, camera.info.name, "{}", path.display());
+        let back: Preset = toml::from_str(&toml::to_string(&preset).unwrap()).unwrap();
+        assert_eq!(back, preset, "{} does not round-trip", path.display());
+    }
+}
+
+#[test]
+fn preset_with_every_section_round_trips_through_toml() {
+    let preset = full_preset();
+    preset.validate().unwrap();
+    let text = toml::to_string(&preset).unwrap();
+    assert!(text.contains("target = \"gnd\""), "{text}");
+    let back: Preset = toml::from_str(&text).unwrap();
+    assert_eq!(back, preset);
+}
+
+#[test]
+fn minimal_preset_is_an_unmodified_still_camera() {
+    let preset: Preset = toml::from_str("camera = \"a520\"").unwrap();
+    assert_eq!(preset, Preset::new("a520"));
+    assert_eq!(preset.readout.mode, Mode::Still);
+    assert_eq!(preset.readout.resolution, Resolution::MatchInput);
+}
+
+#[test]
+fn plan_example_parses() {
+    let text = r#"
+        camera = "a520"
+        seed = 1
+        [readout]
+        mode = "still"
+        resolution = "match-input"
+        [bend.bus]
+        source_pins = [9, 8, 7]
+        target = "pin:10"
+        function = "bypass"
+        cap_uf = 1.0
+        pot_kohm = 10.0
+        series_ohm = 0.0
+        common_bus = false
+        [bend.clocks]
+        cte = 0.9995
+        [bend.afe.inject]
+        wave = "square"
+        freq_hz = 1200.0
+        amplitude_v = 0.15
+    "#;
+    let preset: Preset = toml::from_str(text).unwrap();
+    let bus = preset.bend.bus.unwrap();
+    assert_eq!(bus.target, Target::Pin(10));
+    assert_eq!(bus.function, Function::Bypass);
+    let clocks = preset.bend.clocks.unwrap();
+    assert_eq!(clocks.cte, Some(0.9995));
+    assert!(clocks.v_pulse_drop_hz.abs() < f64::EPSILON);
+    let inject = preset.bend.afe.unwrap().inject.unwrap();
+    assert_eq!(inject.wave, Wave::Square);
+}
+
+#[test]
+fn unknown_keys_and_bad_targets_are_rejected() {
+    let unknown = toml::from_str::<Preset>("camera = \"a520\"\nsede = 3").unwrap_err();
+    assert!(unknown.to_string().contains("sede"), "{unknown}");
+    let bad_target = "camera = \"a520\"\n[bend.bus]\nsource_pins = [1]\ntarget = \"pin:x\"\n\
+                      function = \"bypass\"\ncap_uf = 1.0\npot_kohm = 1.0";
+    let target = toml::from_str::<Preset>(bad_target).unwrap_err();
+    assert!(target.to_string().contains("pin:x"), "{target}");
+    assert!("pin:3".parse::<Target>().is_ok_and(|t| t == Target::Pin(3)));
+    assert!("vcc".parse::<Target>().unwrap_err().is_config());
+    assert!("sideways".parse::<Mode>().unwrap_err().is_config());
+}
+
+#[test]
+fn camera_validation_rejects_unphysical_values() {
+    let mut camera = camera();
+    camera.sensor.full_well_e = -1.0;
+    assert!(camera.validate().unwrap_err().is_config());
+
+    let mut camera = self::camera();
+    camera.afe.pedestal_v *= 3.0;
+    let error = camera.validate().unwrap_err();
+    assert!(error.is_config());
+    assert!(error.to_string().contains("black_level"), "{error}");
+
+    let mut camera = self::camera();
+    camera.sensor.native_width += 1;
+    assert!(camera.validate().unwrap_err().is_config());
+}
+
+#[test]
+fn preset_validation_rejects_unphysical_values() {
+    let mut preset = full_preset();
+    if let Some(bus) = preset.bend.bus.as_mut() {
+        bus.cap_uf = -1.0;
+    }
+    assert!(preset.validate().unwrap_err().is_config());
+
+    let mut preset = full_preset();
+    preset.bend.clocks = Some(ClockBend {
+        cte: Some(1.5),
+        ..ClockBend::default()
+    });
+    assert!(preset.validate().unwrap_err().is_config());
+}
