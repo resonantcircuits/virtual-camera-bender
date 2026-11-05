@@ -8,7 +8,9 @@
 //! 1. Exposure: `radiance[filter] * white_fraction * full_well_e * exposure_scale`, so
 //!    reference white fills `white_fraction` of the well. `exposure_scale` is 1 unless
 //!    auto-exposure meters the scene ([`Ae::Scene`]): then it is `target / mean
-//!    luminance` of the prepared scene, clamped to two stops either way.
+//!    luminance` of the prepared scene, clamped to two stops either way. The
+//!    image processor's auto-exposure servo sets it instead once it has metered a
+//!    frame ([`Params::exposure_scale`]).
 //! 2. Photo-response non-uniformity: a fixed gain `1 + prnu * N(0, 1)` per photosite.
 //! 3. Dark signal: `dark_e_per_s * exposure_s`, times 50 to 500 (log-uniform) at the
 //!    `hot_pixels_per_mpix` hot photosites, plus a fixed offset `dsnu_e * N(0, 1)`.
@@ -101,13 +103,13 @@ const V10_WINDOW_FRACTION: f32 = 0.1;
 ///
 /// The model scales the light, as the aperture and shutter of the A520 would within
 /// their range at a fixed ISO; beyond two stops the camera would change gain instead.
-const AE_MIN_SCALE: f32 = 0.25;
+pub(crate) const AE_MIN_SCALE: f32 = 0.25;
 
 /// Largest exposure scale auto-exposure applies: two stops over the set exposure.
-const AE_MAX_SCALE: f32 = 4.0;
+pub(crate) const AE_MAX_SCALE: f32 = 4.0;
 
 /// Rec. 709 luminance weights of linear sRGB, which the exposure meter reproduces.
-const LUMINANCE: [f64; 3] = [0.2126, 0.7152, 0.0722];
+pub(crate) const LUMINANCE: [f64; 3] = [0.2126, 0.7152, 0.0722];
 
 /// Layout of the colour filter array.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -211,6 +213,12 @@ pub struct Params {
     pub smear: bool,
     /// Exposure control.
     pub ae: Ae,
+    /// Exposure scale of the image processor's auto-exposure servo; it replaces `ae` when set.
+    ///
+    /// `None` when resolved. The simulator sets it before each frame from
+    /// [`isp::State::servo_exposure`](crate::isp::State::servo_exposure), the servo's
+    /// value after metering the previous frame.
+    pub exposure_scale: Option<f32>,
     /// Seed of the sensor's temporal noise.
     pub seed: u64,
     /// Seed of this unit's fixed pattern: PRNU, DSNU and hot photosites.
@@ -235,9 +243,15 @@ impl Params {
             Mode::Movie => (1.0 / camera.movie.fps, camera.movie.smear),
         };
         let isp = &camera.isp;
-        let ae = match isp.ae_mode {
+        let mode = preset
+            .isp
+            .as_ref()
+            .and_then(|o| o.ae_mode)
+            .unwrap_or(isp.ae_mode);
+        let ae = match mode {
             crate::isp::AeMode::Fixed => Ae::Fixed,
-            crate::isp::AeMode::Scene => {
+            // The servo's first frame is metered on the scene.
+            crate::isp::AeMode::Scene | crate::isp::AeMode::Servo => {
                 let cam_to_srgb = colour::cam_to_srgb(&isp.xyz_to_cam)?;
                 let wb = [isp.wb_r_gain, 1.0, isp.wb_b_gain];
                 let weights = std::array::from_fn(|c| {
@@ -267,6 +281,7 @@ impl Params {
             readout_s: (f64::from(timing.rows_read) * timing.line_period_s) as f32,
             smear,
             ae,
+            exposure_scale: None,
             seed: noise::stage_seed(preset.seed, SALT),
             unit_seed: sensor.unit_seed,
         })
@@ -329,7 +344,9 @@ pub fn expose(params: &Params, state: &mut State, scene: &Scene, index: u64, out
     if width == 0 || height == 0 {
         return;
     }
-    let scale = exposure_scale(params, scene, &mut state.rows);
+    let scale = params
+        .exposure_scale
+        .unwrap_or_else(|| exposure_scale(params, scene, &mut state.rows));
     state.exposure_scale = scale;
     let electrons_per_unit = params.white_fraction * params.full_well_e * scale;
     let spill_level = (1.0 + params.antibloom_ratio) * params.full_well_e;

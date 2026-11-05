@@ -12,7 +12,15 @@
 //!   whatever the preset's seed, so a contest between two equal drivers resolves the
 //!   same way every time and differently for each pair of lines. A driver holds the
 //!   bit of the code being converted for the whole pixel period; during blanking the
-//!   ADC converts the pedestal and the drivers hold the black code.
+//!   ADC converts the pedestal and the drivers hold the black code. At the start of a
+//!   pixel period a driver that changes its bit slews at `driver_slew_v_per_us`, so a
+//!   full swing takes `v_oh / driver_slew_v_per_us`, which must fit in a pixel period.
+//! - **Line capacitance.** Every tapped line carries `line_pf` to ground (pin, trace and
+//!   the processor's input), and so do the bend's wires S and T. A line therefore
+//!   charges through its driver's resistance and is still moving for part of each
+//!   pixel period after a change; a direct wire adds the capacitances it joins. Lines
+//!   the bend does not touch drive only their own capacitance and are taken to have
+//!   settled at the latch, so they keep the ADC's bit.
 //! - **Source bank.** A DIP switch joins the pins in `source_pins` (`D2` to `D11`) into
 //!   node S, each through a patch resistor of `series_ohm`. A patch resistor of 0 is a
 //!   direct wire, which makes the pin and S one node.
@@ -39,10 +47,11 @@
 //! - **Image processor latch.** At `latch_phase` of each pixel period the processor
 //!   compares the pin voltage of every line it reads with `dsp_threshold_v` plus
 //!   Gaussian thermal noise of `dsp_noise_mv`. A line behind a patch resistor is read at
-//!   its pin, a direct short at its bus node. The lines the bend touches return the
-//!   latched bits; every other line keeps the ADC's bit. No bit is chosen at random:
-//!   the same codes and state give the same bits, except where a pin voltage lies
-//!   within the thermal noise of the threshold.
+//!   its pin, a direct short at its bus node. The voltage is the line's actual one at
+//!   that instant, so a line still charging can read either way. The lines the bend
+//!   touches return the latched bits; every other line keeps the ADC's bit. No bit is
+//!   chosen at random: the same codes and state give the same bits, except where a pin
+//!   voltage lies within the thermal noise of the threshold.
 //!
 //! # Gates
 //!
@@ -56,25 +65,39 @@
 //! it skips edges and holds its state across them. These skipped edges, not a random
 //! choice, make the divider's runs irregular.
 //!
-//! The gate delays, the minimum pulse, the setup time and `1 / ff_fmax_hz` are
-//! multiplied by `pixel_period_s / native_pixel_period_s`, so at match-input
-//! resolution they span the same number of pixel periods as on the camera's own clock.
+//! The gate delays, the minimum pulse, the setup time, `1 / ff_fmax_hz` and the
+//! drivers' slew time are multiplied by `pixel_period_s / native_pixel_period_s`, and
+//! the line capacitance with them, so at match-input resolution they and the lines'
+//! time constants span the same number of pixel periods as on the camera's own clock.
 //!
 //! # Numerical method
 //!
-//! Time advances in `oversample` sub-steps per pixel period. The capacitor is replaced
-//! by its backward-Euler companion, a conductance `C / dt` in parallel with a current
-//! source `C / dt` times its voltage at the previous sub-step, and each protection
-//! diode by a switch in series with its forward voltage and resistance, which leaves a
-//! piecewise-linear resistive network with three states: no diode, the diodes to
-//! ground, or the diodes to the supply conducting. Ideal wires merge nodes, so a
-//! circuit of direct shorts has two or three unknown node voltages, and one with patch
-//! resistors at most `bits + 3`. [`Params::resolve`] stamps and inverts the
-//! conductance matrix of each state once, and tabulates every needed voltage (node F,
-//! the capacitor voltage, each latched pin) as a linear function of the driver levels,
-//! the gate output and the previous capacitor voltage. A sub-step solves F in the
-//! previous sub-step's diode state, switches state if F contradicts it, and is then a
-//! table lookup and two multiply-adds per voltage.
+//! Time advances in `oversample` sub-steps per pixel period. Every capacitance (the
+//! coupling capacitor and the line capacitances) is replaced by its backward-Euler
+//! companion, a conductance `C / dt` in parallel with a current source `C / dt` times
+//! its voltage at the previous sub-step, and each protection diode by a switch in
+//! series with its forward voltage and resistance, which leaves a piecewise-linear
+//! resistive network with three states: no diode, the diodes to ground, or the diodes
+//! to the supply conducting. Ideal wires merge nodes, so a circuit of direct shorts
+//! has two or three unknown node voltages, and one with patch resistors at most
+//! `bits + 3`. [`Params::resolve`] stamps and inverts the conductance matrix of each
+//! state once, and tabulates every needed voltage (node F, the capacitor voltages, each
+//! latched pin) as a linear function of the driver levels, the gate output and the
+//! previous capacitor voltages. A sub-step solves F in the previous sub-step's diode
+//! state, switches state if F contradicts it, and is then a table lookup and one
+//! multiply-add per capacitance for each voltage. A slewing driver enters each sub-step
+//! with its mean level over that sub-step.
+//!
+//! The line time constants (a few nanoseconds) are comparable to a sub-step at the
+//! native clock, where a backward-Euler step would let a line keep several percent of
+//! each step at the latch. The resolved network therefore takes the backward-Euler
+//! step only as a description of the circuit: on its eigenvectors each decay rate is
+//! replaced by its exact exponential, so a sub-step is the network's exact response to
+//! sources held over it (the circuit module's docs give the derivation). The line
+//! capacitance draws its charge partly through the coupling capacitor, so the
+//! capacitor voltage shifts by about `line_pf / cap_uf` of each step on S; at
+//! match-input resolution, where the line capacitance is scaled up with the pixel
+//! period, that share grows with it.
 //!
 //! A gate output changes at a sub-step boundary: from the first sub-step that ends at
 //! or after its due time, and at least one sub-step after the input crossing that
@@ -82,16 +105,19 @@
 //! after `latch_phase`.
 //!
 //! During horizontal and vertical blanking no samples are stored but the circuit keeps
-//! running with the black code on the drivers. The drivers do not switch then, so the
-//! capacitor voltage is advanced over the interval in closed form (the backward-Euler
-//! recursion summed as a geometric series), split where a pending gate transition
-//! completes and where a conducting diode turns off, both exactly. The approximation
-//! is that the gates see no new input crossings during blanking: a crossing of F
-//! caused by the black level is registered at the first sub-step of the next line.
+//! running with the black code on the drivers. The drivers do not switch then, so once
+//! the lines have settled the capacitor voltages are advanced over the interval in
+//! closed form (the recursion of the slowest mode summed as a geometric series), split
+//! where a pending gate transition completes and where a conducting
+//! diode turns off, both exactly. After a change of the drivers, the gate or the diodes
+//! the circuit steps explicitly until the line capacitances have settled to within
+//! picovolts. The approximation is that the gates see no new input crossings during
+//! blanking: a crossing of F caused by the black level is registered at the first
+//! sub-step of the next line.
 //!
 //! # State
 //!
-//! The capacitor voltage, the diodes' state, the gates' logic levels, pending
+//! The capacitor voltages, the diodes' state, the gates' logic levels, pending
 //! transitions and edge timers persist in [`State`] from frame to frame, as in the
 //! camera.
 
@@ -105,9 +131,10 @@ use std::str::FromStr;
 use crate::adc::Codes;
 use crate::camera::Adc;
 use crate::noise::{self, Pcg32};
+use crate::preset::BusBend;
 use crate::validate::{non_negative, positive, within};
 use crate::{Camera, Error, Preset, Timing};
-use circuit::{Clamp, Line, Network, Topology};
+use circuit::{Clamp, Drive, Kernel, Line, Network, Topology, Vector};
 use gates::{Chips, FlipFlop, Gate, Inverter, Wire};
 
 /// Salt of the bus circuit's noise sources.
@@ -131,6 +158,11 @@ const NOISE_REACH: f64 = 5.8;
 
 /// Tolerance when locating the latch instant on the sub-step grid, in sub-steps.
 const LATCH_TOLERANCE: f64 = 1e-6;
+
+/// Tolerance when counting the sub-steps a driver's slew spans, in sub-steps.
+///
+/// A slew of exactly two sub-steps stays two instead of rounding up to three.
+const RAMP_TOLERANCE: f64 = 1e-9;
 
 /// Where the target selector connects the function output.
 ///
@@ -253,6 +285,8 @@ pub struct Params {
     chips: Chips,
     /// The image processor's input latch.
     latch: Latch,
+    /// The slew of the line drivers.
+    ramp: Ramp,
 }
 
 /// The image processor's input latch on the bus lines.
@@ -293,6 +327,8 @@ impl Params {
         positive("bend.bus.cap_uf", bus.cap_uf)?;
         non_negative("bend.bus.pot_kohm", bus.pot_kohm)?;
         non_negative("bend.bus.series_ohm", bus.series_ohm)?;
+        non_negative("adc.line_pf", adc.line_pf)?;
+        positive("adc.driver_slew_v_per_us", adc.driver_slew_v_per_us)?;
 
         let seed = noise::stage_seed(preset.seed, SALT);
         let unit = noise::stage_seed(camera.sensor.unit_seed, DRIVER_SALT);
@@ -308,6 +344,21 @@ impl Params {
             .collect();
         let read = ((1u64 << adc.dsp_bits.min(16)) - 1) << adc.dsp_lsb.min(16);
         let latched = tapped & read as u16;
+        // Gate timing, the drivers' slew and the line time constants are sub-line
+        // constants: scaled so they keep their native length in pixel periods at
+        // match-input resolution. The driver resistance is physical, so the line
+        // capacitance carries the scale.
+        let scale = timing.pixel_period_s / timing.native_pixel_period_s;
+        let ramp_s = adc.v_oh / (adc.driver_slew_v_per_us * 1e6) * scale;
+        if ramp_s > timing.pixel_period_s * (1.0 + RAMP_TOLERANCE) {
+            return Err(Error::config(format!(
+                "adc.driver_slew_v_per_us {}: a full swing takes {:.1} ns, longer than the \
+                 {:.1} ns native pixel period",
+                adc.driver_slew_v_per_us,
+                ramp_s / scale * 1e9,
+                timing.native_pixel_period_s * 1e9
+            )));
+        }
         let net = Network::build(&Topology {
             lines: &lines,
             sources,
@@ -316,6 +367,7 @@ impl Params {
             common_bus: bus.common_bus,
             series_ohm: bus.series_ohm,
             cap_f: bus.cap_uf * 1e-6,
+            line_f: adc.line_pf * 1e-12 * scale,
             pot_ohm: bus.pot_kohm * 1e3,
             pot_node: bus.pot_node,
             gate_ohm: camera.logic.hc_r_out_ohm,
@@ -327,9 +379,6 @@ impl Params {
             latched,
             bits: adc.bits,
         })?;
-        // Gate timing is a sub-line constant: scaled so it keeps its native length in
-        // pixel periods at match-input resolution.
-        let scale = timing.pixel_period_s / timing.native_pixel_period_s;
         let noise_v = adc.dsp_noise_mv * 1e-3;
         Ok(Some(Self {
             source_pins: bus.source_pins.clone(),
@@ -348,6 +397,7 @@ impl Params {
                 step: latch_step(adc.latch_phase, oversample),
                 mask: latched,
             },
+            ramp: Ramp::new(ramp_s, dt_s),
         }))
     }
 
@@ -367,6 +417,77 @@ impl Params {
     #[must_use]
     pub fn function(&self) -> Function {
         self.function
+    }
+}
+
+/// Returns whether two bends are wired alike: the same circuit with other component values.
+///
+/// The wiring is the set of source pins, the target, the function, the potentiometer's
+/// node and whether it is set to zero (a short to ground), the common bus and whether
+/// patch resistors are fitted. Bends that differ only in the capacitor's, the pot's or
+/// the patch resistors' values are the same circuit, whose state can carry over.
+#[must_use]
+pub fn same_wiring(a: Option<&BusBend>, b: Option<&BusBend>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            let pins = |bend: &BusBend| {
+                bend.source_pins.iter().fold(0u64, |mask, &pin| {
+                    mask | 1u64.checked_shl(u32::from(pin)).unwrap_or(0)
+                })
+            };
+            pins(a) == pins(b)
+                && a.target == b.target
+                && a.function == b.function
+                && a.pot_node == b.pot_node
+                && (a.pot_kohm > 0.0) == (b.pot_kohm > 0.0)
+                && a.common_bus == b.common_bus
+                && (a.series_ohm > 0.0) == (b.series_ohm > 0.0)
+        }
+        _ => false,
+    }
+}
+
+/// The slew of the line drivers on the sub-step grid.
+#[derive(Debug, Clone, PartialEq)]
+struct Ramp {
+    /// Mean fraction of a transition completed during each sub-step it spans.
+    weights: Box<[f64]>,
+}
+
+impl Ramp {
+    /// Resolves a full swing of `ramp_s` seconds onto sub-steps of `dt_s` seconds.
+    ///
+    /// The driver's source moves linearly from one level to the other over `ramp_s`; a
+    /// sub-step sees its mean level, the integral of `min(1, t / ramp_s)` over the
+    /// sub-step divided by its length.
+    fn new(ramp_s: f64, dt_s: f64) -> Self {
+        let steps = (ramp_s / dt_s - RAMP_TOLERANCE).ceil().max(0.0) as usize;
+        let weights = (0..steps)
+            .map(|j| {
+                let (start, end) = (j as f64 * dt_s, (j + 1) as f64 * dt_s);
+                if end <= ramp_s {
+                    (start + end) / (2.0 * ramp_s)
+                } else {
+                    ((ramp_s * ramp_s - start * start) / (2.0 * ramp_s) + end - ramp_s) / dt_s
+                }
+            })
+            .collect();
+        Self { weights }
+    }
+
+    /// Returns the driver levels of sub-step `step` of a transition from `from` to `to`.
+    #[inline]
+    fn drive(&self, from: usize, to: usize, step: u64) -> Drive {
+        match usize::try_from(step).ok().and_then(|j| self.weights.get(j)) {
+            Some(&weight) if from != to => Drive::Ramp { from, to, weight },
+            _ => Drive::Steady(to),
+        }
+    }
+
+    /// Returns the sub-steps a transition spans.
+    fn steps(&self) -> u64 {
+        self.weights.len() as u64
     }
 }
 
@@ -432,11 +553,12 @@ fn latch_step(phase: f64, oversample: u32) -> u32 {
 
 /// Persistent state of the bend circuit between frames.
 ///
-/// Holds the capacitor's voltage, which input protection diodes conduct, the logic
-/// levels, pending transitions and edge timers of the inverter and the flip-flop, and
-/// the image processor's input-noise stream, which each frame reseeds from its index.
-/// The default is the power-on state: the capacitor discharged, no diode conducting,
-/// the inverter's output high for its low input, `Q` low.
+/// Holds the voltages of the coupling capacitor and the line capacitances, which input
+/// protection diodes conduct, the logic levels, pending transitions and edge timers of
+/// the inverter and the flip-flop, and the image processor's input-noise stream, which
+/// each frame reseeds from its index. The default is the power-on state: every
+/// capacitance discharged, no diode conducting, the inverter's output high for its low
+/// input, `Q` low.
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
     /// The capacitor and the clamp diodes on node F.
@@ -449,11 +571,11 @@ pub struct State {
     noise: Pcg32,
 }
 
-/// Analog state around node F: the capacitor's charge and the protection diodes.
+/// Analog state of the network: the capacitors' charge and the protection diodes.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Coupling {
-    /// Capacitor voltage, node S minus node F, in volts.
-    cap_v: f64,
+    /// Voltages of the capacitances: the coupling capacitor (S minus F), then the line nodes.
+    z: Vector,
     /// Which protection diodes conducted in the last sub-step.
     clamp: Clamp,
     /// Sub-steps in which a protection diode conducted, since power-on.
@@ -477,7 +599,7 @@ impl State {
     /// Returns the capacitor voltage, node S minus node F, in volts.
     #[must_use]
     pub fn cap_v(&self) -> f64 {
-        self.coupling.cap_v
+        self.coupling.z[0]
     }
 
     /// Returns the sub-steps since power-on in which an input protection diode conducted.
@@ -518,24 +640,16 @@ pub fn bend(params: Option<&Params>, state: &mut State, index: u64, codes: &mut 
         frame: hblank + u64::from(layout.vblank_lines()) * line_steps,
     };
     state.noise = Pcg32::new(params.seed, index);
-    let State {
-        coupling,
-        inverter,
-        flip_flop,
-        noise,
-    } = state;
     let words = codes.words_mut();
-    match params.function {
-        Function::Bypass => {
-            Run::new(params, &mut Wire, noise, coupling).frame(words, line_len, blank);
-        }
-        Function::Invert => {
-            Run::new(params, inverter, noise, coupling).frame(words, line_len, blank);
-        }
-        Function::Divide => {
-            Run::new(params, flip_flop, noise, coupling).frame(words, line_len, blank);
-        }
-    }
+    dispatch(
+        params,
+        state,
+        Work::Frame {
+            words,
+            line_len,
+            blank,
+        },
+    );
 }
 
 /// Sub-steps of blanking after a line and after the last line of a frame.
@@ -545,18 +659,72 @@ struct Blanking {
     frame: u64,
 }
 
-/// The circuit running with one gate on the function switch.
-struct Run<'a, G> {
+/// What a run of the circuit does.
+enum Work<'w> {
+    /// Rewrites a frame of lines, each followed by blanking.
+    Frame {
+        words: &'w mut [u16],
+        line_len: usize,
+        blank: Blanking,
+    },
+    /// Rewrites consecutive pixel periods without blanking.
+    #[cfg(feature = "test-util")]
+    Words(&'w mut [u16]),
+    /// Probes consecutive pixel periods without blanking.
+    #[cfg(feature = "test-util")]
+    Trace {
+        codes: &'w [u16],
+        probes: &'w mut Vec<Probe>,
+    },
+}
+
+/// Runs `work` with the gate of the function switch and the network's state count.
+///
+/// The state count becomes a constant, so every sub-step's arithmetic runs on
+/// fixed-size arrays.
+fn dispatch(params: &Params, state: &mut State, work: Work<'_>) {
+    fn gated<const M: usize>(params: &Params, state: &mut State, work: Work<'_>) {
+        let State {
+            coupling,
+            inverter,
+            flip_flop,
+            noise,
+        } = state;
+        match params.function {
+            Function::Bypass => Run::<_, M>::new(params, &mut Wire, noise, coupling).work(work),
+            Function::Invert => Run::<_, M>::new(params, inverter, noise, coupling).work(work),
+            Function::Divide => Run::<_, M>::new(params, flip_flop, noise, coupling).work(work),
+        }
+    }
+    macro_rules! states {
+        ($($m:literal)*) => {
+            match params.net.states() {
+                $($m => gated::<$m>(params, state, work),)*
+                states => unreachable!("the bend circuit has {states} state variables"),
+            }
+        };
+    }
+    states!(1 2 3 4 5 6 7 8 9 10 11 12 13);
+}
+
+/// The circuit running with one gate on the function switch and `M` state variables.
+struct Run<'a, G, const M: usize> {
     params: &'a Params,
     gate: &'a mut G,
     noise: &'a mut Pcg32,
     /// Where the coupling state is written back when the run ends.
     state: &'a mut Coupling,
-    /// The coupling state at the end of the last sub-step.
+    /// The diode state and the probes' count, as at the end of the last sub-step.
     coupling: Coupling,
+    /// The capacitances' voltages at the end of the last sub-step.
+    z: [f64; M],
+    /// The sub-step arithmetic of every diode state.
+    kernels: [Kernel<'a, M>; 3],
+    /// Driver pattern of the last pixel period; blanking, and so the black code, at the start.
+    last: usize,
 }
 
-impl<'a, G: Gate> Run<'a, G> {
+impl<'a, G: Gate, const M: usize> Run<'a, G, M> {
     fn new(
         params: &'a Params,
         gate: &'a mut G,
@@ -568,12 +736,36 @@ impl<'a, G: Gate> Run<'a, G> {
             gate,
             noise,
             coupling: *state,
+            z: std::array::from_fn(|k| state.z[k]),
             state,
+            kernels: params.net.kernels(),
+            last: params.net.pattern(params.dark_code),
         }
     }
 
+    /// Does `work` and writes the state back.
+    fn work(mut self, work: Work<'_>) {
+        match work {
+            Work::Frame {
+                words,
+                line_len,
+                blank,
+            } => self.frame(words, line_len, blank),
+            #[cfg(feature = "test-util")]
+            Work::Words(codes) => {
+                for code in codes {
+                    *code = self.pixel(*code, |_, _, _, _| {});
+                }
+            }
+            #[cfg(feature = "test-util")]
+            Work::Trace { codes, probes } => self.trace(codes, probes),
+        }
+        self.coupling.z[..M].copy_from_slice(&self.z);
+        *self.state = self.coupling;
+    }
+
     /// Runs a frame of `line_len` samples per line, each line followed by blanking.
-    fn frame(mut self, words: &mut [u16], line_len: usize, blank: Blanking) {
+    fn frame(&mut self, words: &mut [u16], line_len: usize, blank: Blanking) {
         let lines = words.len() / line_len;
         for (line, samples) in words.chunks_exact_mut(line_len).enumerate() {
             for word in samples {
@@ -585,30 +777,31 @@ impl<'a, G: Gate> Run<'a, G> {
                 blank.line
             });
         }
-        *self.state = self.coupling;
     }
 
     /// Runs one pixel period with `code` on the drivers and returns the latched word.
     ///
-    /// `probe` sees the diode state, driver pattern, previous capacitor voltage and gate
-    /// level of every sub-step, from which every node voltage of that sub-step follows.
+    /// `probe` sees the diode state, driver levels, previous state and gate level of
+    /// every sub-step, from which every node voltage of that sub-step follows.
     #[inline]
-    fn pixel(&mut self, code: u16, mut probe: impl FnMut(Clamp, usize, f64, f64)) -> u16 {
+    fn pixel(&mut self, code: u16, mut probe: impl FnMut(Clamp, Drive, &[f64], f64)) -> u16 {
         let params = self.params;
         let net = &params.net;
         let pattern = net.pattern(code);
+        let from = std::mem::replace(&mut self.last, pattern);
         let mut latched = 0;
         for step in 0..params.oversample {
+            let drive = params.ramp.drive(from, pattern, u64::from(step));
             self.gate.tick();
-            let gate = level(self.gate.high());
-            let c = &mut self.coupling;
-            let f_v = net.settle(&mut c.clamp, pattern, c.cap_v, gate);
-            probe(c.clamp, pattern, c.cap_v, gate);
-            let solution = net.solution(c.clamp);
+            let gate = usize::from(self.gate.high());
+            let clamp = &mut self.coupling.clamp;
+            let f_v = net.settle_in(&self.kernels, clamp, drive, &self.z, gate);
+            let clamp = *clamp;
+            probe(clamp, drive, &self.z, level(gate == 1));
             if step == params.latch.step {
-                latched = self.latch(pattern, gate);
+                latched = self.latch(drive, gate);
             }
-            self.coupling.cap_v = solution.cap.at(pattern, self.coupling.cap_v, gate);
+            Network::kernel(&self.kernels, clamp).advance(drive, &mut self.z, gate);
             count_clamped(&mut self.coupling, 1);
             self.gate.sense(f_v, &params.chips);
         }
@@ -616,12 +809,11 @@ impl<'a, G: Gate> Run<'a, G> {
     }
 
     /// Reads every latched pin against the threshold plus thermal noise.
-    fn latch(&mut self, pattern: usize, gate: f64) -> u16 {
-        let params = self.params;
-        let latch = &params.latch;
-        let pins = &params.net.solution(self.coupling.clamp).latched;
+    fn latch(&mut self, drive: Drive, gate: usize) -> u16 {
+        let latch = &self.params.latch;
+        let kernel = Network::kernel(&self.kernels, self.coupling.clamp);
         let mut bits = 0;
-        for (bit, volts) in pins.pins(pattern, self.coupling.cap_v, gate) {
+        for (bit, volts) in kernel.pins(drive, &self.z, gate) {
             let margin = volts - latch.threshold_v;
             let high = if margin.abs() >= latch.reach_v {
                 margin > 0.0
@@ -635,30 +827,51 @@ impl<'a, G: Gate> Run<'a, G> {
 
     /// Advances the circuit through `steps` sub-steps of blanking.
     ///
-    /// Each round runs one sub-step explicitly, which settles the diodes after a change
-    /// of the sources and completes a gate transition that falls due, and then as many
-    /// sub-steps in closed form as the gate's pending transition and the diodes allow.
+    /// The drivers slew to the black code and the lines settle in explicit sub-steps;
+    /// so do the sub-steps after the gate's output or the diodes change. Each round then
+    /// runs one sub-step explicitly, which settles the diodes and completes a gate
+    /// transition that falls due, and as many sub-steps in closed form as the gate's
+    /// pending transition and the diodes allow.
     fn blank(&mut self, mut steps: u64) {
         let params = self.params;
         let net = &params.net;
         let dark = net.pattern(params.dark_code);
+        let from = std::mem::replace(&mut self.last, dark);
+        let mut elapsed = 0u64;
+        let mut explicit = params.ramp.steps() + net.settle_steps(self.coupling.clamp);
         while steps > 0 {
+            let drive = params.ramp.drive(from, dark, elapsed);
+            let (was_high, was_clamped) = (self.gate.high(), self.coupling.clamp);
             self.gate.tick();
-            let gate = level(self.gate.high());
-            let c = &mut self.coupling;
-            net.settle(&mut c.clamp, dark, c.cap_v, gate);
-            c.cap_v = net.solution(c.clamp).cap.at(dark, c.cap_v, gate);
-            count_clamped(c, 1);
+            let gate = usize::from(self.gate.high());
+            let clamp = &mut self.coupling.clamp;
+            net.settle_in(&self.kernels, clamp, drive, &self.z, gate);
+            Network::kernel(&self.kernels, *clamp).advance(drive, &mut self.z, gate);
+            count_clamped(&mut self.coupling, 1);
             steps -= 1;
+            elapsed = elapsed.saturating_add(1);
+            explicit = if self.gate.high() != was_high || self.coupling.clamp != was_clamped {
+                // A new source or diode state excites the line capacitances again.
+                net.settle_steps(self.coupling.clamp)
+            } else {
+                explicit.saturating_sub(1)
+            };
+            if explicit > 0 {
+                continue;
+            }
 
             let due = u64::from(self.gate.pending());
             let until_due = if due > 0 { due - 1 } else { steps };
-            let c = &mut self.coupling;
+            let clamp = self.coupling.clamp;
+            let mut z: Vector = self.coupling.z;
+            z[..M].copy_from_slice(&self.z);
+            let gate = level(gate == 1);
             let quiet = until_due
                 .min(steps)
-                .min(net.quiet_steps(c.clamp, c.cap_v, dark, gate));
-            c.cap_v = net.hold(c.clamp, c.cap_v, dark, gate, quiet);
-            count_clamped(c, quiet);
+                .min(net.quiet_steps(clamp, &z, dark, gate));
+            net.hold(clamp, &mut z, dark, gate, quiet);
+            self.z.copy_from_slice(&z[..M]);
+            count_clamped(&mut self.coupling, quiet);
             self.gate.idle(quiet);
             steps -= quiet;
         }
@@ -703,35 +916,37 @@ pub struct Probe {
 /// Runs the circuit for one pixel period per code, without blanking, probing each sub-step.
 ///
 /// Appends one [`Probe`] per sub-step to `probes`. The state advances as in [`bend`];
-/// the latched words are discarded.
+/// the latched words are discarded. The drivers start from the black code, as after
+/// blanking.
 #[cfg(feature = "test-util")]
 pub fn trace(params: &Params, state: &mut State, codes: &[u16], probes: &mut Vec<Probe>) {
-    let State {
-        coupling,
-        inverter,
-        flip_flop,
-        noise,
-    } = state;
-    match params.function {
-        Function::Bypass => Run::new(params, &mut Wire, noise, coupling).trace(codes, probes),
-        Function::Invert => Run::new(params, inverter, noise, coupling).trace(codes, probes),
-        Function::Divide => Run::new(params, flip_flop, noise, coupling).trace(codes, probes),
-    }
+    dispatch(params, state, Work::Trace { codes, probes });
+}
+
+/// Runs the circuit for one pixel period per code and replaces each code by the latched word.
+///
+/// The state advances as in [`bend`], with the image processor's input noise of frame
+/// `index`, but without blanking. The drivers start from the black code, as after
+/// blanking.
+#[cfg(feature = "test-util")]
+pub fn latch_words(params: &Params, state: &mut State, index: u64, codes: &mut [u16]) {
+    state.noise = Pcg32::new(params.seed, index);
+    dispatch(params, state, Work::Words(codes));
 }
 
 #[cfg(feature = "test-util")]
-impl<G: Gate> Run<'_, G> {
-    fn trace(mut self, codes: &[u16], probes: &mut Vec<Probe>) {
+impl<G: Gate, const M: usize> Run<'_, G, M> {
+    fn trace(&mut self, codes: &[u16], probes: &mut Vec<Probe>) {
         let net = &self.params.net;
         for &code in codes {
-            self.pixel(code, |clamp, pattern, cap_v, gate| {
+            self.pixel(code, |clamp, drive, z, gate| {
                 let solution = net.solution(clamp);
-                let (s_v, t_v) = solution.probes.buses(pattern, cap_v, gate);
-                let f_v = solution.f.at(pattern, cap_v, gate);
+                let (s_v, t_v) = solution.probes.buses(drive, z, gate);
+                let f_v = solution.f.at(0, drive, z, gate);
                 let v_oh = solution.probes.v_oh();
                 let mut pin_v: [f64; 16] =
                     std::array::from_fn(|bit| level((code >> bit) & 1 == 1) * v_oh);
-                for (bit, volts) in solution.probes.pins(pattern, cap_v, gate) {
+                for (bit, volts) in solution.probes.pins(drive, z, gate) {
                     pin_v[usize::from(bit)] = volts;
                 }
                 probes.push(Probe {
@@ -744,7 +959,6 @@ impl<G: Gate> Run<'_, G> {
                 });
             });
         }
-        *self.state = self.coupling;
     }
 }
 

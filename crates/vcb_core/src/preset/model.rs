@@ -134,11 +134,13 @@ impl Preset {
 type Check = fn(&str, f64) -> Result<(), Error>;
 
 fn validate_isp(isp: &IspOverride) -> Result<(), Error> {
-    let checks: [(&str, Option<f64>, Check); 4] = [
+    let checks: [(&str, Option<f64>, Check); 6] = [
         ("isp.wb_r_gain", isp.wb_r_gain, positive),
         ("isp.wb_b_gain", isp.wb_b_gain, positive),
         ("isp.tone_contrast", isp.tone_contrast, positive),
         ("isp.sharpen_gain", isp.sharpen_gain, non_negative),
+        ("isp.ae_tau_s", isp.ae_tau_s, positive),
+        ("isp.wb_tau_s", isp.wb_tau_s, positive),
     ];
     for (field, value, check) in checks {
         if let Some(value) = value {

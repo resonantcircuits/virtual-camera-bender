@@ -73,6 +73,8 @@ driver_r_ohm = 250.0                # PROVISIONAL: AD9949 VOH 2.2 V at 2 mA from
 driver_r_spread = 0.1               # PROVISIONAL
 v_oh = 3.3                          # C: 3.3 V digital rail (section 5)
 bus_series_ohm = 0.0                # PROVISIONAL: the S3 IS has 100 ohm arrays (section 10)
+line_pf = 15.0                      # PROVISIONAL: pin, trace and processor input capacitance of one bus line
+driver_slew_v_per_us = 600.0        # PROVISIONAL: AD9949 output transitions of a few nanoseconds (section 5)
 dsp_threshold_v = 1.3               # PROVISIONAL: 3.3 V LVTTL-class input, between VIL 0.8 and VIH 2.0 (was 1.5; tuning log)
 dsp_noise_mv = 5.0                  # PROVISIONAL
 latch_phase = 0.75                  # PROVISIONAL: fraction of the pixel period
@@ -106,7 +108,9 @@ luma_nr_frac = 0.0005               # PROVISIONAL
 sharpen_radius_frac = 0.0004        # PROVISIONAL: about 0.9 px at 2272 wide, the mild ~0.5 px-radius USM of research section 9 (was 0.0005; tuning log)
 sharpen_gain = 0.5                  # PROVISIONAL: thinner halos on twigs against water (was 0.6; tuning log)
 ae_target = 0.18                    # PROVISIONAL: mid-grey
-ae_mode = "fixed"                   # "scene" meters every frame; fixed keeps the exposure as set
+ae_mode = "fixed"                   # "scene" meters every frame, "servo" follows the bent raw with a lag; fixed keeps the exposure as set
+ae_tau_s = 0.3                      # PROVISIONAL: time constant of the auto-exposure servo in movie and live view
+wb_tau_s = 0.5                      # PROVISIONAL: time constant of the auto-white-balance servo
 demosaic = "malvar"                 # PROVISIONAL: DIGIC's algorithm is unpublished; gradient-corrected linear
 
 [jpeg]

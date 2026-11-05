@@ -211,7 +211,8 @@ fn step_response(camera: &Camera, preset: &Preset) -> (f64, f64, f64) {
 #[cfg(feature = "test-util")]
 #[test]
 fn the_capacitor_passes_a_step_and_decays_with_the_loop_time_constant() {
-    let camera = matched();
+    // Without line capacitance or slew the step reaches F within its first sub-step.
+    let camera = ideal();
     let driver = camera.adc.driver_r_ohm;
     let pot = 1000.0;
 
@@ -791,4 +792,250 @@ fn with_the_pot_on_f_no_clamp_diode_conducts_on_a_gradient() {
         );
         assert_eq!(state.clamped_steps(), 0, "{function:?}");
     }
+}
+
+/// The A520 with matched drivers, no line capacitance and drivers that switch at once.
+fn ideal() -> Camera {
+    let mut camera = matched();
+    camera.adc.line_pf = 0.0;
+    camera.adc.driver_slew_v_per_us = 1e12;
+    camera
+}
+
+/// Returns the pin voltages of every latched line at the latch instant of each pixel.
+#[cfg(feature = "test-util")]
+fn latched_volts(camera: &Camera, preset: &Preset, t: &Timing, codes: &[u16]) -> Vec<[f64; 16]> {
+    let params = params(camera, preset, t);
+    let mut probes = Vec::new();
+    bus::trace(&params, &mut bus::State::default(), codes, &mut probes);
+    let os = t.oversample as usize;
+    let latch = ((camera.adc.latch_phase * os as f64 - 1e-6).ceil() as usize).clamp(1, os) - 1;
+    probes.chunks(os).map(|pixel| pixel[latch].pin_v).collect()
+}
+
+#[cfg(feature = "test-util")]
+#[test]
+fn at_the_native_clock_the_latch_reads_settled_lines() {
+    // 15 pF through a 250 ohm driver settles in about 4 ns, a slew of 600 V/us takes
+    // 5.5 ns per swing, and the latch comes 28 ns into the 37 ns pixel period: the
+    // line capacitance leaves the latched voltages within a millivolt, far inside the
+    // processor's 5 mV of input noise.
+    let mut real = matched();
+    real.adc.dsp_noise_mv = 0.0;
+    let mut ideal = ideal();
+    ideal.adc.dsp_noise_mv = 0.0;
+    let codes: Vec<u16> = (0..4000)
+        .map(|i| (noise::hash_u32(i, 0, noise::salt("settled"), 3) & 0x0fff) as u16)
+        .collect();
+    for series_ohm in [0.0, 47.0] {
+        let mut preset = preset(&[10, 9], Target::Pin(11), Function::Bypass);
+        preset.readout.resolution = Resolution::Native;
+        bus_of(&mut preset).pot_node = PotNode::S;
+        bus_of(&mut preset).pot_kohm = 0.05;
+        bus_of(&mut preset).series_ohm = series_ohm;
+        let t = timing(&real, &preset, 2272, 1704);
+        assert!((t.pixel_period_s - 1.0 / 27e6).abs() < 1e-12);
+        let with = latched_volts(&real, &preset, &t, &codes);
+        let without = latched_volts(&ideal, &preset, &t, &codes);
+        let mut worst = 0.0f64;
+        for (a, b) in with.iter().zip(&without) {
+            for bit in [9, 10, 11] {
+                worst = worst.max((a[bit] - b[bit]).abs());
+            }
+        }
+        assert!(
+            worst < 1e-3,
+            "{series_ohm} ohm patch: a latched pin moved by {worst} V"
+        );
+
+        let mut real_words = codes.clone();
+        let mut ideal_words = codes.clone();
+        let threshold = real.adc.dsp_threshold_v;
+        bus::latch_words(
+            &params(&real, &preset, &t),
+            &mut bus::State::default(),
+            0,
+            &mut real_words,
+        );
+        bus::latch_words(
+            &params(&ideal, &preset, &t),
+            &mut bus::State::default(),
+            0,
+            &mut ideal_words,
+        );
+        for (n, ((a, b), volts)) in real_words
+            .iter()
+            .zip(&ideal_words)
+            .zip(&without)
+            .enumerate()
+        {
+            let clear = [9, 10, 11]
+                .iter()
+                .all(|&bit| (volts[bit] - threshold).abs() > 1e-3);
+            if clear {
+                assert_eq!(a, b, "pixel {n}: the latch read another word");
+            }
+        }
+    }
+}
+
+/// Returns the time a pin takes to cover 1 - 1/e of a step, in seconds.
+#[cfg(feature = "test-util")]
+fn rise_time(camera: &Camera, preset: &Preset, t: &Timing, bit: u8) -> f64 {
+    let high = word(&preset.bend.bus.as_ref().unwrap().source_pins);
+    let mut codes = vec![0; 50];
+    codes.extend(std::iter::repeat_n(high, 12));
+    let params = params(camera, preset, t);
+    let mut probes = Vec::new();
+    bus::trace(&params, &mut bus::State::default(), &codes, &mut probes);
+    let start = 50 * t.oversample as usize;
+    let (low, settled) = (
+        probes[start - 1].pin_v[usize::from(bit)],
+        probes.last().unwrap().pin_v[usize::from(bit)],
+    );
+    let target = low + (settled - low) * (1.0 - (-1.0f64).exp());
+    let after = probes[start..]
+        .iter()
+        .position(|p| p.pin_v[usize::from(bit)] >= target)
+        .expect("the pin rises");
+    // Interpolate between the sub-steps that straddle the crossing.
+    let (a, b) = (
+        if after == 0 {
+            low
+        } else {
+            probes[start + after - 1].pin_v[usize::from(bit)]
+        },
+        probes[start + after].pin_v[usize::from(bit)],
+    );
+    (after as f64 + (target - a) / (b - a)) * dt(t)
+}
+
+#[cfg(feature = "test-util")]
+#[test]
+fn a_line_charges_through_its_driver_with_its_time_constant() {
+    // D9 alone on S, the pot on F: at the pixel rate the large coupling capacitor is a
+    // short, so S sees the driver against the pot, and carries its own wire's
+    // capacitance and the pin's. Many sub-steps per pixel resolve the rise.
+    let mut camera = ideal();
+    camera.afe.oversample = 64;
+    camera.adc.line_pf = 100.0;
+    let mut preset = preset(&[9], Target::Gnd, Function::Invert);
+    bus_of(&mut preset).cap_uf = 100.0;
+    let t = timing(&camera, &preset, 64, 48);
+    let driver = camera.adc.driver_r_ohm;
+    let pot = preset.bend.bus.as_ref().unwrap().pot_kohm * 1e3;
+    let scale = t.pixel_period_s / t.native_pixel_period_s;
+    let tau = driver * pot / (driver + pot) * 2.0 * camera.adc.line_pf * 1e-12 * scale;
+    let measured = rise_time(&camera, &preset, &t, 9);
+    assert!(
+        (measured / tau - 1.0).abs() < 0.02,
+        "the line rose in {measured} s, expected {tau} s"
+    );
+    // The time constant keeps its length in pixel periods at every resolution.
+    assert!(tau / t.pixel_period_s > 0.5 && tau / t.pixel_period_s < 1.5);
+}
+
+#[cfg(feature = "test-util")]
+#[test]
+fn a_slewing_driver_ramps_its_line() {
+    // Without line capacitance S follows the driver's source at once; a swing that
+    // takes half a pixel period spreads over the first four of eight sub-steps, each
+    // seeing the ramp's mean over its duration.
+    let mut camera = ideal();
+    camera.afe.oversample = 8;
+    let native_period = 1.0 / camera.still.pixel_clock_hz;
+    camera.adc.driver_slew_v_per_us = camera.adc.v_oh / (0.5 * native_period * 1e6);
+    let mut preset = preset(&[9], Target::Gnd, Function::Invert);
+    bus_of(&mut preset).cap_uf = 100.0;
+    let t = timing(&camera, &preset, 64, 48);
+    let params = params(&camera, &preset, &t);
+    let mut probes = Vec::new();
+    let high = word(&[9]);
+    bus::trace(
+        &params,
+        &mut bus::State::default(),
+        &[0, 0, high, high],
+        &mut probes,
+    );
+    let (low, settled) = (probes[15].s_v, probes[31].s_v);
+    let share: Vec<f64> = probes[16..24]
+        .iter()
+        .map(|p| (p.s_v - low) / (settled - low))
+        .collect();
+    let expected = [
+        1.0 / 8.0,
+        3.0 / 8.0,
+        5.0 / 8.0,
+        7.0 / 8.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    ];
+    for (j, (&got, &want)) in share.iter().zip(&expected).enumerate() {
+        assert!(
+            (got - want).abs() < 1e-3,
+            "sub-step {j}: {got} of the swing, expected {want}"
+        );
+    }
+}
+
+#[cfg(feature = "test-util")]
+#[test]
+fn a_line_still_charging_at_the_latch_reads_either_way() {
+    // D9 toggles every pixel. With the default capacitance the latch follows it; with
+    // a line time constant of several pixel periods the pin hovers between the levels
+    // and the latched bit no longer follows the ADC. A latch early in the period reads
+    // more of the previous pixel's level than a late one.
+    let codes: Vec<u16> = (0..400)
+        .map(|n| if n % 2 == 0 { word(&[9]) } else { 0 })
+        .collect();
+    let mismatches = |line_pf: f64, latch_phase: f64| {
+        let mut camera = matched();
+        camera.adc.dsp_noise_mv = 0.0;
+        camera.adc.line_pf = line_pf;
+        camera.adc.latch_phase = latch_phase;
+        let mut preset = preset(&[9], Target::Gnd, Function::Invert);
+        bus_of(&mut preset).cap_uf = 100.0;
+        let t = timing(&camera, &preset, 64, 48);
+        let mut words = codes.clone();
+        bus::latch_words(
+            &params(&camera, &preset, &t),
+            &mut bus::State::default(),
+            0,
+            &mut words,
+        );
+        words
+            .iter()
+            .zip(&codes)
+            .skip(100)
+            .filter(|(a, b)| (*a ^ *b) & (1 << 9) != 0)
+            .count()
+    };
+    assert_eq!(mismatches(camera().adc.line_pf, 0.75), 0);
+    assert!(
+        mismatches(2000.0, 0.75) > 100,
+        "a slow line followed the code"
+    );
+    assert!(
+        mismatches(100.0, 0.25) > mismatches(100.0, 0.75) + 100,
+        "an early latch read no more of the previous pixel than a late one"
+    );
+}
+
+#[test]
+fn a_slew_longer_than_the_pixel_period_is_rejected() {
+    let mut camera = camera();
+    camera.adc.driver_slew_v_per_us = 50.0;
+    assert!(camera.validate().unwrap_err().is_config());
+    let preset = preset(&[9], Target::Pin(10), Function::Bypass);
+    let t = timing(&camera, &preset, 64, 48);
+    assert!(
+        bus::Params::resolve(&camera, &preset, &t)
+            .unwrap_err()
+            .is_config()
+    );
+    camera.adc.driver_slew_v_per_us = 600.0;
+    camera.adc.line_pf = -1.0;
+    assert!(camera.validate().unwrap_err().is_config());
 }
