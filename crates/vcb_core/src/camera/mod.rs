@@ -133,6 +133,8 @@ pub struct Afe {
     pub bandwidth_hz: f64,
     /// Maximum rate of change of the output in volts per microsecond.
     pub slew_v_per_us: f64,
+    /// Read-noise corner frequency in hertz, where flicker noise equals the white floor.
+    pub noise_1f_corner_hz: f64,
     /// Analog simulation sub-steps per pixel period.
     pub oversample: u32,
 }

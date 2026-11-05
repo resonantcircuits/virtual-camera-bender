@@ -20,10 +20,10 @@
 //! pot_kohm = 10.0
 //! [bend.clocks]
 //! cte = 0.9995
-//! [bend.afe.inject]
-//! wave = "square"
-//! freq_hz = 1200.0
-//! amplitude_v = 0.15
+//! v_pulse_drop_hz = 2.0
+//! h_glitch_hz = 1.0
+//! [bend.afe]
+//! inject = { wave = "square", freq_hz = 1200.0, amplitude_v = 0.15 }
 //! ```
 //!
 //! The structs hold the file's values as written; each stage resolves the sections it
@@ -35,7 +35,7 @@ use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 
 use crate::Error;
-use crate::afe::Inject;
+use crate::afe::{GainMod, Inject};
 use crate::bus::{Function, Target};
 use crate::isp::WbMode;
 
@@ -208,21 +208,52 @@ pub struct BusBend {
     pub common_bus: bool,
 }
 
+/// Mean duration of a vertical clock fault when a preset does not set one, in native lines.
+///
+/// PROVISIONAL: long enough to show as a visible slip, short enough to stay a glitch.
+const DEFAULT_V_STALL_LINES: f64 = 4.0;
+
+/// Largest horizontal glitch shift when a preset does not set one, as a fraction of the line.
+///
+/// The `0.2 * W` bound of the horizontal clock delay model in
+/// `docs/research/circuit-bend-reference.md`.
+const DEFAULT_H_SHIFT_FRAC: f64 = 0.2;
+
 /// The `[bend.clocks]` section: degraded CCD transfer clocks.
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// See [`readout`](crate::readout) for the transfer model these values drive.
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
 pub struct ClockBend {
     /// Charge transfer efficiency replacing the sensor's own; `None` keeps the camera's.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub cte: Option<f64>,
-    /// Mean rate of dropped vertical transfer pulses per second.
+    /// Mean rate of vertical clock faults (stalls and double pulses) per second of readout.
     pub v_pulse_drop_hz: f64,
-    /// Mean rate of horizontal register phase glitches per second.
+    /// Mean duration of a vertical clock fault in native lines; at least 1.
+    pub v_stall_lines: f64,
+    /// Mean rate of horizontal register glitch bands per second of readout.
     pub h_glitch_hz: f64,
+    /// Largest glitch-band shift as a fraction of the line, in `[0, 1]`.
+    pub h_shift_frac: f64,
+}
+
+impl Default for ClockBend {
+    fn default() -> Self {
+        Self {
+            cte: None,
+            v_pulse_drop_hz: 0.0,
+            v_stall_lines: DEFAULT_V_STALL_LINES,
+            h_glitch_hz: 0.0,
+            h_shift_frac: DEFAULT_H_SHIFT_FRAC,
+        }
+    }
 }
 
 /// The `[bend.afe]` section: modifications of the analog front end.
+///
+/// See [`afe`](crate::afe) for the analog model these values drive.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
@@ -230,6 +261,13 @@ pub struct AfeBend {
     /// An oscillator coupled into the signal path ahead of the ADC.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub inject: Option<Inject>,
+    /// An oscillator modulating the programmable gain.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub gain_mod: Option<GainMod>,
+    /// Delay of the CDS reset sample in pixel periods; 0 is the correct clamp timing.
+    pub cds_lag_px: f64,
+    /// Fraction of the delayed level the late reset sample subtracts, in `[0, 1]`.
+    pub cds_mix: f64,
 }
 
 /// The `[isp]` section of a preset: replacements for the camera's processing values.
