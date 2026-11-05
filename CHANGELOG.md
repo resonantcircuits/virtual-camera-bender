@@ -31,7 +31,7 @@ the `legacy-js` branch; its presets and stylised effect modules do not carry ove
   `a520-div` and `a520-inv`.
 - `scripts/validate-a520.sh`, which builds the comparison sheet against the reference
   photos of a real bent A520.
-- Integration tests of physical behaviour and determinism, and divan benchmarks of
-  every stage.
+- Integration tests of physical behaviour and determinism, golden-image hashes of the
+  four presets, and divan benchmarks of every stage.
 - `docs/ARCHITECTURE.md`, `docs/PLAN.md`, `docs/RUST-GUIDELINES.md` and
   `docs/POST-STAGE.md`.

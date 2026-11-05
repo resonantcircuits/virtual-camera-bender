@@ -8,11 +8,11 @@
 //! - **Drivers.** Every bus line `Dk` is driven by the AFE's CMOS output stage: an ideal
 //!   source at 0 V or `v_oh` behind `driver_r_ohm` plus the bus series resistor
 //!   `bus_series_ohm`. Each line's driver resistance carries a log-normal spread of
-//!   `driver_r_spread`, seeded and fixed for the camera unit, so a contest between two
-//!   equal drivers resolves the same way every time and differently for each pair of
-//!   lines. A driver holds the bit of the code being converted for the whole pixel
-//!   period; during blanking the ADC converts the pedestal and the drivers hold the
-//!   black code.
+//!   `driver_r_spread`, hashed from the camera's `unit_seed` and so fixed for the unit
+//!   whatever the preset's seed, so a contest between two equal drivers resolves the
+//!   same way every time and differently for each pair of lines. A driver holds the
+//!   bit of the code being converted for the whole pixel period; during blanking the
+//!   ADC converts the pedestal and the drivers hold the black code.
 //! - **Source bank.** A DIP switch joins the pins in `source_pins` (`D2` to `D11`) into
 //!   node S, each through a patch resistor of `series_ohm`. A patch resistor of 0 is a
 //!   direct wire, which makes the pin and S one node.
@@ -295,6 +295,7 @@ impl Params {
         non_negative("bend.bus.series_ohm", bus.series_ohm)?;
 
         let seed = noise::stage_seed(preset.seed, SALT);
+        let unit = noise::stage_seed(camera.sensor.unit_seed, DRIVER_SALT);
         let oversample = timing.oversample.max(1);
         let dt_s = timing.pixel_period_s / f64::from(oversample);
         let tapped = sources | target;
@@ -302,7 +303,7 @@ impl Params {
             .filter(|bit| tapped & (1 << bit) != 0)
             .map(|bit| Line {
                 bit,
-                driver_ohm: driver_ohm(adc, bit, seed),
+                driver_ohm: driver_ohm(adc, bit, unit),
             })
             .collect();
         let read = ((1u64 << adc.dsp_bits.min(16)) - 1) << adc.dsp_lsb.min(16);
@@ -414,9 +415,10 @@ fn target_mask(target: Target, bits: u8) -> Result<u16, Error> {
 ///
 /// The AFE driver's resistance is log-normal around `driver_r_ohm` with a relative
 /// spread of `driver_r_spread`, a fixed property of the unit hashed from the line and
-/// the seed; the bus series resistor adds to it.
-fn driver_ohm(adc: &Adc, bit: u8, seed: u64) -> f64 {
-    let deviation = f64::from(noise::gauss(u32::from(bit), 0, DRIVER_SALT, seed));
+/// `unit`, the seed derived from the camera's `unit_seed`; the bus series resistor adds
+/// to it.
+fn driver_ohm(adc: &Adc, bit: u8, unit: u64) -> f64 {
+    let deviation = f64::from(noise::gauss(u32::from(bit), 0, DRIVER_SALT, unit));
     adc.driver_r_ohm * (adc.driver_r_spread * deviation).exp() + adc.bus_series_ohm
 }
 

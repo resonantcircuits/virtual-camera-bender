@@ -340,7 +340,7 @@ pub struct IspOverride {
     /// Tone curve slope at mid-grey.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub tone_contrast: Option<f64>,
-    /// Tone curve shadow lift.
+    /// Linear level below which the tone curve compresses shadows towards black.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub tone_toe: Option<f64>,
     /// Tone curve highlight compression.

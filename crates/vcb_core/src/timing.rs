@@ -49,10 +49,12 @@ const MIN_HBLANK_PX: u32 = 8;
 /// # Sub-line constants
 ///
 /// Analog constants shorter than a line (AFE bandwidth and slew, gate propagation
-/// delays, the latch phase of the image processor) are given in seconds, which at
-/// native resolution means a fixed number of native pixel periods. Stages that model
-/// them scale them by `pixel_period_s / native_pixel_period_s` so they keep their
-/// native meaning in pixels.
+/// delays, minimum pulse and setup time, the flip-flop's maximum clock) are given in
+/// physical time units, which at native resolution means a fixed number of native
+/// pixel periods. Stages that model them scale them by
+/// `pixel_period_s / native_pixel_period_s` so they keep their native meaning in
+/// pixels. The latch phase of the image processor is a fraction of the pixel period
+/// and needs no scaling.
 ///
 /// # Orientation
 ///

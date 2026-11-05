@@ -122,8 +122,14 @@ and what depends on it (M-DOCUMENTED-MAGIC). A physics constant also cites its s
 - Tests assert properties and behaviour (determinism, invariants, physical expectations
   such as "a 1 kHz injection at a 130 µs line period produces about 7.7 lines per
   cycle"), never restate constants.
-- Golden-image tests compare against small committed renders by exact hash; renders are
-  deterministic for a given input, preset and seed.
+- Golden-image tests (`crates/vcb_core/tests/golden.rs`) render a synthetic 160 by 120
+  scene through each shipped preset (still mode, match-input resolution, seed 1) and
+  compare a 64-bit FNV-1a hash of the frame's RGB bytes with the committed
+  `tests/golden/<preset>.hash`; a PNG of each golden frame sits beside it for review.
+  After an intended change of the output, run
+  `VCB_UPDATE_GOLDEN=1 cargo test -p vcb_core --test golden -- --nocapture`, which
+  rewrites the hashes and PNGs instead of asserting, and review the PNGs before
+  committing them.
 - Benchmarks use `divan` for the hot stages (M-HOTPATH).
 
 ## Performance (M-THROUGHPUT, M-MEM-REUSE, M-INITIAL-CAPACITY, M-BOX-DST)

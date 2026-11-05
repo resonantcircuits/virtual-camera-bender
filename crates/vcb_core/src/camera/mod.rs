@@ -69,10 +69,11 @@ pub struct Sensor {
     pub hot_pixels_per_mpix: f64,
     /// Layout of the colour filter array.
     pub cfa: Cfa,
-    /// Seed of this unit's fixed pattern: its PRNU, DSNU and hot photosites.
+    /// Seed of this unit's fixed pattern: its PRNU, DSNU, hot photosites and bus drivers.
     ///
-    /// Two cameras of the same model differ only in this seed; the preset's seed,
-    /// which drives the temporal noise, leaves the pattern unchanged.
+    /// Two cameras of the same model differ only in this seed, which also draws the
+    /// spread of the ADC's data-line driver resistance; the preset's seed, which drives
+    /// the temporal noise, leaves the pattern unchanged.
     #[cfg_attr(feature = "serde", serde(default = "default_unit_seed"))]
     pub unit_seed: u64,
 }

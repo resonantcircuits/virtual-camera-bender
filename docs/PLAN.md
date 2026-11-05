@@ -1,7 +1,28 @@
 # Virtual Camera Bender: Rust rewrite, implementation plan
 
-Status: draft for approval (2026-11-04). Branch `rust-rewrite`. The JavaScript
-version is tagged `v0.1.0-js` and lives on branch `legacy-js`.
+## Status (2026-11-05)
+
+Milestone 1, branch `rust-rewrite`: stages 1 to 5 are complete and merged, stage 6 is
+in progress. The plan below stands as approved on 2026-11-04; `docs/ARCHITECTURE.md`
+describes what was built. The JavaScript version is tagged `v0.1.0-js` and lives on
+branch `legacy-js`.
+
+- Stage 0: sourced A520 constants, `cameras/a520.toml` graded by confidence, the
+  post-stage policy.
+- Stage 1: workspace and lints, core types, noise, configuration, the time and
+  resolution model, the `Simulator` shell, image I/O with EXIF orientation, `render`
+  and `inspect`.
+- Stage 2: scene preparation with highlight reconstruction, the CCD sensor, the image
+  processor (Malvar demosaic) and the JPEG model with the Canon tables; auto-exposure
+  meters each frame, and the video AE servo was not built.
+- Stage 3: still and movie readout with CTE trails and clock faults, the oversampled
+  AFE with injection and gain modulation, the 12-bit ADC.
+- Stage 4: the bus bend as a nodal circuit (drivers, DIP bank, capacitor, pot on F or
+  S, clamp diodes, 74HC00, 74HC74, target selector, DSP latch).
+- Stage 5: video through ffmpeg pipes, `render-video` and `sheet`.
+- Stage 6 (in progress): validation script, architecture document, README, changelog
+  and stage benchmarks merged; golden-image tests and documentation fixes added; the
+  tuning pass and the review of the comparison sheet are open.
 
 ## 1. Decisions already made
 
@@ -79,7 +100,7 @@ Raw        active-area Bayer plane after the DSP's black clamp from the optical-
   |  isp.rs         black clamp, white balance (preset or grey-world auto), demosaic
   |                 (bilinear, later Malvar), colour correction matrix, auto-exposure,
   |                 tone curve, chroma noise reduction, luma NR, sharpening, 8-bit
-  |  codec.rs       JPEG simulation: 4:2:0 subsampling, 8x8 DCT, quantisation with Canon-style
+  |  codec.rs       JPEG simulation: 4:2:2 subsampling, 8x8 DCT, quantisation with Canon-style
   |                 tables at the mode's quality, dequantise, chroma upsample
 Frame      8-bit sRGB at the readout mode's output size
   |  post/          empty in milestone 1; policy in section 3.6

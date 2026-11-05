@@ -440,6 +440,48 @@ fn a_frame_rendered_twice_from_reset_is_identical() {
 
 #[cfg(feature = "test-util")]
 #[test]
+fn the_driver_spread_belongs_to_the_camera_unit_not_the_preset_seed() {
+    // Without the processor's input noise the preset seed has nothing left to act on
+    // in the bend. The drivers' resistances come from the camera's unit seed, and the
+    // source drivers, one high against two low, divide the supply by their ratio.
+    let mut camera = camera();
+    camera.adc.dsp_noise_mv = 0.0;
+    let run = |camera: &Camera, seed: u64| {
+        let mut preset = preset(&[9, 8, 7], Target::Pin(10), Function::Invert);
+        preset.seed = seed;
+        let t = timing(camera, &preset, 64, 48);
+        let params = params(camera, &preset, &t);
+        let mut codes = random_codes(&t, "unit");
+        bus::bend(Some(&params), &mut bus::State::default(), 0, &mut codes);
+        let mut probes = Vec::new();
+        let contest = [word(&[9]), word(&[8]), word(&[7])];
+        bus::trace(&params, &mut bus::State::default(), &contest, &mut probes);
+        (codes, probes)
+    };
+    let (codes, probes) = run(&camera, 1);
+    let (other_codes, other_probes) = run(&camera, 2);
+    assert_eq!(
+        other_codes, codes,
+        "the preset seed changed the latched words"
+    );
+    assert_eq!(
+        other_probes, probes,
+        "the preset seed changed the node voltages"
+    );
+
+    let mut other_unit = camera.clone();
+    other_unit.sensor.unit_seed += 1;
+    let (_, unit_probes) = run(&other_unit, 1);
+    let s_v = |probes: &[bus::Probe]| probes.iter().map(|p| p.s_v).collect::<Vec<_>>();
+    assert_ne!(
+        s_v(&unit_probes),
+        s_v(&probes),
+        "another unit's drivers meet at the same voltages"
+    );
+}
+
+#[cfg(feature = "test-util")]
+#[test]
 fn a_frame_differs_after_its_predecessor_only_through_the_capacitor() {
     let camera = camera();
     // Bypass has no gate, so the capacitor is the circuit's only memory. Blanking

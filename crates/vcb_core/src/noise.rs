@@ -2,17 +2,24 @@
 //!
 //! These are the only sources of randomness in the crate. Nothing reads the system
 //! clock or an entropy source, so every simulated frame is reproducible from the
-//! preset's seed and the frame index.
+//! camera's unit seed, the preset's seed and the frame index.
 //!
 //! Two kinds of source cover the physics:
 //!
-//! - **Spatial** noise (fixed-pattern effects such as photo-response non-uniformity
-//!   or hot pixels) is a pure function of `(x, y, salt, seed)`: [`hash_u32()`],
-//!   [`unit()`], [`signed()`] and [`gauss()`]. The same photosite always gets the same
-//!   value, in any evaluation order and on any thread.
-//! - **Temporal** noise (shot noise, read noise, comparator noise) comes from a
-//!   [`Pcg32`] stream seeded with the stage seed and the frame index, advanced in
-//!   readout order.
+//! - **Coordinate hashes** are pure functions of `(x, y, salt, seed)`: [`hash_u32()`],
+//!   [`unit()`], [`signed()`] and [`gauss()`]. The same coordinate always gets the same
+//!   value, in any evaluation order and on any thread. Keyed with a seed derived from
+//!   the camera's `unit_seed`, they give the unit's fixed pattern: photo-response and
+//!   dark-signal non-uniformity, hot photosites and the spread of the bus drivers.
+//!   Keyed with the stage seed XOR the frame index (`seed ^ index`), they give
+//!   temporal noise that does not depend on evaluation order: shot noise, smear noise,
+//!   ADC dither and the readout's clock faults. The AFE's sample-and-hold
+//!   injection hashes its oscillator's cycle count with the stage seed, so its levels
+//!   run on across frames.
+//! - **Streams** ([`Pcg32`]) are seeded with the stage seed and use the frame index as
+//!   the stream id; they are advanced in readout order by the sequential circuit
+//!   stages: the AFE's read noise (white and flicker) and the image processor's input
+//!   noise on the bus.
 //!
 //! Each stage derives its own seed with [`stage_seed`] from the preset seed and a
 //! [`salt`] of the stage name, so stages never share a stream.

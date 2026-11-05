@@ -105,18 +105,19 @@ third of a code of dither keyed to image position. Bit `k` drives line `Dk`.
 
 ### Bus bend
 
-Each line is an ideal 0 V or `v_oh` driver behind `driver_r_ohm` (log-normal spread)
-and `bus_series_ohm`. The source pins (`D2` to `D11`) join node S, directly or through
-`series_ohm`; `cap_uf` couples S to node F; `pot_kohm` loads F to ground
-(`pot_node = "f"`, the high-pass reading and default) or S, as the schematic draws it
-(`"s"`). The gate inputs on F leak `input_leak_mohm` to half the supply and clamp F
-through protection diodes beyond `clamp_diode_v` via `clamp_r_ohm`; with the pot on S,
-these diodes restore F's level. The function is a wire, a 74HC00 inverter or a 74HC74
-toggle with thresholds, hysteresis, delays, setup time and `ff_fmax_hz`; at 15 MHz the
-divider skips pixel-rate edges, and those skips, not chance, make its runs irregular.
-Node T joins one pin (`D4` to `D11`) or ground; `common_bus`, or a pin in both banks,
-merges S and T. The processor latches each touched line at `latch_phase` against
-`dsp_threshold_v` plus `dsp_noise_mv` of noise; untouched lines keep the ADC's bit.
+Each line is an ideal 0 V or `v_oh` driver behind `driver_r_ohm` (log-normal spread
+hashed from `unit_seed`, so it belongs to the unit) and `bus_series_ohm`. The source
+pins (`D2` to `D11`) join node S, directly or through `series_ohm`; `cap_uf` couples S
+to node F; `pot_kohm` loads F to ground (`pot_node = "f"`, the high-pass reading and
+default) or S, as the schematic draws it (`"s"`). The gate inputs on F leak
+`input_leak_mohm` to half the supply and clamp F through protection diodes beyond
+`clamp_diode_v` via `clamp_r_ohm`; with the pot on S, these diodes restore F's level.
+The function is a wire, a 74HC00 inverter or a 74HC74 toggle with thresholds,
+hysteresis, delays, setup time and `ff_fmax_hz`; at 15 MHz the divider skips
+pixel-rate edges, and those skips, not chance, make its runs irregular. Node T joins
+one pin (`D4` to `D11`) or ground; `common_bus`, or a pin in both banks, merges S and
+T. The processor latches each touched line at `latch_phase` against `dsp_threshold_v`
+plus `dsp_noise_mv` of noise; untouched lines keep the ADC's bit.
 
 The capacitor becomes its backward-Euler companion and each diode a switch, leaving a
 piecewise-linear network with three states (no diode, ground or supply diodes
@@ -186,8 +187,9 @@ All randomness lives in `noise`. Each stage seeds itself with
 values are pure hashes of `(x, y, salt, seed)`. Temporal noise hashes with the seed
 mixed with the frame index (shot noise, ADC dither, clock faults) or draws from a
 `Pcg32` seeded with stage seed and frame index, in readout order (read and latch
-noise). The fixed pattern uses the camera's `unit_seed`. Parallel passes reduce per-row
-results in a fixed order, so thread count never changes a byte.
+noise). The fixed pattern (non-uniformity, hot photosites, the spread of the bus
+drivers) uses the camera's `unit_seed`, so `--seed` leaves it alone. Parallel passes
+reduce per-row results in a fixed order, so thread count never changes a byte.
 
 The contract: the same sequence of scenes and indices, from a fresh simulator or after
 `Simulator::reset`, with the same camera, preset and seed, is identical byte for byte.
@@ -223,12 +225,18 @@ A bend elsewhere, such as the SDRAM address lines, becomes a new stage before th
 
 Tests of the public API live in `crates/*/tests/`, one file per area (`noise`,
 `timing`, `config`, `stages`, `clean_camera`, `readout_afe`, `bus`, `codec`,
-`simulator`, `io`, `video`, `cli`); the `test-util` feature exposes internal state to
-them. They assert physical properties and invariants, never restated constants: a 1 kHz
-square injection crosses zero twice per cycle, equal drivers meet at half rail,
-the divider skips pixel-rate edges, flat fields stay flat, every bend replays
-identically from power-on. There is no random-input framework and no golden-image hash
-yet. Video tests generate clips with ffmpeg and skip without it.
+`simulator`, `golden`, `io`, `video`, `cli`); the `test-util` feature exposes internal
+state to them. They assert physical properties and invariants, never restated
+constants: a 1 kHz square injection crosses zero twice per cycle, equal drivers meet
+at half rail, the divider skips pixel-rate edges, flat fields stay flat, every bend
+replays identically from power-on. There is no random-input framework. Video tests
+generate clips with ffmpeg and skip without it.
+
+The golden tests guard against unintended change: a synthetic 160 by 120 scene (a
+gradient, a bright disc, a dark rectangle) goes through each preset in still mode at
+match-input resolution with seed 1, and the frame's FNV-1a hash must equal
+`crates/vcb_core/tests/golden/<preset>.hash`, beside which lies the golden PNG.
+`VCB_UPDATE_GOLDEN=1` rewrites hashes and PNGs after an intended change.
 
 Validation is by eye. `scripts/validate-a520.sh` renders the reference sky through the
 clean, HPF, DIV and INV presets above the matching quadrants of a composite shot with a

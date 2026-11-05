@@ -207,8 +207,12 @@ impl Simulator {
     ///
     /// # Determinism
     ///
-    /// Analog state (oscillator phase, circuit nodes, servo loops) persists from one
-    /// call to the next, as in the camera. The same sequence of scenes and indices
+    /// The hardware's memory persists from one call to the next, as in the camera: the
+    /// phases of the injected and gain-modulating oscillators, the AFE's low-pass node
+    /// and flicker-noise level, the bus bend's capacitor, protection-diode and gate
+    /// states, and clock faults that straddle the frame boundary. Nothing else carries
+    /// over: auto-exposure meters each frame on its own and the black clamp starts
+    /// afresh from each frame's first line. The same sequence of scenes and indices
     /// rendered from a fresh or [`reset`](Self::reset) simulator, with the same camera,
     /// preset and seed, is identical byte for byte. Rendering the same index twice
     /// without a reset in between is not guaranteed to repeat, because the state has
