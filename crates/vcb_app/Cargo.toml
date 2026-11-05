@@ -5,8 +5,6 @@ keywords = ["camera", "ccd", "simulation", "circuit-bending", "gui"]
 categories = ["multimedia::images", "gui"]
 version.workspace = true
 edition.workspace = true
-# eframe 0.37 needs Rust 1.95; the library crates keep the workspace's older minimum.
-rust-version = "1.95"
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
@@ -22,7 +20,7 @@ anyhow.workspace = true
 # put syn 2 beside serde's syn 3 in vcb_core's and vcb_io's graphs and fail their
 # `multiple_crate_versions` lint. Enabling them needs "syn" in clippy.toml's
 # `allowed-duplicate-crates`.
-eframe = { workspace = true, features = ["default_fonts", "links", "wgpu", "x11"] }
+eframe = { workspace = true, features = ["accesskit", "default_fonts", "links", "wgpu", "x11"] }
 mimalloc.workspace = true
 rfd = { workspace = true, features = ["xdg-portal"] }
 toml = { workspace = true, features = ["parse", "serde", "display"] }
