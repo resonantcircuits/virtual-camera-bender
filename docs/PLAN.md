@@ -419,3 +419,11 @@ A signal-path strip showing stage order. Keyboard shortcuts. A macOS app bundle.
 ### Stage 10: user testing round
 
 The user plays; findings become fixes; `docs/USER-GUIDE.md`; tag `v0.2.0`.
+
+### Status (2026-11-06)
+
+Stages 7, 8 and 9 are complete and merged: the interactive core API with physical
+exposure, bus line capacitance and slew (the HPF sky experiment was negative; see the
+tuning log), AE/AWB servos; the `vcb_app` desktop app with every panel in signal
+order, video scrubbing, play and export, shortcuts, a macOS bundle script and
+`docs/USER-GUIDE.md`. Stage 10 is the user's testing round.
