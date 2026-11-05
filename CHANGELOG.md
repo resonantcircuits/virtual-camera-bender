@@ -3,10 +3,17 @@
 All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]: milestone 2, core support for the desktop app
+## [Unreleased]
 
-### Added
+### Milestone 2: the desktop app
 
+#### Added
+
+- `vcb_app`, the desktop app (`vcb-app`): viewport with fit, zoom, pan and
+  hold-to-compare; a render worker with latest-wins coalescing, reduced previews
+  while dragging and full native renders on release; a readout panel; the bus bend
+  as a front panel after the schematic; camera discovery, preset load and save,
+  image and first-video-frame input, image export.
 - `Simulator::set_preset` and `Simulator::set_scene_size`, which reconfigure a running
   simulator and keep buffers and analog state where the readout geometry and the bus
   wiring allow, with the accessors `preset`, `camera`, `scene_size` and
@@ -21,21 +28,23 @@ All notable changes to this project are recorded here. The format follows
 - Tests of reconfiguration (`interactive`) and of the servos (`servo`), and the line
   capacitance experiment in `docs/research/a520-tuning-log.md`.
 
-### Changed
+#### Changed
 
+- Native is the default sensor resolution; match-input stays as the explicit option
+  for large exports.
 - The bus circuit's sub-step is the exact response of its network to the sources held
   over it, and a pixel period in which the gate and the protection diodes hold is
   evaluated in closed form.
 - The HPF and INV golden frames, which the line capacitance and slew move in a few
   percent of their pixels.
 
-## [Unreleased]: Rust rewrite, milestone 1, the validated core
+### Milestone 1: the validated core
 
 The project is rewritten in Rust as a physical simulation of a circuit-bent CCD
 compact camera. The JavaScript editor it replaces is tagged `v0.1.0-js` and kept on
 the `legacy-js` branch; its presets and stylised effect modules do not carry over.
 
-### Added
+#### Added
 
 - `vcb_core`, a sans-I/O, deterministic simulation library: scene preparation with
   highlight reconstruction and vignetting, an interline CCD sensor (shot noise,
