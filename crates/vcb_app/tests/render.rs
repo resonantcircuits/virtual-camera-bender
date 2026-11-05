@@ -9,9 +9,9 @@ use vcb_app::presets;
 use vcb_app::render::{self, Generations, Job, Output, PREVIEW_LONG_EDGE, Renderer, Worker};
 use vcb_core::afe::{Inject, Wave};
 use vcb_core::bus::Target;
-use vcb_core::preset::{AfeBend, Mode, Resolution};
+use vcb_core::preset::{AfeBend, Mode, Resolution, SensorOverride};
 use vcb_core::scene::Channel;
-use vcb_core::{Preset, Scene, Simulator};
+use vcb_core::{Preset, Reconfigured, Scene, Simulator};
 
 fn root() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
@@ -294,31 +294,59 @@ fn the_simulator_keeps_running_and_a_power_cycle_replays_frame_zero() {
 fn a_new_preset_reaches_the_running_simulator() {
     let mut renderer = Renderer::default();
     let mut job = running_job();
-    render_ok(&mut renderer, &job);
+    let first = render_ok(&mut renderer, &job);
+    assert_eq!(first.reconfigured, Reconfigured::Rebuilt, "a new simulator");
     if let Some(bus) = job.preset.bend.bus.as_mut() {
         bus.pot_kohm = 0.2;
     }
     let turned = render_ok(&mut renderer, &job);
     assert_eq!(turned.index, 1, "turning the pot keeps the camera running");
+    assert!(turned.reconfigured.state_kept(), "{}", turned.reconfigured);
+
+    job.preset.sensor = Some(SensorOverride {
+        exposure_s: Some(0.02),
+    });
+    let exposed = render_ok(&mut renderer, &job);
+    assert_eq!(exposed.index, 2, "a new exposure keeps the camera running");
+    assert!(
+        exposed.reconfigured.state_kept(),
+        "{}",
+        exposed.reconfigured
+    );
+
+    if let Some(bus) = job.preset.bend.bus.as_mut() {
+        bus.target = Target::Pin(10);
+    }
+    let rewired = render_ok(&mut renderer, &job);
+    assert_eq!(
+        rewired.reconfigured,
+        Reconfigured::Kept {
+            bus_reset: true,
+            servo_reset: false
+        },
+        "rewiring resets the bend alone"
+    );
+    assert_eq!(rewired.index, 3);
 
     let mut cycled = job.clone();
     cycled.power_cycle = 1;
     assert_eq!(
         render_ok(&mut renderer, &cycled).frame.rgb(),
         power_on_frame(&job),
-        "after a power cycle the new pot setting renders as a fresh camera would"
+        "after a power cycle the new settings render as a fresh camera would"
     );
 
     job.power_cycle = 1;
     job.preset.readout.mode = Mode::Movie;
     let movie = render_ok(&mut renderer, &job);
+    assert_eq!(movie.reconfigured, Reconfigured::Rebuilt);
     assert_eq!(
         movie.index, 0,
         "a new readout geometry powers the camera on afresh"
     );
 
     let mut camera = (*job.camera).clone();
-    camera.still.exposure_s *= 2.0;
+    camera.sensor.nominal_exposure_s *= 2.0;
     job.camera = Arc::new(camera);
     assert_eq!(
         render_ok(&mut renderer, &job).index,

@@ -87,6 +87,7 @@ fn everything() -> (Preset, Panels) {
     isp::set(&mut preset.isp, Field::SharpenRadius, 0.001);
     isp::set_wb(&mut preset.isp, Some(WbMode::Servo));
     isp::set_ae(&mut preset.isp, Some(AeMode::Scene));
+    sensor::set_exposure(&mut preset.sensor, Some(0.004));
     (preset, panels)
 }
 
@@ -324,22 +325,79 @@ fn the_scene_panel_values_survive_toml() {
 }
 
 #[test]
-fn the_exposure_is_a_camera_adjustment_outside_the_preset() {
+fn the_exposure_is_a_preset_override_that_survives_toml() {
     let camera = camera();
-    assert_eq!(sensor::adjusted(&camera, None), camera);
-    let long = sensor::adjusted(&camera, Some(0.5));
-    assert!((long.still.exposure_s - 0.5).abs() < f64::EPSILON);
-    assert_eq!(long.movie, camera.movie, "the movie readout is untouched");
-    assert!((sensor::integration_s(&camera, Mode::Still, Some(0.25)) - 0.25).abs() < f64::EPSILON);
-    let movie = sensor::integration_s(&camera, Mode::Movie, Some(0.25));
+    let mut preset = Preset::new("a520");
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-12;
+    assert!(
+        close(
+            sensor::integration_s(&camera, &preset, Mode::Still),
+            camera.still.exposure_s
+        ),
+        "untouched, the camera's still exposure applies"
+    );
+    assert!(
+        close(
+            sensor::integration_s(&camera, &preset, Mode::Movie),
+            camera.movie.exposure_s.min(1.0 / camera.movie.fps)
+        ),
+        "movie mode integrates the camera's movie exposure"
+    );
+
+    sensor::set_exposure(&mut preset.sensor, Some(0.25));
+    assert_eq!(sensor::exposure_override(&preset), Some(0.25));
+    let text = presets::to_toml(&preset).expect("serialises");
+    assert!(
+        text.contains("exposure_s"),
+        "the exposure is saved:\n{text}"
+    );
+    through_toml(&preset);
+    assert!(close(
+        sensor::integration_s(&camera, &preset, Mode::Still),
+        0.25
+    ));
+    let movie = sensor::integration_s(&camera, &preset, Mode::Movie);
     assert!(
         (movie - 1.0 / camera.movie.fps).abs() < 1e-12,
-        "the movie readout integrates one frame"
+        "the electronic shutter integrates at most one frame, got {movie}"
+    );
+
+    sensor::set_exposure(&mut preset.sensor, None);
+    assert!(
+        preset.sensor.is_none(),
+        "resetting the exposure removes [sensor]"
     );
     let knob = sensor::EXPOSURE;
+    for exposure_s in [camera.still.exposure_s, camera.movie.exposure_s] {
+        assert!(knob.range.contains(&knob.scale.show(exposure_s)));
+    }
+}
+
+#[test]
+fn a_longer_exposure_brightens_the_running_camera_without_a_rebuild() {
+    let mut preset = Preset::new("a520");
+    preset.readout.resolution = Resolution::MatchInput;
+    let scene = vcb_core::Scene::from_srgb8(64, 48, &[60; 64 * 48 * 3]);
+    let mut simulator = vcb_core::Simulator::builder((camera(), preset.clone()))
+        .input_size(64, 48)
+        .build()
+        .expect("builds");
+    let mean = |frame: &vcb_core::Frame| {
+        frame
+            .rgb()
+            .iter()
+            .map(|&value| f64::from(value))
+            .sum::<f64>()
+            / frame.rgb().len() as f64
+    };
+    let short = mean(simulator.frame(&scene, 0));
+    sensor::set_exposure(&mut preset.sensor, Some(0.032));
+    let reconfigured = simulator.set_preset(preset).expect("valid");
+    assert!(reconfigured.state_kept(), "{reconfigured}");
+    let long = mean(simulator.frame(&scene, 1));
     assert!(
-        knob.range
-            .contains(&knob.scale.show(camera.still.exposure_s))
+        long > short + 20.0,
+        "two stops more light brighten a mid-dark frame: {short:.1} -> {long:.1}"
     );
 }
 
