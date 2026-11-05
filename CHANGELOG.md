@@ -3,6 +3,32 @@
 All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]: milestone 2, core support for the desktop app
+
+### Added
+
+- `Simulator::set_preset` and `Simulator::set_scene_size`, which reconfigure a running
+  simulator and keep buffers and analog state where the readout geometry and the bus
+  wiring allow, with the accessors `preset`, `camera`, `scene_size` and
+  `exposure_scale`.
+- Bus line capacitance and driver slew, `[adc] line_pf` and `driver_slew_v_per_us`
+  (15 pF and 600 V/µs on the A520, PROVISIONAL): the image processor latches each
+  line's actual voltage, which can be mid-transition.
+- Lagging auto-exposure and auto-white-balance servos, `ae_mode = "servo"` and
+  `[isp] wb = "servo"` with `ae_tau_s` and `wb_tau_s`, metered on the bent raw of
+  the previous frame; the preset's `[isp]` can set `ae_mode`, `ae_tau_s` and
+  `wb_tau_s`.
+- Tests of reconfiguration (`interactive`) and of the servos (`servo`), and the line
+  capacitance experiment in `docs/research/a520-tuning-log.md`.
+
+### Changed
+
+- The bus circuit's sub-step is the exact response of its network to the sources held
+  over it, and a pixel period in which the gate and the protection diodes hold is
+  evaluated in closed form.
+- The HPF and INV golden frames, which the line capacitance and slew move in a few
+  percent of their pixels.
+
 ## [Unreleased]: Rust rewrite, milestone 1, the validated core
 
 The project is rewritten in Rust as a physical simulation of a circuit-bent CCD

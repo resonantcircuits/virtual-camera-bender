@@ -45,12 +45,12 @@ module docs hold the formulas; this section states the contracts.
 | Stage | Function | In → out | Parameters | State |
 |---|---|---|---|---|
 | Scene | `scene::prepare` | `Scene` → `Scene` (sensor size) | camera `[isp]` `[lens]`; preset `[scene]` | – |
-| Sensor | `sensor::expose` | `Scene` → `Charge` (electrons) | camera `[sensor]` `[still]` `[movie]` `[isp]` | – |
+| Sensor | `sensor::expose` | `Scene` → `Charge` (electrons) | camera `[sensor]` `[still]` `[movie]` `[isp]`; preset `[isp]` | – |
 | Readout | `readout::read` | `Charge` → `Stream` (readout order) | camera clocking; preset `[bend.clocks]` | running faults |
 | AFE | `afe::process` | `Stream` → `Analog` (volts) | camera `[sensor]` `[afe]` `[adc]`; preset `[bend.afe]` | node, flicker, phases |
 | ADC | `adc::convert` | `Analog` → `Codes` (words) | camera `[adc]` | – |
-| Bus | `bus::bend` | `Codes` in place | preset `[bend.bus]`; camera `[adc]` `[logic]` | capacitor, diodes, gates |
-| ISP | `isp::clamp_black`, `isp::develop` | `Codes` → `Raw` → `Frame` | camera `[isp]` `[adc]` `[movie]`; preset `[isp]` | – |
+| Bus | `bus::bend` | `Codes` in place | preset `[bend.bus]`; camera `[adc]` `[logic]` | capacitor and line voltages, diodes, gates |
+| ISP | `isp::clamp_black`, `isp::develop`, `isp::meter` | `Codes` → `Raw` → `Frame` | camera `[isp]` `[adc]` `[movie]`; preset `[isp]` | exposure and white-balance servos |
 | Codec | `codec::encode` | `Frame` in place | camera `[jpeg]` `[still]` `[movie]` | – |
 
 ### Scene
@@ -71,7 +71,9 @@ belong to the unit, not the preset. Shot noise is Gaussian with the charge's var
 An overflow drain absorbs `antibloom_ratio` full wells; the rest spills along the
 column. Movie mode's electronic shutter adds smear from `smear_db` (V/10 definition),
 one constant streak per column. With `ae_mode = "scene"` each frame's light is scaled,
-within two stops and without lag, so the mean luminance lands on `ae_target`.
+within two stops and without lag, so the mean luminance lands on `ae_target`; with
+`"servo"` the image processor's exposure servo sets the scale from the previous frame
+(see ISP), and the first frame after a reset is metered on the scene.
 
 ### Readout
 
@@ -116,16 +118,33 @@ The function is a wire, a 74HC00 inverter or a 74HC74 toggle with thresholds,
 hysteresis, delays, setup time and `ff_fmax_hz`; at 15 MHz the divider skips
 pixel-rate edges, and those skips, not chance, make its runs irregular. Node T joins
 one pin (`D4` to `D11`) or ground; `common_bus`, or a pin in both banks, merges S and
-T. The processor latches each touched line at `latch_phase` against `dsp_threshold_v`
-plus `dsp_noise_mv` of noise; untouched lines keep the ADC's bit.
+T. Every tapped line, and the bend's wires S and T, carry `line_pf` to ground, and a
+driver that changes its bit slews at `driver_slew_v_per_us` (a full swing must fit in
+a pixel period), so a line is still moving for part of each pixel period. The
+processor latches each touched line's actual voltage at `latch_phase` against
+`dsp_threshold_v` plus `dsp_noise_mv` of noise; untouched lines keep the ADC's bit. At
+27 MHz a 15 pF line through 250 Ω has settled to within a millivolt at a latch phase of
+0.75. Its charge flows partly through the coupling capacitor, which shifts the
+capacitor's voltage by about `line_pf / cap_uf` of each step on S. An RC line only
+moves between settled levels, so neither the capacitance nor an early latch raises a
+bit whose settled level lies below the threshold.
 
-The capacitor becomes its backward-Euler companion and each diode a switch, leaving a
-piecewise-linear network with three states (no diode, ground or supply diodes
-conducting). `Params::resolve` inverts each state's conductance matrix once and
-tabulates every voltage as linear in driver pattern, gate level and previous capacitor
-voltage: a sub-step settles the diode state, then costs a lookup and two multiply-adds
-per voltage. Blanking runs in closed form, split where a gate transition falls due or
-a diode turns off; gates see no input crossings there.
+Every capacitance becomes its backward-Euler companion and each diode a switch,
+leaving a piecewise-linear network with three states (no diode, ground or supply
+diodes conducting). The state is the voltage across every capacitance: the coupling
+capacitor, then each merged node that carries line capacitance. `Params::resolve`
+inverts each state's conductance matrix once. Every state variable is the voltage
+across one capacitance, so the backward-Euler step's matrix is similar to a symmetric
+one; replacing each of its eigenvalues `1 / (1 + σ dt)` by `e^(-σ dt)` makes a sub-step
+the exact response to sources held over it, which line time constants of a few
+nanoseconds against a 9 ns sub-step need. Every voltage is tabulated as linear in the
+driver pattern, the gate level and the previous state. A pixel period whose gate output
+and diode state hold, the rule, is evaluated in closed form from its start state:
+node F at every sub-step (for the gates and the diodes), the latched pins and the end
+state are each one product with the start state. A pixel in which the gate switches or
+a diode changes runs sub-step by sub-step. Blanking runs in closed form on the slowest
+mode once the lines have settled, split where a gate transition falls due or a diode
+turns off; gates see no input crossings there.
 
 ### ISP
 
@@ -141,6 +160,17 @@ mosaic, clipping where the least-amplified channel saturates, demosaics (Malvar 
 bilinear), applies the colour matrix, bins movie frames, applies tone curve and sRGB
 through one table, then noise reduction and an unsharp mask on `Y'CbCr`, radii as
 fractions of the frame width. The matrix is a stand-in (dcraw's S60).
+
+`meter` runs the servos after each frame on the bent raw, as DIGIC meters the data it
+receives. With `ae_mode = "servo"` the next frame's exposure scale moves towards
+`scale * ae_target / luminance`, the luminance being the raw's channel means through
+this frame's white balance and colour matrix; with `wb = "servo"` the red and blue
+gains move towards the frame's grey-world gains. Each approaches its goal in stops with
+the time constant `ae_tau_s` or `wb_tau_s` of camera time: a frame corrects
+`1 - e^(-frame_period_s / tau_s)` of the remaining error. After a reset the first frame
+uses the scene-metered exposure and the daylight gains, so a still with servos equals
+one with `ae_mode = "scene"` and daylight white balance. A servo that is turned off
+forgets its value.
 
 ### Codec
 
@@ -173,9 +203,10 @@ stays at eight and the frame period grows. Still output is `cols` by `rows_read`
 output is `cols / h_bin` by `rows_read` at match-input, the camera's movie size at native.
 
 Constants shorter than a line (AFE bandwidth and slew, gate delays, minimum pulse,
-setup time, `1 / ff_fmax_hz`) describe the native clock and are multiplied by
-`pixel_period_s / native_pixel_period_s`, keeping their length in pixels; the latch
-phase is a fraction of the pixel period. Oscillators, the flicker corner and fault
+setup time, `1 / ff_fmax_hz`, the bus drivers' slew) describe the native clock and are
+multiplied by `pixel_period_s / native_pixel_period_s`, keeping their length in pixels;
+so is the bus line capacitance, which keeps the lines' time constants in pixels; the
+latch phase is a fraction of the pixel period. Oscillators, the flicker corner and fault
 rates are used as given, since line time and frame period are native. Fault durations
 are native lines scaled to the virtual rows, CTE counts native transfers, and ISP radii
 are fractions of the width.
@@ -194,6 +225,18 @@ reduce per-row results in a fixed order, so thread count never changes a byte.
 The contract: the same sequence of scenes and indices, from a fresh simulator or after
 `Simulator::reset`, with the same camera, preset and seed, is identical byte for byte.
 An index rendered twice without a reset need not repeat: the state has moved on.
+
+`Simulator::set_preset` and `set_scene_size` reconfigure a running simulator, as a knob
+turned on the bent camera. If the readout geometry stays (sensor size, rows read,
+columns, optical black, blanking, clocks, mode, orientation, output size and
+oversampling), every stage's parameters are resolved anew and all buffers and state
+are kept: the AFE's node, flicker level and oscillator phases (a new waveform continues
+the old phase), running clock faults, the servos, and the bus bend's capacitor
+voltages, diodes and gates while its wiring stays. The wiring is the set of source
+pins, the target, the function, the pot node, whether the pot is at zero, the common
+bus and whether patch resistors are fitted; new component values keep the charge. A
+new wiring, or adding or removing the bend, returns the bend to power-on; a new
+geometry rebuilds everything as `build` does. A rejected preset changes nothing.
 
 ## 6. Configuration
 
@@ -225,7 +268,7 @@ A bend elsewhere, such as the SDRAM address lines, becomes a new stage before th
 
 Tests of the public API live in `crates/*/tests/`, one file per area (`noise`,
 `timing`, `config`, `stages`, `clean_camera`, `readout_afe`, `bus`, `codec`,
-`simulator`, `golden`, `io`, `video`, `cli`); the `test-util` feature exposes internal
+`simulator`, `interactive`, `servo`, `golden`, `io`, `video`, `cli`); the `test-util` feature exposes internal
 state to them. They assert physical properties and invariants, never restated
 constants: a 1 kHz square injection crosses zero twice per cycle, equal drivers meet
 at half rail, the divider skips pixel-rate edges, flat fields stay flat, every bend
@@ -250,20 +293,22 @@ performance, 4 efficiency cores), macOS 15.7, Rust 1.96:
 
 | Function (ms) | Clean | HPF |
 |---|---:|---:|
-| `scene::prepare` | 8.5 | 8.5 |
-| `sensor::expose` | 42.1 | 42.5 |
-| `readout::read` | 1.1 | 1.1 |
-| `afe::process` | 61.8 | 61.7 |
-| `adc::convert` | 5.4 | 5.5 |
-| `bus::bend` | 0 (no bend) | 66.7 |
-| `isp::clamp_black` | 0.5 | 0.5 |
-| `isp::develop` | 44.8 | 45.0 |
-| `codec::encode` | 11.9 | 11.3 |
-| `Simulator::frame` (whole chain) | 169.6 | 236.9 |
+| `scene::prepare` | 9.8 | 8.6 |
+| `sensor::expose` | 38.9 | 38.9 |
+| `readout::read` | 1.1 | 1.2 |
+| `afe::process` | 59.7 | 59.7 |
+| `adc::convert` | 5.3 | 5.3 |
+| `bus::bend` | 0 (no bend) | 74.8 |
+| `isp::clamp_black` | 0.7 | 0.7 |
+| `isp::develop` | 46.4 | 49.2 |
+| `codec::encode` | 10.6 | 10.8 |
+| `Simulator::frame` (whole chain) | 188.2 | 278.2 |
 
 Scene, sensor, ISP and codec run over rows on the rayon pool. The AFE and the bus bend
-run sequentially in readout order, since their state carries from sample to sample,
-and dominate with about 16 million sub-steps each per frame.
+run sequentially in readout order, since their state carries from sample to sample.
+The AFE steps through about 16 million sub-steps per frame; the bus bend, with three
+capacitances on the HPF wiring (the coupling capacitor and the lines on S and T),
+evaluates about 4 million pixel periods in closed form and steps through the rest.
 
 ## 9. Extension points and known limitations
 
@@ -272,8 +317,11 @@ supply sag, and new stages in `Simulator::frame`.
 
 Highlight reconstruction guesses at lost data. Shot noise is Gaussian, smear one
 streak per column, the CTE trail geometric. The AFE has one pole and an ideal supply.
-Auto-exposure meters the clean scene without lag; there is no AE or AWB servo. Bend
-gates see no crossings during blanking, and gate timing resolves to one sub-step. The
+Scene auto-exposure meters the clean scene without lag; the servos meter the bent raw
+with a lag, on the plain mean luminance and grey world, without DIGIC's weighting.
+Bus lines carry capacitance but no inductance, so they never ring past their settled
+level. Bend gates see no crossings during blanking, and gate timing resolves to one
+sub-step. The
 colour matrix, tone curve, noise reduction, sharpening, mosaic phase, AFE bandwidth and
 many sensor values are stand-ins or provisional; defect concealment is absent. The
 movie line skip and the AFE part are inferred. The A520 bend layout is hard-coded. No
