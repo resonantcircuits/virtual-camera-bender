@@ -2,8 +2,8 @@
 
 ## Status (2026-11-05)
 
-Milestone 1, branch `rust-rewrite`: stages 1 to 5 are complete and merged, stage 6 is
-in progress. The plan below stands as approved on 2026-11-04; `docs/ARCHITECTURE.md`
+Milestone 1, branch `rust-rewrite`: stages 1 to 6 are complete and merged (final
+commit 92cc811 plus this status update). The plan below stands as approved on 2026-11-04; `docs/ARCHITECTURE.md`
 describes what was built. The JavaScript version is tagged `v0.1.0-js` and lives on
 branch `legacy-js`.
 
@@ -20,9 +20,12 @@ branch `legacy-js`.
 - Stage 4: the bus bend as a nodal circuit (drivers, DIP bank, capacitor, pot on F or
   S, clamp diodes, 74HC00, 74HC74, target selector, DSP latch).
 - Stage 5: video through ffmpeg pipes, `render-video` and `sheet`.
-- Stage 6 (in progress): validation script, architecture document, README, changelog
-  and stage benchmarks merged; golden-image tests and documentation fixes added; the
-  tuning pass and the review of the comparison sheet are open.
+- Stage 6: tuning of the bend presets and provisional constants against the A520
+  references (docs/research/a520-tuning-log.md), architecture document, README,
+  changelog, divan benchmarks, golden-image tests, doc/code consistency pass.
+  Open: the HPF reference's magenta sky needs a bus-side mechanism the passive
+  model lacks; the default resolution mode is a user decision (native renders
+  downscaled match the references far better than small match-input renders).
 
 ## 1. Decisions already made
 

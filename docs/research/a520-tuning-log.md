@@ -90,3 +90,13 @@ change and addresses items 2 and 3. (b) If the HPF raise is still missing after 
 give the bus lines their input capacitance and the drivers their slew, so the latch can
 catch a line mid-transition; that is the only route the circuit offers to site-dependent
 bits between neighbouring pixels.
+
+## Orchestrator check after the merge (2026-11-05)
+
+Recommendation 1 above was tested as far as the current model allows: the three bend
+presets rendered at native resolution with `[isp] wb = "auto"` (grey-world on the bent
+raw). HPF's sky stays dark red, slightly more neutral; DIV and INV are unchanged in
+character. So the processor's white balance cannot supply the reference's magenta
+sky; the raise of a high bit in flat dark regions has to come from the bus itself
+(recommendation 2: line capacitance and driver slew so the latch can catch a
+transition), or from a wiring that was not documented.
