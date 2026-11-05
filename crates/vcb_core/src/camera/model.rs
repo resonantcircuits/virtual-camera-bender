@@ -199,6 +199,23 @@ impl Camera {
         within("adc.driver_r_spread", adc.driver_r_spread, 0.0, 0.5)?;
         positive("adc.v_oh", adc.v_oh)?;
         non_negative("adc.bus_series_ohm", adc.bus_series_ohm)?;
+        non_negative("adc.line_pf", adc.line_pf)?;
+        positive("adc.driver_slew_v_per_us", adc.driver_slew_v_per_us)?;
+        let swing_s = adc.v_oh / (adc.driver_slew_v_per_us * 1e6);
+        for (mode, clock_hz) in [
+            ("still", self.still.pixel_clock_hz),
+            ("movie", self.movie.pixel_clock_hz),
+        ] {
+            if swing_s * clock_hz > 1.0 {
+                return Err(Error::config(format!(
+                    "adc.driver_slew_v_per_us {}: a full swing takes {:.1} ns, longer than \
+                     the {:.1} ns pixel period of the {mode} readout",
+                    adc.driver_slew_v_per_us,
+                    swing_s * 1e9,
+                    1e9 / clock_hz
+                )));
+            }
+        }
         within("adc.dsp_threshold_v", adc.dsp_threshold_v, 0.0, adc.v_oh)?;
         non_negative("adc.dsp_noise_mv", adc.dsp_noise_mv)?;
         if !(0.0..1.0).contains(&adc.latch_phase) {
@@ -246,6 +263,8 @@ impl Camera {
         within("isp.sharpen_radius_frac", isp.sharpen_radius_frac, 0.0, 1.0)?;
         non_negative("isp.sharpen_gain", isp.sharpen_gain)?;
         fraction("isp.ae_target", isp.ae_target)?;
+        positive("isp.ae_tau_s", isp.ae_tau_s)?;
+        positive("isp.wb_tau_s", isp.wb_tau_s)?;
 
         let tables = &self.jpeg.tables;
         for (name, pair) in [

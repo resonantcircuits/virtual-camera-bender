@@ -187,6 +187,12 @@ pub struct Adc {
     pub v_oh: f64,
     /// Series resistor on each bus line between the ADC and the image processor in ohms.
     pub bus_series_ohm: f64,
+    /// Capacitance of each bus line to ground in picofarads: pin, trace and processor input.
+    pub line_pf: f64,
+    /// Fastest rate at which a data-line driver's output moves, in volts per microsecond.
+    ///
+    /// A full swing, `v_oh / driver_slew_v_per_us`, must fit in a pixel period.
+    pub driver_slew_v_per_us: f64,
     /// Logic threshold of the image processor's bus inputs in volts.
     pub dsp_threshold_v: f64,
     /// Thermal noise at the image processor's bus inputs in millivolts, one standard deviation.
@@ -251,10 +257,14 @@ pub struct Isp {
     pub sharpen_gain: f64,
     /// Auto-exposure target: mean linear luminance of the developed frame.
     pub ae_target: f64,
+    /// Time constant of the auto-exposure servo in seconds of camera time.
+    pub ae_tau_s: f64,
+    /// Time constant of the auto-white-balance servo in seconds of camera time.
+    pub wb_tau_s: f64,
     /// Demosaicing algorithm.
     #[cfg_attr(feature = "serde", serde(default))]
     pub demosaic: Demosaic,
-    /// Auto-exposure mode: a fixed exposure, or one metered from the scene.
+    /// Auto-exposure mode: a fixed exposure, one metered from the scene, or a lagging servo.
     #[cfg_attr(feature = "serde", serde(default))]
     pub ae_mode: AeMode,
 }

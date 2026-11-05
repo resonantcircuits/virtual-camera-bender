@@ -41,7 +41,7 @@ use std::str::FromStr;
 use crate::Error;
 use crate::afe::{GainMod, Inject};
 use crate::bus::{Function, PotNode, Target};
-use crate::isp::WbMode;
+use crate::isp::{AeMode, WbMode};
 
 /// Which readout the sensor performs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -322,9 +322,12 @@ pub struct AfeBend {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
 pub struct IspOverride {
-    /// White-balance mode; daylight gains unless set to auto.
+    /// White-balance mode; daylight gains unless set to auto or servo.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub wb: Option<WbMode>,
+    /// Time constant of the white-balance servo in seconds.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub wb_tau_s: Option<f64>,
     /// Daylight red gain.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub wb_r_gain: Option<f64>,
@@ -361,4 +364,10 @@ pub struct IspOverride {
     /// Auto-exposure target luminance.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub ae_target: Option<f64>,
+    /// Auto-exposure mode.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub ae_mode: Option<AeMode>,
+    /// Time constant of the auto-exposure servo in seconds.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub ae_tau_s: Option<f64>,
 }

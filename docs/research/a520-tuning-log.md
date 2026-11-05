@@ -100,3 +100,47 @@ character. So the processor's white balance cannot supply the reference's magent
 sky; the raise of a high bit in flat dark regions has to come from the bus itself
 (recommendation 2: line capacitance and driver slew so the latch can catch a
 transition), or from a wiring that was not documented.
+
+## Line capacitance and latch phase experiment (stage 7, 2026-11-05)
+
+Question: with the new `[adc] line_pf` and `driver_slew_v_per_us`, does a larger line
+capacitance or an earlier `latch_phase` let the flat dark sky of the HPF reference read
+a raised bit in bypass? Setup: the HPF preset at native resolution on
+`validation/a520-sky-input.png`, camera defaults except the varied values (slew 600
+V/µs throughout). Sheet: `validation/stage7-line-capacitance.png` (reference quadrant
+first). "Changed" counts pixels that differ from the render without line capacitance.
+
+| Variant | Changed pixels | Sky (upper left, mean RGB) |
+|---|---:|---|
+| reference | - | 214 / 1 / 163 (magenta) |
+| 0 pF | - | 116 / 4 / 2 (dark red) |
+| 15 pF, latch 0.75 (default) | 0.13 % | identical |
+| 15 pF, 16 sub-steps per pixel | 0.11 % | identical |
+| 15 pF, latch 0.5 | 0.12 % | identical |
+| 150, 500 and 1500 pF, latch 0.75 | 0.23 % | identical |
+| 15 pF, latch 0.25; latch 0.06 at 16 sub-steps | 0.23 % | identical |
+| 150 and 500 pF, latch 0.25; 150 pF, latch 0.06 | 0.23 % | identical |
+
+Result: no. The sky does not change by a single byte in any variant, from 0 to 1500 pF
+(line time constants up to about six pixel periods) and with the latch as early as 6 %
+of the pixel period. Every changed pixel lies in one block of the clipped left cloud
+(rows 912 to 1103, columns 448 to 640), where the source bus sits near the latch
+threshold; from 150 pF on, or with an early latch, that block resolves the other way
+and the renders are byte-identical with each other.
+
+Why: with the pot at 0.05 kOhm on S, S reaches at most 0.94 V with both source drivers
+high, and T (= F in bypass) follows S shifted by the capacitor's charge; in the sky
+every tapped pin's settled level lies below the 1.3 V threshold whatever the codes of
+neighbouring sites (inferred: no capacitance or latch phase changes a sky bit). An RC line only moves between settled levels: slowing it, or
+latching it before it settles, reads a voltage between two levels that are both low,
+and the latched bit stays low. A mid-transition latch can make neighbouring sites read
+differently only where one settled level is above the threshold and the other below,
+which the HPF wiring produces in the bright cloud, not in the dark sky. The preset is
+unchanged.
+
+What is left for the magenta sky: overshoot (inductance and ringing of the bus lines
+and the bend's wiring, not modelled, and the only way a line exceeds its settled
+level), a wiring with a source line that is high in the sky (the reference's wiring is
+not documented), or a different DSP threshold. The AE and AWB servos of stage 7 also
+allow the still-after-live-view test of recommendation (a), which this experiment did
+not run.

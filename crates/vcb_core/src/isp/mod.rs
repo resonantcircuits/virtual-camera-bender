@@ -10,10 +10,11 @@
 //! 1. Normalisation: codes are divided by `white_code`, the code above black that
 //!    reference white produces, so linear 1.0 is reference white again.
 //! 2. White balance, on the mosaic: the red and blue sites are multiplied by the
-//!    daylight gains, or by grey-world gains that equalise the channel means
-//!    ([`Wb::Auto`]). Gains are scaled so the smallest is 1, as dcraw does, and every
-//!    site is clipped where the least-amplified channel saturates (full well or ADC,
-//!    whichever comes first), so clipped highlights stay white instead of turning pink.
+//!    daylight gains, by grey-world gains that equalise the channel means
+//!    ([`Wb::Auto`]), or by the gains of the white-balance servo ([`Wb::Servo`]). Gains
+//!    are scaled so the smallest is 1, as dcraw does, and every site is clipped where
+//!    the least-amplified channel saturates (full well or ADC, whichever comes first),
+//!    so clipped highlights stay white instead of turning pink.
 //! 3. Demosaic: bilinear interpolation, or Malvar, He and Cutler's gradient-corrected
 //!    linear interpolation ([`Demosaic`]); borders are mirrored with the Bayer phase kept.
 //! 4. Colour correction: `cam_to_srgb`, from white-balanced camera RGB to linear sRGB.
@@ -34,6 +35,21 @@
 //! interpolation rule for the A520 are undocumented, so hot photosites pass through
 //! to the demosaic, where they become small coloured crosses.
 //!
+//! # Servos
+//!
+//! DIGIC meters exposure and white balance on the data it receives, so it sees the
+//! bent raw. [`meter`] does the same after each frame: with `ae_mode = "servo"` it
+//! measures the developed raw's mean luminance (the channel means through the white
+//! balance and colour matrix of that frame) and moves the exposure scale for the next
+//! frame towards `scale * ae_target / luminance`; with `wb = "servo"` it moves the red
+//! and blue gains towards the frame's grey-world gains. Both approach their goal in
+//! stops, exponentially with the time constant `ae_tau_s` or `wb_tau_s` in camera
+//! time: each frame corrects `1 - e^(-frame_period_s / tau_s)` of the remaining error.
+//! The exposure stays within two stops of the set exposure, as scene metering does.
+//! After a reset the first frame is exposed as scene metering sets it and balanced
+//! with the daylight gains, so a still with servos matches one with `ae_mode =
+//! "scene"` and daylight white balance.
+//!
 //! Every pixel-parallel pass runs over rows on the rayon pool; working planes live in
 //! [`State`] and are allocated only when the frame size changes.
 
@@ -51,7 +67,8 @@ use crate::adc::Codes;
 use crate::plane::Plane;
 use crate::preset::Mode;
 use crate::resample::{self, Rect, Turn};
-use crate::sensor::Cfa;
+use crate::sensor::{self, Cfa};
+use crate::validate::positive;
 use crate::{Camera, Error, Frame, Preset, Scene, Timing, colour};
 
 #[doc(inline)]
@@ -81,6 +98,10 @@ pub enum WbMode {
     Daylight,
     /// Gains measured from the frame (grey world).
     Auto,
+    /// Gains that follow the grey-world gains of earlier frames with a lag.
+    ///
+    /// The first frame after a reset uses the daylight gains.
+    Servo,
 }
 
 /// How the camera sets its exposure.
@@ -93,6 +114,36 @@ pub enum AeMode {
     Fixed,
     /// Every frame is exposed so that the scene's mean luminance lands on `ae_target`.
     Scene,
+    /// The exposure follows the metering of earlier frames' raw data with a lag.
+    ///
+    /// The first frame after a reset is exposed as [`Scene`](Self::Scene) sets it.
+    Servo,
+}
+
+/// A lagging control loop that moves a setting towards its metered goal once per frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Servo {
+    /// Fraction of the remaining error, in stops, that one frame corrects.
+    ///
+    /// `1 - e^(-frame_period_s / tau_s)`, so the setting covers 63 % of a step after
+    /// `tau_s` of camera time.
+    pub step: f32,
+}
+
+impl Servo {
+    /// Returns the servo of time constant `tau_s` for a frame period of `frame_period_s`.
+    #[must_use]
+    pub fn new(tau_s: f64, frame_period_s: f64) -> Self {
+        Self {
+            step: (1.0 - (-frame_period_s / tau_s).exp()) as f32,
+        }
+    }
+
+    /// Returns `value` moved towards `goal` by one frame's step, in stops.
+    #[must_use]
+    pub fn toward(self, value: f32, goal: f32) -> f32 {
+        value * (goal / value).powf(self.step)
+    }
 }
 
 /// White balance with its resolved gains.
@@ -107,6 +158,15 @@ pub enum Wb {
     },
     /// Gains that make the mean of every channel equal to the green mean.
     Auto,
+    /// Gains that follow grey world through a servo, from the daylight gains after a reset.
+    Servo {
+        /// Red gain of the first frame.
+        r_gain: f32,
+        /// Blue gain of the first frame.
+        b_gain: f32,
+        /// The servo that moves the gains.
+        servo: Servo,
+    },
 }
 
 /// Unsharp masking of luminance.
@@ -225,6 +285,8 @@ pub struct Params {
     pub demosaic: Demosaic,
     /// Auto-exposure target luminance; the sensor's exposure control meters towards it.
     pub ae_target: f32,
+    /// The auto-exposure servo, when `ae_mode` is `"servo"`.
+    pub ae_servo: Option<Servo>,
     /// Size of the developed frame on the landscape sensor.
     pub output: Output,
 }
@@ -271,12 +333,30 @@ impl Params {
         let isp = &camera.isp;
         let o = preset.isp.clone().unwrap_or_default();
         let pick = |value: Option<f64>, default: f64| value.unwrap_or(default) as f32;
+        let (r_gain, b_gain) = (
+            pick(o.wb_r_gain, isp.wb_r_gain),
+            pick(o.wb_b_gain, isp.wb_b_gain),
+        );
         let wb = match o.wb.unwrap_or_default() {
-            WbMode::Daylight => Wb::Daylight {
-                r_gain: pick(o.wb_r_gain, isp.wb_r_gain),
-                b_gain: pick(o.wb_b_gain, isp.wb_b_gain),
-            },
+            WbMode::Daylight => Wb::Daylight { r_gain, b_gain },
             WbMode::Auto => Wb::Auto,
+            WbMode::Servo => {
+                let tau_s = o.wb_tau_s.unwrap_or(isp.wb_tau_s);
+                positive("isp.wb_tau_s", tau_s)?;
+                Wb::Servo {
+                    r_gain,
+                    b_gain,
+                    servo: Servo::new(tau_s, timing.frame_period_s),
+                }
+            }
+        };
+        let ae_servo = match o.ae_mode.unwrap_or(isp.ae_mode) {
+            AeMode::Fixed | AeMode::Scene => None,
+            AeMode::Servo => {
+                let tau_s = o.ae_tau_s.unwrap_or(isp.ae_tau_s);
+                positive("isp.ae_tau_s", tau_s)?;
+                Some(Servo::new(tau_s, timing.frame_period_s))
+            }
         };
         let cam_to_srgb = colour::cam_to_srgb(&o.xyz_to_cam.unwrap_or(isp.xyz_to_cam))?;
         let h_bin = match timing.mode {
@@ -306,6 +386,7 @@ impl Params {
             },
             demosaic: isp.demosaic,
             ae_target: pick(o.ae_target, isp.ae_target),
+            ae_servo,
             output: Output {
                 h_bin,
                 width,
@@ -315,9 +396,15 @@ impl Params {
     }
 }
 
-/// Persistent state of the image processor: working planes reused across frames.
+/// Persistent state of the image processor: the servos and working planes reused across frames.
+///
+/// The default is the state after a reset: no servo has metered a frame yet.
 #[derive(Debug, Clone)]
 pub struct State {
+    /// Exposure scale the auto-exposure servo set for the next frame.
+    exposure: Option<f32>,
+    /// Red and blue gains the white-balance servo set for the next frame.
+    gains: Option<[f32; 2]>,
     balanced: Plane<f32>,
     rgb: Scene,
     binned: Scene,
@@ -328,9 +415,29 @@ pub struct State {
     kernel: Vec<f32>,
 }
 
+impl State {
+    /// Returns the exposure scale the auto-exposure servo set for the next frame.
+    ///
+    /// `None` until the servo has metered a frame, and whenever `ae_mode` is not `"servo"`.
+    #[must_use]
+    pub fn servo_exposure(&self) -> Option<f32> {
+        self.exposure
+    }
+
+    /// Returns the red and blue gains the white-balance servo set for the next frame.
+    ///
+    /// `None` until the servo has metered a frame, and whenever `wb` is not `"servo"`.
+    #[must_use]
+    pub fn servo_gains(&self) -> Option<[f32; 2]> {
+        self.gains
+    }
+}
+
 impl Default for State {
     fn default() -> Self {
         Self {
+            exposure: None,
+            gains: None,
             balanced: Plane::new(0, 0),
             rgb: Scene::new(0, 0),
             binned: Scene::new(0, 0),
@@ -433,6 +540,7 @@ pub fn develop(params: &Params, state: &mut State, raw: &Raw, out: &mut Frame) {
         width >= 2 && height >= 2,
         "cannot demosaic a {width} x {height} raw plane"
     );
+    let gains = frame_gains(params, state, raw).map(|gain| gain / params.white_code);
     let State {
         balanced,
         rgb,
@@ -441,14 +549,9 @@ pub fn develop(params: &Params, state: &mut State, raw: &Raw, out: &mut Frame) {
         ycc,
         lut,
         kernel,
+        ..
     } = state;
 
-    let balance = match params.wb {
-        Wb::Daylight { r_gain, b_gain } => [r_gain, 1.0, b_gain],
-        Wb::Auto => grey_world(&raw.plane, params.cfa),
-    };
-    let least = balance.iter().copied().fold(f32::MAX, f32::min);
-    let gains = balance.map(|gain| gain / least / params.white_code);
     let max_code = ((1u32 << params.dsp_bits.min(16)) - 1) as f32;
     let saturated = params.full_well_code.min(max_code - raw.black_level());
     let clip = saturated / params.white_code;
@@ -521,6 +624,76 @@ pub fn develop(params: &Params, state: &mut State, raw: &Raw, out: &mut Frame) {
     from_ycc([y, cb, cr], out);
 }
 
+/// Meters the developed raw for the servos and sets their values for the next frame.
+///
+/// `exposure_scale` is the scale the sensor applied to this frame. With an
+/// auto-exposure servo the next frame's scale moves from it towards the scale that
+/// would put the mean luminance on `ae_target`; with a white-balance servo the next
+/// frame's gains move from this frame's towards its grey-world gains. A servo that is
+/// off forgets its value, so turning it on starts afresh. A black frame opens the
+/// exposure towards its two-stop limit; a colour channel without signal keeps its gain.
+pub fn meter(params: &Params, state: &mut State, raw: &Raw, exposure_scale: f32) {
+    if params.ae_servo.is_none() && !matches!(params.wb, Wb::Servo { .. }) {
+        state.exposure = None;
+        state.gains = None;
+        return;
+    }
+    let means = channel_means(&raw.plane, params.cfa);
+    state.exposure = params.ae_servo.map(|servo| {
+        let gains = frame_gains(params, state, raw);
+        let luminance: f64 = (0..3)
+            .map(|c| {
+                let weight: f32 = (0..3)
+                    .map(|k| sensor::LUMINANCE[k] as f32 * params.cam_to_srgb[k][c])
+                    .sum();
+                f64::from(weight * gains[c]) * means[c]
+            })
+            .sum::<f64>()
+            / f64::from(params.white_code);
+        let goal = if luminance > 0.0 {
+            (f64::from(exposure_scale) * f64::from(params.ae_target) / luminance) as f32
+        } else {
+            sensor::AE_MAX_SCALE
+        };
+        let goal = goal.clamp(sensor::AE_MIN_SCALE, sensor::AE_MAX_SCALE);
+        servo
+            .toward(exposure_scale, goal)
+            .clamp(sensor::AE_MIN_SCALE, sensor::AE_MAX_SCALE)
+    });
+    state.gains = match params.wb {
+        Wb::Servo {
+            r_gain,
+            b_gain,
+            servo,
+        } => {
+            let [red, blue] = state.gains.unwrap_or([r_gain, b_gain]);
+            let goal = |mean: f64, gain: f32| {
+                if mean > 0.0 && means[1] > 0.0 {
+                    servo.toward(gain, (means[1] / mean) as f32)
+                } else {
+                    gain
+                }
+            };
+            Some([goal(means[0], red), goal(means[2], blue)])
+        }
+        Wb::Daylight { .. } | Wb::Auto => None,
+    };
+}
+
+/// Returns the white-balance gains of this frame, scaled so the smallest is 1.
+fn frame_gains(params: &Params, state: &State, raw: &Raw) -> [f32; 3] {
+    let balance = match params.wb {
+        Wb::Daylight { r_gain, b_gain } => [r_gain, 1.0, b_gain],
+        Wb::Auto => grey_world(&raw.plane, params.cfa),
+        Wb::Servo { r_gain, b_gain, .. } => {
+            let [red, blue] = state.gains.unwrap_or([r_gain, b_gain]);
+            [red, 1.0, blue]
+        }
+    };
+    let least = balance.iter().copied().fold(f32::MAX, f32::min);
+    balance.map(|gain| gain / least)
+}
+
 /// Reallocates `scene` if it is not `width` by `height`.
 fn fit(scene: &mut Scene, width: u32, height: u32) {
     if scene.width() != width || scene.height() != height {
@@ -551,8 +724,8 @@ fn white_balance(raw: &Plane<f32>, cfa: Cfa, gains: [f32; 3], clip: f32, out: &m
         });
 }
 
-/// Returns `[r, g, b]` gains that equalise the red and blue means with green.
-fn grey_world(raw: &Plane<f32>, cfa: Cfa) -> [f32; 3] {
+/// Returns the mean of every channel's sites, in codes above black.
+fn channel_means(raw: &Plane<f32>, cfa: Cfa) -> [f64; 3] {
     let mut sums = [0.0f64; 3];
     let mut counts = [0u64; 3];
     for (y, row) in (0..raw.height()).zip(raw.rows()) {
@@ -562,7 +735,12 @@ fn grey_world(raw: &Plane<f32>, cfa: Cfa) -> [f32; 3] {
             counts[channel] += 1;
         }
     }
-    let means: [f64; 3] = std::array::from_fn(|c| sums[c] / counts[c].max(1) as f64);
+    std::array::from_fn(|c| sums[c] / counts[c].max(1) as f64)
+}
+
+/// Returns `[r, g, b]` gains that equalise the red and blue means with green.
+fn grey_world(raw: &Plane<f32>, cfa: Cfa) -> [f32; 3] {
+    let means = channel_means(raw, cfa);
     let gain = |mean: f64| {
         if mean > 0.0 && means[1] > 0.0 {
             (means[1] / mean) as f32
