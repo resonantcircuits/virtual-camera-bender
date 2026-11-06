@@ -1,0 +1,18 @@
+# Canon PowerShot A520 with one SDRAM address pin stuck high: the mirror bank.
+# Pin a9 carries only row bit 20 of the linear address (2^20 words, 461.5 still lines), so
+# every write and read lands in the upper copy: the first 461 lines of the frame read the next
+# 461, shifted by half a line, a crystalline repeat of one band. The odd line offset moves the
+# copy onto the other Bayer row phase, where it develops magenta. A solid fault: the same fold
+# in every frame. Still readout only: the movie raw (2272 x 426 words) lies wholly below bit 20,
+# so the pin leaves a movie frame alone; a8 and below act in both modes.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[[bend.memory.faults]]
+pin = 9
+kind = "high"                       # a solder bridge to the 3.3 V rail

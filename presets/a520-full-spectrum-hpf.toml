@@ -1,0 +1,35 @@
+# Canon PowerShot A520 with the IR-cut filter removed and the ADC-bus bend: HPF on a full-spectrum camera.
+# The optics and processor of a520-full-spectrum (filter fully off, foliage raised, scene
+# auto-exposure, grey-world white balance) with the bus bend of a520-hpf: source bank D10, D9
+# through the 1 uF capacitor, the 1 kOhm pot near its low end loading the source bus, function
+# "bypass", target D11. The near infrared moves the codes the bend sees, and the processor's
+# grey world, metered on the bent raw, turns the HPF's red sky green and cream.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[scene]
+headroom = 1.5                      # PROVISIONAL: as a520-hpf, less highlight expansion keeps the cloud cores off the clip (tuning log)
+
+[isp]
+ae_mode = "scene"                   # the camera meters what the sensor now sees, near infrared included
+wb = "auto"                         # grey world on the bent raw
+
+[bend.optics]
+ir_cut_pulled_frac = 1.0            # the filter fully off the sensor
+foliage_nir = 3.0                   # PROVISIONAL, by eye: as a520-full-spectrum
+nir_scale = 1.3                     # PROVISIONAL, by eye: as a520-full-spectrum
+
+[bend.bus]
+source_pins = [10, 9]
+target = "pin:11"
+function = "bypass"
+cap_uf = 1.0
+pot_kohm = 0.05                     # PROVISIONAL: as a520-hpf, the low end of the 1 kOhm pot (tuning log)
+pot_node = "s"                      # as the schematic draws it
+series_ohm = 0.0
+common_bus = false

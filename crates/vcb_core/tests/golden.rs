@@ -207,3 +207,53 @@ fn the_div_bend_renders_its_golden_frame() {
 fn the_inv_bend_renders_its_golden_frame() {
     check("a520-inv");
 }
+
+#[test]
+fn the_full_spectrum_optics_render_their_golden_frame() {
+    check("a520-full-spectrum");
+}
+
+#[test]
+fn the_chlorophyll_optics_render_their_golden_frame() {
+    check("a520-chlorophyll");
+}
+
+#[test]
+fn the_full_spectrum_hpf_bend_renders_its_golden_frame() {
+    check("a520-full-spectrum-hpf");
+}
+
+#[test]
+fn the_brownout_rail_renders_its_golden_frame() {
+    check("a520-brownout");
+}
+
+#[test]
+fn the_sieve_rail_renders_its_golden_frame() {
+    check("a520-sieve");
+}
+
+#[test]
+fn the_dying_battery_renders_its_golden_frame() {
+    check("a520-dying-battery");
+}
+
+#[test]
+fn the_loose_sync_clock_renders_its_golden_frame() {
+    check("a520-loose-sync");
+}
+
+#[test]
+fn the_reclock_roll_clock_renders_its_golden_frame() {
+    check("a520-reclock-roll");
+}
+
+#[test]
+fn the_s9000_tear_memory_renders_its_golden_frame() {
+    check("a520-s9000-tear");
+}
+
+#[test]
+fn the_mirror_bank_memory_renders_its_golden_frame() {
+    check("a520-mirror-bank");
+}
