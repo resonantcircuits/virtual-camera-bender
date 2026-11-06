@@ -122,11 +122,45 @@
 //! blanking: a crossing of F caused by the black level is registered at the first
 //! sub-step of the next line.
 //!
+//! # Supply
+//!
+//! One rail ([`power`](crate::power)) feeds the AFE's output drivers, the bend's
+//! 74HC chips and the processor's inputs. Each pixel period runs at the rail of its
+//! middle, read from the [`Rail`] (linear within a line), and each blanking interval at
+//! the rail of its middle.
+//!
+//! - **Ratiometric circuit.** The drivers' and the gate's high level, the gate
+//!   inputs' leakage bias and protection-diode thresholds, the 74HC switching
+//!   thresholds and hysteresis and the processor's latch threshold all scale with the
+//!   rail, `r = rail / nominal`. The network is linear in its sources, so with every
+//!   source and threshold scaled together a voltage is `r` times the nominal network's
+//!   for the state `z / r`. The run therefore keeps the state over `r` and evaluates
+//!   the nominal tables unchanged; a new rail re-expresses the state, `z / r` becoming
+//!   `z / r'`, so the capacitor voltages themselves never jump. Only the processor's
+//!   thermal noise does not scale: it is referred to `r` as well. Scaling the diodes'
+//!   forward voltage with the rail is the approximation (0.5 V at the nominal rail:
+//!   a 10 % sag moves it 50 mV); slower 74HC timing and weaker drivers at a low rail
+//!   are not modelled. Below a tenth of the nominal the circuit is held at a tenth.
+//! - **Logic brownout.** Below `[power] logic_min_v` the 74HC chips lose their
+//!   supply: the gate's output floats, so node T keeps only its other connections and
+//!   the target line returns to its own driver, and the chips forget their logic
+//!   levels and timers, starting from power-on when the rail returns. The run then
+//!   uses a second network, solved once with node T undriven; the state's layout is
+//!   the same, so the circuit moves between the two without a jump. Bypass has no
+//!   chip in the path and ignores it.
+//! - **Load.** At each latch instant the bend draws from the rail the current of its
+//!   high sources: every tapped driver that is high delivers `(v_oh r - v_pin) /
+//!   r_driver`, the gate's output, when high, `(v_oh r - v_T) / hc_r_out_ohm`, and the
+//!   diodes to the supply on node F return what they conduct. The line's mean over
+//!   its stored samples is left in [`State::line_current_ma`], from which the rail
+//!   draws it during the whole line of the next frame. The drivers are taken at their
+//!   new levels and the gate inputs' microampere leakage is left out.
+//!
 //! # State
 //!
 //! The capacitor voltages, the diodes' state, the gates' logic levels, pending
 //! transitions and edge timers persist in [`State`] from frame to frame, as in the
-//! camera.
+//! camera, and so does the current the bend drew on each line, for the rail.
 
 mod circuit;
 mod gates;
@@ -171,6 +205,12 @@ const LATCH_TOLERANCE: f64 = 1e-6;
 ///
 /// A slew of exactly two sub-steps stays two instead of rounding up to three.
 const RAMP_TOLERANCE: f64 = 1e-9;
+
+/// Smallest ratio of the rail to its nominal voltage the circuit follows.
+///
+/// The run keeps its state over that ratio, which must not reach zero. A tenth of a
+/// 3.3 V rail is a third of a volt, where every chip on it has long stopped working.
+const MIN_RAIL_RATIO: f64 = 0.1;
 
 /// Where the target selector connects the function output.
 ///
@@ -289,6 +329,10 @@ pub struct Params {
     seed: u64,
     /// The solved network.
     net: Network,
+    /// The network with the logic unpowered, the gate's output floating; `None` in bypass.
+    dead: Option<Network>,
+    /// Supply voltage below which the 74HC chips stop working, in volts.
+    logic_min_v: f64,
     /// Thresholds and delays of the logic chips.
     chips: Chips,
     /// The image processor's input latch.
@@ -369,7 +413,7 @@ impl Params {
         }
         let ramp = Ramp::new(ramp_s, dt_s);
         let latch = latch_step(adc.latch_phase, oversample);
-        let net = Network::build(&Topology {
+        let topology = Topology {
             lines: &lines,
             sources,
             target: bus.target,
@@ -381,19 +425,27 @@ impl Params {
             pot_ohm: bus.pot_kohm * 1e3,
             pot_node: bus.pot_node,
             gate_ohm: camera.logic.hc_r_out_ohm,
+            gate_driven: true,
             v_oh: adc.v_oh,
             clamp_v: camera.logic.clamp_diode_v,
             clamp_ohm: camera.logic.clamp_r_ohm,
             leak_ohm: camera.logic.input_leak_mohm * 1e6,
             dt_s,
-            latched,
             bits: adc.bits,
             sampling: Sampling {
                 oversample: oversample as usize,
                 ramp: &ramp.weights,
                 latch: latch as usize,
             },
-        })?;
+        };
+        let net = Network::build(&topology)?;
+        let dead = match bus.function {
+            Function::Bypass => None,
+            Function::Invert | Function::Divide => Some(Network::build(&Topology {
+                gate_driven: false,
+                ..topology
+            })?),
+        };
         let noise_v = adc.dsp_noise_mv * 1e-3;
         Ok(Some(Self {
             source_pins: bus.source_pins.clone(),
@@ -404,6 +456,8 @@ impl Params {
             dark_code: adc.black_level,
             seed,
             net,
+            dead,
+            logic_min_v: camera.power.logic_min_v,
             chips: Chips::new(&camera.logic, scale, dt_s),
             latch: Latch {
                 threshold_v: adc.dsp_threshold_v,
@@ -586,11 +640,12 @@ pub struct State {
     noise: Pcg32,
     /// Mean current the bend drew from the supply rail on each readout line of the last frame, in milliamperes.
     ///
-    /// The current the bus drivers push into the potentiometer, the gate inputs and
-    /// the clamp diodes, one entry per readout line in readout order, which the
+    /// The current the high drivers and the gate's output push into the
+    /// potentiometer, the contested lines, the gate inputs and the clamp diodes, less
+    /// what the diodes to the supply return, taken at the latch instants of the line's
+    /// stored samples: one entry per readout line in readout order, which the
     /// [`power`](crate::power) stage reads as a load on the rail one frame later.
-    /// Empty until the bend has run; the bend does not yet record it, so it stays
-    /// empty until the supply-sag model of stage 12 of `docs/PLAN.md` fills it.
+    /// Empty until the bend has run.
     pub line_current_ma: Vec<f32>,
 }
 
@@ -643,12 +698,16 @@ impl State {
 ///
 /// `rail` is the supply rail of every readout line from
 /// [`power::track`](crate::power::track), which powers the drivers, the 74HC logic
-/// and the processor's inputs. The supply-sag model of stage 12 of `docs/PLAN.md`
-/// consumes it; until then it is not read and the supply is ideal.
+/// and the processor's inputs: every pixel period runs at the rail of its middle, and
+/// each blanking interval at the rail of its middle (the vertical blanking where the
+/// last line left it), as the module documentation's "Supply" describes. The mean
+/// current the bend drew from the rail on each line is left in
+/// [`State::line_current_ma`].
 ///
 /// # Panics
 ///
-/// Panics if the codes' pixel period is not the one `params` was resolved for.
+/// Panics if the codes' pixel period is not the one `params` was resolved for, or
+/// `rail` has another number of lines than the codes.
 pub fn bend(
     params: Option<&Params>,
     state: &mut State,
@@ -656,7 +715,6 @@ pub fn bend(
     index: u64,
     codes: &mut Codes,
 ) {
-    let _ = rail;
     let Some(params) = params else {
         return;
     };
@@ -667,6 +725,13 @@ pub fn bend(
         layout.pixel_period_s(),
         params.pixel_period_s
     );
+    assert_eq!(
+        rail.lines(),
+        layout.rows(),
+        "the rail has {} lines but the codes {}",
+        rail.lines(),
+        layout.rows()
+    );
     let oversample = u64::from(params.oversample);
     let line_len = layout.line_len() as usize;
     let hblank = u64::from(layout.hblank_px()) * oversample;
@@ -674,8 +739,12 @@ pub fn bend(
     let blank = Blanking {
         line: hblank,
         frame: hblank + u64::from(layout.vblank_lines()) * line_steps,
+        line_px: f64::from(layout.line_len() + layout.hblank_px()),
+        hblank_px: f64::from(layout.hblank_px()),
     };
     state.noise = Pcg32::new(params.seed, index);
+    let mut currents = std::mem::take(&mut state.line_current_ma);
+    currents.resize(layout.rows() as usize, 0.0);
     let words = codes.words_mut();
     dispatch(
         params,
@@ -684,24 +753,36 @@ pub fn bend(
             words,
             line_len,
             blank,
+            rail,
+            currents: &mut currents,
         },
     );
+    state.line_current_ma = currents;
 }
 
-/// Sub-steps of blanking after a line and after the last line of a frame.
+/// Blanking after a line and after the last line of a frame, and the line it ends.
 #[derive(Debug, Clone, Copy)]
 struct Blanking {
+    /// Sub-steps of horizontal blanking after a line.
     line: u64,
+    /// Sub-steps of blanking after the last line of a frame, the vertical blanking included.
     frame: u64,
+    /// Pixel periods of a whole line, blanking included: the span of one rail entry.
+    line_px: f64,
+    /// Pixel periods of horizontal blanking.
+    hblank_px: f64,
 }
 
 /// What a run of the circuit does.
 enum Work<'w> {
-    /// Rewrites a frame of lines, each followed by blanking.
+    /// Rewrites a frame of lines, each followed by blanking, on a supply rail.
     Frame {
         words: &'w mut [u16],
         line_len: usize,
         blank: Blanking,
+        rail: &'w Rail,
+        /// The mean current drawn from the rail on every line, in milliamperes.
+        currents: &'w mut [f32],
     },
     /// Rewrites consecutive pixel periods without blanking.
     #[cfg(feature = "test-util")]
@@ -744,26 +825,63 @@ fn dispatch(params: &Params, state: &mut State, work: Work<'_>) {
     states!(1 2 3 4 5 6 7 8 9 10 11 12 13);
 }
 
-/// The circuit running with one gate on the function switch and `M` state variables.
-struct Run<'a, G, const M: usize> {
-    params: &'a Params,
-    gate: &'a mut G,
-    noise: &'a mut Pcg32,
-    /// Where the coupling state is written back when the run ends.
-    state: &'a mut Coupling,
-    /// The diode state and the probes' count, as at the end of the last sub-step.
-    coupling: Coupling,
-    /// The capacitances' voltages at the end of the last sub-step.
-    z: [f64; M],
+/// The sub-step arithmetic of one network for `M` state variables.
+struct Tables<'a, const M: usize> {
+    /// The network.
+    net: &'a Network,
     /// The sub-step arithmetic of every diode state.
     kernels: [Kernel<'a, M>; 3],
     /// Whole pixel periods by diode state and gate level.
     pixels: [[Pixel<'a, M>; 2]; 3],
-    /// Driver pattern of the last pixel period; blanking, and so the black code, at the start.
-    last: usize,
 }
 
-impl<'a, G: Gate + Clone, const M: usize> Run<'a, G, M> {
+impl<'a, const M: usize> Tables<'a, M> {
+    fn new(net: &'a Network) -> Self {
+        Self {
+            net,
+            kernels: net.kernels(),
+            pixels: net.pixels(),
+        }
+    }
+}
+
+/// The circuit running with one gate on the function switch and `M` state variables.
+struct Run<'a, G, const M: usize> {
+    params: &'a Params,
+    gate: &'a mut G,
+    /// Where the coupling state is written back when the run ends.
+    state: &'a mut Coupling,
+    /// The circuit's evolving state.
+    core: Core<'a, M>,
+    /// The network with the bend's logic powered.
+    live: Tables<'a, M>,
+    /// The network with the bend's logic unpowered; `None` in bypass.
+    dead: Option<Tables<'a, M>>,
+    /// Whether the logic is unpowered: the rail is below `logic_min_v`.
+    off: bool,
+}
+
+/// The evolving state of a run, apart from the gate.
+struct Core<'a, const M: usize> {
+    params: &'a Params,
+    noise: &'a mut Pcg32,
+    /// The diode state and the probes' count, as at the end of the last sub-step.
+    coupling: Coupling,
+    /// The capacitances' voltages at the end of the last sub-step over `ratio`.
+    z: [f64; M],
+    /// Driver pattern of the last pixel period; blanking, and so the black code, at the start.
+    last: usize,
+    /// The image processor's latch, its noise referred to the rail.
+    latch: Latch,
+    /// The rail in volts, `NaN` before it is first set.
+    rail_v: f64,
+    /// The rail over the nominal, in which every source, threshold and `z` is expressed.
+    ratio: f64,
+    /// Current drawn from the rail at the latch instants of the line so far, summed, in amperes.
+    drawn_a: f64,
+}
+
+impl<'a, G: Gate + Clone + Default, const M: usize> Run<'a, G, M> {
     fn new(
         params: &'a Params,
         gate: &'a mut G,
@@ -773,24 +891,34 @@ impl<'a, G: Gate + Clone, const M: usize> Run<'a, G, M> {
         Self {
             params,
             gate,
-            noise,
-            coupling: *state,
-            z: std::array::from_fn(|k| state.z[k]),
+            core: Core {
+                params,
+                noise,
+                coupling: *state,
+                z: std::array::from_fn(|k| state.z[k]),
+                last: params.net.pattern(params.dark_code),
+                latch: params.latch,
+                rail_v: f64::NAN,
+                ratio: 1.0,
+                drawn_a: 0.0,
+            },
             state,
-            kernels: params.net.kernels(),
-            pixels: params.net.pixels(),
-            last: params.net.pattern(params.dark_code),
+            live: Tables::new(&params.net),
+            dead: params.dead.as_ref().map(Tables::new),
+            off: false,
         }
     }
 
-    /// Does `work` and writes the state back.
+    /// Does `work` and writes the state back, in volts.
     fn work(mut self, work: Work<'_>) {
         match work {
             Work::Frame {
                 words,
                 line_len,
                 blank,
-            } => self.frame(words, line_len, blank),
+                rail,
+                currents,
+            } => self.frame(words, line_len, blank, rail, currents),
             #[cfg(feature = "test-util")]
             Work::Words(codes) => {
                 for code in codes {
@@ -800,22 +928,117 @@ impl<'a, G: Gate + Clone, const M: usize> Run<'a, G, M> {
             #[cfg(feature = "test-util")]
             Work::Trace { codes, probes } => self.trace(codes, probes),
         }
-        self.coupling.z[..M].copy_from_slice(&self.z);
-        *self.state = self.coupling;
+        let core = &mut self.core;
+        for (volts, scaled) in core.coupling.z.iter_mut().zip(core.z) {
+            *volts = scaled * core.ratio;
+        }
+        *self.state = core.coupling;
     }
 
     /// Runs a frame of `line_len` samples per line, each line followed by blanking.
-    fn frame(&mut self, words: &mut [u16], line_len: usize, blank: Blanking) {
+    ///
+    /// Records the mean current drawn from the rail on every line in `currents`.
+    fn frame(
+        &mut self,
+        words: &mut [u16],
+        line_len: usize,
+        blank: Blanking,
+        rail: &Rail,
+        currents: &mut [f32],
+    ) {
+        let nominal_v = rail.nominal_v();
         let lines = words.len() / line_len;
-        for (line, samples) in words.chunks_exact_mut(line_len).enumerate() {
-            for word in samples {
+        let supply = rail.lines_v().iter().zip(currents);
+        for (line, (samples, (&[start_v, end_v], current))) in
+            words.chunks_exact_mut(line_len).zip(supply).enumerate()
+        {
+            let slope_v = (end_v - start_v) / blank.line_px;
+            self.core.drawn_a = 0.0;
+            for (sample, word) in samples.iter_mut().enumerate() {
+                self.supply(slope_v.mul_add(sample as f64 + 0.5, start_v), nominal_v);
                 *word = self.period(*word);
             }
-            self.blank(if line + 1 == lines {
-                blank.frame
+            *current = (self.core.drawn_a / line_len as f64 * 1e3) as f32;
+            if line + 1 == lines {
+                self.supply(end_v, nominal_v);
+                self.blank(blank.frame);
             } else {
-                blank.line
-            });
+                let middle_px = 0.5f64.mul_add(blank.hblank_px, line_len as f64);
+                self.supply(slope_v.mul_add(middle_px, start_v), nominal_v);
+                self.blank(blank.line);
+            }
+        }
+    }
+
+    /// Sets the rail at `rail_v` volts for what follows; `nominal_v` is the camera's.
+    ///
+    /// Below `logic_min_v` the 74HC chips lose their supply: their output floats, and on
+    /// entering that state each forgets its logic levels and timers, as at power-on.
+    fn supply(&mut self, rail_v: f64, nominal_v: f64) {
+        self.core.supply(rail_v, nominal_v);
+        let off = self.dead.is_some() && rail_v < self.params.logic_min_v;
+        if off && !self.off {
+            *self.gate = G::default();
+        }
+        self.off = off;
+    }
+
+    /// Runs one pixel period with `code` on the drivers and returns the latched word.
+    #[inline]
+    fn period(&mut self, code: u16) -> u16 {
+        let Self {
+            core,
+            gate,
+            live,
+            dead,
+            off,
+            ..
+        } = self;
+        match dead {
+            Some(dead) if *off => core.period(&mut Wire, dead, code),
+            _ => core.period(&mut **gate, live, code),
+        }
+    }
+
+    /// Advances the circuit through `steps` sub-steps of blanking.
+    fn blank(&mut self, steps: u64) {
+        let Self {
+            core,
+            gate,
+            live,
+            dead,
+            off,
+            ..
+        } = self;
+        match dead {
+            Some(dead) if *off => core.blank(&mut Wire, dead, steps),
+            _ => core.blank(&mut **gate, live, steps),
+        }
+    }
+}
+
+impl<const M: usize> Core<'_, M> {
+    /// Sets the rail at `rail_v` volts; `nominal_v` is the camera's.
+    ///
+    /// Every source and threshold of the circuit scales with the rail, so the state is
+    /// carried over the rail's ratio to nominal: a new ratio re-expresses it, and the
+    /// latch's thermal noise, which does not scale, is referred to the new ratio.
+    #[inline]
+    fn supply(&mut self, rail_v: f64, nominal_v: f64) {
+        if rail_v.to_bits() == self.rail_v.to_bits() {
+            return;
+        }
+        self.rail_v = rail_v;
+        let ratio = (rail_v / nominal_v).max(MIN_RAIL_RATIO);
+        if ratio.to_bits() != self.ratio.to_bits() {
+            let factor = self.ratio / ratio;
+            for volts in &mut self.z {
+                *volts *= factor;
+            }
+            self.ratio = ratio;
+            let latch = &self.params.latch;
+            self.latch.noise_v = latch.noise_v / ratio;
+            self.latch.reach_v = latch.reach_v / ratio;
         }
     }
 
@@ -828,39 +1051,57 @@ impl<'a, G: Gate + Clone, const M: usize> Run<'a, G, M> {
     /// the gate is put back and the pixel runs sub-step by sub-step. Both give the same
     /// voltages to rounding.
     #[inline]
-    fn period(&mut self, code: u16) -> u16 {
+    fn period<H: Gate + Clone>(&mut self, gate: &mut H, tables: &Tables<'_, M>, code: u16) -> u16 {
         let params = self.params;
-        let net = &params.net;
+        let net = tables.net;
         let pattern = net.pattern(code);
         let from = std::mem::replace(&mut self.last, pattern);
         let ramp = (from != pattern).then_some(from);
         let clamp = self.coupling.clamp;
-        let high = self.gate.high();
-        let pixel = &self.pixels[clamp.index()][usize::from(high)];
+        let high = gate.high();
+        let pixel = &tables.pixels[clamp.index()][usize::from(high)];
         let start = self.z;
-        let gate = self.gate.clone();
+        let saved = gate.clone();
+        let latch_step = self.latch.step as usize;
+        let mut latch_f_v = 0.0;
         let mut holds = true;
-        for f_v in pixel.f(pattern, ramp, &start) {
-            self.gate.tick();
-            if self.gate.high() != high || !net.consistent(clamp, f_v) {
+        for (step, f_v) in pixel.f(pattern, ramp, &start).enumerate() {
+            gate.tick();
+            if gate.high() != high || !net.consistent(clamp, f_v) {
                 holds = false;
                 break;
             }
-            self.gate.sense(f_v, &params.chips);
+            if step == latch_step {
+                latch_f_v = f_v;
+            }
+            gate.sense(f_v, &params.chips);
         }
         if !holds {
-            *self.gate = gate;
+            *gate = saved;
             self.last = from;
-            return self.pixel(code, |_, _, _, _| {});
+            return self.pixel(gate, tables, code, |_, _, _, _| {});
         }
-        let latch = &params.latch;
+        let supply = net.supply();
         let mut bits = 0;
-        for (bit, volts) in pixel.pins(pattern, ramp, &start) {
-            bits |= u16::from(read(latch, self.noise, volts)) << bit;
+        let mut drawn_a = 0.0;
+        for (i, (bit, volts)) in pixel.pins(pattern, ramp, &start).enumerate() {
+            if self.latch.mask & (1 << bit) != 0 {
+                bits |= u16::from(read(&self.latch, self.noise, volts)) << bit;
+            }
+            if pattern & (1 << i) != 0 {
+                drawn_a += (supply.v_oh - volts) * supply.line_s[i];
+            }
         }
+        if high {
+            drawn_a += (supply.v_oh - pixel.t_v(pattern, ramp, &start)) * supply.gate_s;
+        }
+        if clamp == Clamp::Rail {
+            drawn_a -= supply.clamp_s * (latch_f_v - supply.ceiling_v);
+        }
+        self.drawn_a += drawn_a * self.ratio;
         self.z = pixel.end(pattern, ramp, &start);
         count_clamped(&mut self.coupling, u64::from(params.oversample));
-        (code & !latch.mask) | bits
+        (code & !self.latch.mask) | bits
     }
 
     /// Runs one pixel period sub-step by sub-step and returns the latched word.
@@ -868,38 +1109,68 @@ impl<'a, G: Gate + Clone, const M: usize> Run<'a, G, M> {
     /// `probe` sees the diode state, driver levels, previous state and gate level of
     /// every sub-step, from which every node voltage of that sub-step follows.
     #[inline]
-    fn pixel(&mut self, code: u16, mut probe: impl FnMut(Clamp, Drive, &[f64], f64)) -> u16 {
+    fn pixel<H: Gate>(
+        &mut self,
+        gate: &mut H,
+        tables: &Tables<'_, M>,
+        code: u16,
+        mut probe: impl FnMut(Clamp, Drive, &[f64], f64),
+    ) -> u16 {
         let params = self.params;
-        let net = &params.net;
+        let net = tables.net;
         let pattern = net.pattern(code);
         let from = std::mem::replace(&mut self.last, pattern);
         let mut latched = 0;
         for step in 0..params.oversample {
             let drive = params.ramp.drive(from, pattern, u64::from(step));
-            self.gate.tick();
-            let gate = usize::from(self.gate.high());
+            gate.tick();
+            let high = usize::from(gate.high());
             let clamp = &mut self.coupling.clamp;
-            let f_v = net.settle_in(&self.kernels, clamp, drive, &self.z, gate);
+            let f_v = net.settle_in(&tables.kernels, clamp, drive, &self.z, high);
             let clamp = *clamp;
-            probe(clamp, drive, &self.z, level(gate == 1));
-            if step == params.latch.step {
-                latched = self.latch(drive, gate);
+            probe(clamp, drive, &self.z, level(high == 1));
+            if step == self.latch.step {
+                latched = self.latch(tables, drive, high, pattern, f_v);
             }
-            Network::kernel(&self.kernels, clamp).advance(drive, &mut self.z, gate);
+            Network::kernel(&tables.kernels, clamp).advance(drive, &mut self.z, high);
             count_clamped(&mut self.coupling, 1);
-            self.gate.sense(f_v, &params.chips);
+            gate.sense(f_v, &params.chips);
         }
-        (code & !params.latch.mask) | latched
+        (code & !self.latch.mask) | latched
     }
 
     /// Reads every latched pin against the threshold plus thermal noise.
-    fn latch(&mut self, drive: Drive, gate: usize) -> u16 {
-        let latch = &self.params.latch;
-        let kernel = Network::kernel(&self.kernels, self.coupling.clamp);
+    ///
+    /// Adds the current the rail delivers at this sub-step to the line's sum: the
+    /// drivers of `pattern` that are high, the gate if `high`, less what the diodes to
+    /// the supply return from node F at `f_v`.
+    fn latch(
+        &mut self,
+        tables: &Tables<'_, M>,
+        drive: Drive,
+        high: usize,
+        pattern: usize,
+        f_v: f64,
+    ) -> u16 {
+        let kernel = Network::kernel(&tables.kernels, self.coupling.clamp);
+        let supply = tables.net.supply();
         let mut bits = 0;
-        for (bit, volts) in kernel.pins(drive, &self.z, gate) {
-            bits |= u16::from(read(latch, self.noise, volts)) << bit;
+        let mut drawn_a = 0.0;
+        for (i, (bit, volts)) in kernel.pins(drive, &self.z, high).enumerate() {
+            if self.latch.mask & (1 << bit) != 0 {
+                bits |= u16::from(read(&self.latch, self.noise, volts)) << bit;
+            }
+            if pattern & (1 << i) != 0 {
+                drawn_a += (supply.v_oh - volts) * supply.line_s[i];
+            }
         }
+        if high == 1 {
+            drawn_a += (supply.v_oh - kernel.t_v(drive, &self.z, high)) * supply.gate_s;
+        }
+        if self.coupling.clamp == Clamp::Rail {
+            drawn_a -= supply.clamp_s * (f_v - supply.ceiling_v);
+        }
+        self.drawn_a += drawn_a * self.ratio;
         bits
     }
 
@@ -910,25 +1181,25 @@ impl<'a, G: Gate + Clone, const M: usize> Run<'a, G, M> {
     /// runs one sub-step explicitly, which settles the diodes and completes a gate
     /// transition that falls due, and as many sub-steps in closed form as the gate's
     /// pending transition and the diodes allow.
-    fn blank(&mut self, mut steps: u64) {
+    fn blank<H: Gate>(&mut self, gate: &mut H, tables: &Tables<'_, M>, mut steps: u64) {
         let params = self.params;
-        let net = &params.net;
+        let net = tables.net;
         let dark = net.pattern(params.dark_code);
         let from = std::mem::replace(&mut self.last, dark);
         let mut elapsed = 0u64;
         let mut explicit = params.ramp.steps() + net.settle_steps(self.coupling.clamp);
         while steps > 0 {
             let drive = params.ramp.drive(from, dark, elapsed);
-            let (was_high, was_clamped) = (self.gate.high(), self.coupling.clamp);
-            self.gate.tick();
-            let gate = usize::from(self.gate.high());
+            let (was_high, was_clamped) = (gate.high(), self.coupling.clamp);
+            gate.tick();
+            let high = usize::from(gate.high());
             let clamp = &mut self.coupling.clamp;
-            net.settle_in(&self.kernels, clamp, drive, &self.z, gate);
-            Network::kernel(&self.kernels, *clamp).advance(drive, &mut self.z, gate);
+            net.settle_in(&tables.kernels, clamp, drive, &self.z, high);
+            Network::kernel(&tables.kernels, *clamp).advance(drive, &mut self.z, high);
             count_clamped(&mut self.coupling, 1);
             steps -= 1;
             elapsed = elapsed.saturating_add(1);
-            explicit = if self.gate.high() != was_high || self.coupling.clamp != was_clamped {
+            explicit = if gate.high() != was_high || self.coupling.clamp != was_clamped {
                 // A new source or diode state excites the line capacitances again.
                 net.settle_steps(self.coupling.clamp)
             } else {
@@ -938,19 +1209,19 @@ impl<'a, G: Gate + Clone, const M: usize> Run<'a, G, M> {
                 continue;
             }
 
-            let due = u64::from(self.gate.pending());
+            let due = u64::from(gate.pending());
             let until_due = if due > 0 { due - 1 } else { steps };
             let clamp = self.coupling.clamp;
             let mut z: Vector = self.coupling.z;
             z[..M].copy_from_slice(&self.z);
-            let gate = level(gate == 1);
+            let level = level(high == 1);
             let quiet = until_due
                 .min(steps)
-                .min(net.quiet_steps(clamp, &z, dark, gate));
-            net.hold(clamp, &mut z, dark, gate, quiet);
+                .min(net.quiet_steps(clamp, &z, dark, level));
+            net.hold(clamp, &mut z, dark, level, quiet);
             self.z.copy_from_slice(&z[..M]);
             count_clamped(&mut self.coupling, quiet);
-            self.gate.idle(quiet);
+            gate.idle(quiet);
             steps -= quiet;
         }
     }
@@ -1006,9 +1277,9 @@ pub struct Probe {
 
 /// Runs the circuit for one pixel period per code, without blanking, probing each sub-step.
 ///
-/// Appends one [`Probe`] per sub-step to `probes`. The state advances as in [`bend`];
-/// the latched words are discarded. The drivers start from the black code, as after
-/// blanking.
+/// Appends one [`Probe`] per sub-step to `probes`. The state advances as in [`bend`]
+/// on the nominal rail; the latched words are discarded. The drivers start from the
+/// black code, as after blanking.
 #[cfg(feature = "test-util")]
 pub fn trace(params: &Params, state: &mut State, codes: &[u16], probes: &mut Vec<Probe>) {
     dispatch(params, state, Work::Trace { codes, probes });
@@ -1016,9 +1287,9 @@ pub fn trace(params: &Params, state: &mut State, codes: &[u16], probes: &mut Vec
 
 /// Runs the circuit for one pixel period per code and replaces each code by the latched word.
 ///
-/// The state advances as in [`bend`], with the image processor's input noise of frame
-/// `index`, but without blanking. The drivers start from the black code, as after
-/// blanking.
+/// The state advances as in [`bend`] on the nominal rail, with the image processor's
+/// input noise of frame `index`, but without blanking. The drivers start from the
+/// black code, as after blanking.
 #[cfg(feature = "test-util")]
 pub fn latch_words(params: &Params, state: &mut State, index: u64, codes: &mut [u16]) {
     state.noise = Pcg32::new(params.seed, index);
@@ -1026,11 +1297,14 @@ pub fn latch_words(params: &Params, state: &mut State, index: u64, codes: &mut [
 }
 
 #[cfg(feature = "test-util")]
-impl<G: Gate + Clone, const M: usize> Run<'_, G, M> {
+impl<G: Gate + Clone + Default, const M: usize> Run<'_, G, M> {
     fn trace(&mut self, codes: &[u16], probes: &mut Vec<Probe>) {
         let net = &self.params.net;
+        let Self {
+            core, gate, live, ..
+        } = self;
         for &code in codes {
-            self.pixel(code, |clamp, drive, z, gate| {
+            core.pixel(&mut **gate, live, code, |clamp, drive, z, gate| {
                 let solution = net.solution(clamp);
                 let (s_v, t_v) = solution.probes.buses(drive, z, gate);
                 let f_v = solution.f.at(0, drive, z, gate);

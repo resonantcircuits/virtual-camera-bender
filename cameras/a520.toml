@@ -104,8 +104,8 @@ decoupling_uf = 47.0                # PROVISIONAL: bulk decoupling on the rail
 quiescent_ma = 60.0                 # PROVISIONAL: AFE, logic and processor input stage on the rail
 afe_uvlo_v = 2.7                    # C: AD9949 class supplies 2.7 V minimum (section 5)
 logic_min_v = 2.0                   # C: 74HC specified from VCC 2.0 V (section 6)
-dsp_brownout_v = 2.9                # PROVISIONAL: the processor's brownout threshold
-afe_restart_lines = 3               # PROVISIONAL: lines the AFE needs to resume converting after its supply recovers
+dsp_brownout_v = 2.4                # PROVISIONAL: the processor's 3.3 V I/O loses its capture below the AFE's lockout (was 2.9, a supervisor's trip point, which hid the lockout)
+afe_restart_lines = 3               # PROVISIONAL: time constant, in native lines, of the AFE's black clamp re-establishing the pedestal after a lockout
 
 [isp]
 wb_r_gain = 2.0                     # PROVISIONAL: daylight
