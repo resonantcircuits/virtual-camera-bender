@@ -666,7 +666,9 @@ and the JPEG buffer (stage 20) once the user's stage 15 findings are in.
 **Sensor bend, `[bend.sensor]`** (sensor stage, stage 16). Two things a bender does to
 the sensor itself. `temperature_c` (default the camera's `reference_temp_c`): the dark
 current follows the Arrhenius rule, doubling every `dark_doubling_c` degrees (C, 6 to 8
-for CCD silicon; `dark_e_per_s` and the hot photosites' multiples scale together), the
+for CCD silicon; `dark_e_per_s`, the hot photosites' multiples and the dark-current
+non-uniformity, `dark_nonuniformity` of the site's dark charge, scale together, while
+`dsnu_e` stays a fixed readout offset), the
 read noise rises `read_noise_per_c` per degree (PROVISIONAL), and the output amplifier's
 glow, `amp_glow_e_per_s` of extra dark current at its corner falling off over
 `amp_glow_radius_frac` of the width (PROVISIONAL; the corner is the readout's first
@@ -682,7 +684,8 @@ stops clearing in movie mode (smear grows). The glow scales with `k − 1`, sinc
 characterised dark at the reference temperature already includes the amplifier's
 share (goldens unchanged). Camera `[sensor]`
 gains `reference_temp_c`, `dark_doubling_c`, `read_noise_per_c`, `amp_glow_e_per_s`,
-`amp_glow_radius_frac`, `substrate_v`, `full_well_frac_per_v`, `drain_loss_v`. State: none. The
+`amp_glow_radius_frac`, `substrate_v`, `full_well_frac_per_v`, `drain_loss_v`,
+`dark_nonuniformity`. State: none. The
 optical-black clamp removes the mean dark, so what shows is grain, hot crosses, the
 glow's gradient and clipping, as on a real hot sensor.
 
