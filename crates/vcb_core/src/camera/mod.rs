@@ -350,6 +350,12 @@ pub struct Isp {
     pub ae_tau_s: f64,
     /// Time constant of the auto-white-balance servo in seconds of camera time.
     pub wb_tau_s: f64,
+    /// Correction range of the black-clamp loop either side of nominal black, in processor codes.
+    ///
+    /// The DSP follows each line's optical-black mean only within `[adc] black_level`,
+    /// in the processor's view of the bus, plus or minus this range; beyond it the
+    /// loop's estimate holds at the edge. At least 0.
+    pub clamp_range: f64,
     /// Demosaicing algorithm.
     #[cfg_attr(feature = "serde", serde(default))]
     pub demosaic: Demosaic,

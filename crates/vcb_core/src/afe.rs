@@ -80,12 +80,23 @@
 //! time. Patterns therefore roll on from line to line and frame to frame without
 //! restarting.
 //!
+//! A frame lasts the processor's [`Params::frame_period_s`], VD to VD, which restarts
+//! the timing generator: the oscillators advance by it from one frame to the next, and
+//! the vertical blanking runs until VD. A reclocked timing generator
+//! ([`capture`](crate::capture)) that finishes its lines early waits in blanking
+//! longer; one too slow for the frame has no blanking left, the lines it reads past VD
+//! being lost to the processor. Without `[bend.clock]` the two frames are one.
+//!
 //! # Time scaling
 //!
-//! Bandwidth and slew rate describe the camera at its native pixel clock. At
-//! match-input resolution the pixel period differs, so both are scaled by
-//! `pixel_period_s / native_pixel_period_s` before use, which keeps the edge softness
-//! the same in pixels. The flicker corner and the oscillator frequencies describe
+//! Bandwidth and slew rate describe the analog hardware in seconds at the camera's
+//! native resolution. At match-input resolution the pixel period differs, so both are
+//! scaled by [`Params::resolution_scale`], `dsp_pixel_period_s / native_pixel_period_s`
+//! ([`Timing::resolution_scale`]), before use, which keeps the edge softness the same
+//! in pixels. A reclocked timing generator does not enter the scale: the chip's pole
+//! and slew stay where the hardware puts them while the sensor's pixel period moves,
+//! so a slower oscillator settles each sample more (sharper edges, fewer slew limits)
+//! and a faster one less. The flicker corner and the oscillator frequencies describe
 //! time scales of hundreds of pixels or more and are used as given: match-input
 //! timing keeps the active-line time and the frame period native, so they span the
 //! same fraction of the image at every resolution. For the same reason the flicker
@@ -243,12 +254,21 @@ pub struct Params {
     pub pga_gain_db: f64,
     /// Voltage at the ADC input for zero charge.
     pub pedestal_v: f64,
-    /// Small-signal bandwidth at the native pixel clock in hertz.
+    /// Small-signal bandwidth at the native resolution in hertz.
     pub bandwidth_hz: f64,
-    /// Slew-rate limit at the native pixel clock in volts per microsecond.
+    /// Slew-rate limit at the native resolution in volts per microsecond.
     pub slew_v_per_us: f64,
     /// Duration of one pixel period of the camera's own clock in seconds.
     pub native_pixel_period_s: f64,
+    /// Factor that stretches the bandwidth's time constant and the slew time to the resolution.
+    ///
+    /// [`Timing::resolution_scale`], `dsp_pixel_period_s / native_pixel_period_s`: 1 at
+    /// native resolution whatever the sensor-side clock.
+    pub resolution_scale: f64,
+    /// Duration of the processor's frame, VD to VD, in seconds.
+    ///
+    /// The oscillators advance by it from one frame to the next.
+    pub frame_period_s: f64,
     /// Simulation sub-steps per pixel period.
     pub oversample: u32,
     /// Nominal ADC reference: the input voltage of the largest code.
@@ -295,6 +315,8 @@ impl Params {
             bandwidth_hz: afe.bandwidth_hz,
             slew_v_per_us: afe.slew_v_per_us,
             native_pixel_period_s: timing.native_pixel_period_s,
+            resolution_scale: timing.resolution_scale(),
+            frame_period_s: timing.frame_period_s,
             oversample: timing.oversample,
             vref_v: camera.adc.full_scale_v,
             code_v: camera.adc.full_scale_v / f64::from(camera.max_code()),
@@ -692,9 +714,10 @@ impl<'a> Front<'a> {
         let pixel_s = layout.pixel_period_s();
         let oversample = params.oversample.max(1);
         let sub_s = pixel_s / f64::from(oversample);
-        // Bandwidth and slew rate were measured at the native pixel period: scale them by
-        // pixel_period_s / native_pixel_period_s so they keep their meaning in pixels.
-        let scale = pixel_s / params.native_pixel_period_s;
+        // Bandwidth and slew rate describe the hardware at the native resolution: scale
+        // them to the processor's pixel period, so they keep their meaning in pixels at
+        // every resolution and stay fixed in seconds under a reclocked sensor clock.
+        let scale = params.resolution_scale;
         let tau_s = scale / (TAU * params.bandwidth_hz);
         let slew_v_per_s = params.slew_v_per_us * 1e6 / scale;
         let decay = (-sub_s / tau_s).exp();
@@ -904,15 +927,17 @@ pub fn process(
         front.blank(hblank_s, start_s + line_s, line + 1, line_supply[1]);
     }
     let frame_lines = layout.rows() + layout.vblank_lines();
-    let frame_s = f64::from(frame_lines) * line_s;
+    // VD ends the frame on the processor's clock. The timing generator's own frame of
+    // `frame_lines` lines ends before it when the generator runs fast and after it when
+    // slow; the vertical blanking stretches or shrinks by the difference, which is
+    // exactly zero on one clock.
+    let frame_s = params.frame_period_s;
+    let vblank_s = (f64::from(layout.vblank_lines()) * line_s
+        + (frame_s - f64::from(frame_lines) * line_s))
+        .max(0.0);
     // The rail is not tracked through vertical blanking; it is taken where the last line left it.
     let end_v = supply.last().map_or(rail.nominal_v(), |line| line[1]);
-    front.blank(
-        f64::from(layout.vblank_lines()) * line_s,
-        frame_s,
-        frame_lines,
-        end_v,
-    );
+    front.blank(vblank_s, frame_s, frame_lines, end_v);
     if let Some((osc, _, start)) = front.inject {
         state.inject = osc.phase(start, frame_s, frame_lines);
     }

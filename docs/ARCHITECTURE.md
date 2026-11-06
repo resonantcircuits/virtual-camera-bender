@@ -87,7 +87,8 @@ with the charge's variance. An overflow drain absorbs `antibloom_ratio` full wel
 the rest spills along the column. Movie mode's electronic shutter adds smear from
 `smear_db` (V/10 definition), one constant streak per column; it scales with the
 light and the readout time, not the exposure, so relative to the signal it grows as
-the exposure shortens.
+the exposure shortens. The readout time is at most the processor's frame period, since
+the sensor reads until VD.
 
 Auto-exposure scales the light on top of the set exposure. With `ae_mode = "scene"`
 each frame is scaled, within two stops and without lag, so the mean luminance of the
@@ -143,7 +144,8 @@ pixel-rate edges, and those skips, not chance, make its runs irregular. Node T j
 one pin (`D4` to `D11`) or ground; `common_bus`, or a pin in both banks, merges S and
 T. Every tapped line, and the bend's wires S and T, carry `line_pf` to ground, and a
 driver that changes its bit slews at `driver_slew_v_per_us` (a full swing must fit in
-a pixel period), so a line is still moving for part of each pixel period. The
+the camera's own pixel period; a reclocked sensor clock too fast for it gets a swing of
+one period), so a line is still moving for part of each pixel period. The
 processor latches each touched line's actual voltage at `latch_phase` against
 `dsp_threshold_v` plus `dsp_noise_mv` of noise; untouched lines keep the ADC's bit. At
 27 MHz a 15 pF line through 250 Ω has settled to within a millivolt at a latch phase of
@@ -177,7 +179,9 @@ readout order from the first line's measurement:
 
 > `b[n] = b[n-1] + (1 - e^(-1/4)) (ob[n] - b[n-1])`
 
-so a bend that disturbs the optical-black columns shifts black for a few lines.
+so a bend that disturbs the optical-black columns shifts black for a few lines. The
+loop corrects only within `[isp] clamp_range` codes of the nominal black, so a line
+whose optical black holds a picture word, as from a locked-out AFE, keeps its colour.
 `develop` normalises by `white_code` (derived from the analog chain), white-balances the
 mosaic, clipping where the least-amplified channel saturates, demosaics (Malvar or
 bilinear), applies the colour matrix, bins movie frames, applies tone curve and sRGB
@@ -226,13 +230,16 @@ stays at eight and the frame period grows. Still output is `cols` by `rows_read`
 output is `cols / h_bin` by `rows_read` at match-input, the camera's movie size at native.
 
 Constants shorter than a line (AFE bandwidth and slew, gate delays, minimum pulse,
-setup time, `1 / ff_fmax_hz`, the bus drivers' slew) describe the native clock and are
-multiplied by `pixel_period_s / native_pixel_period_s`, keeping their length in pixels;
-so is the bus line capacitance, which keeps the lines' time constants in pixels; the
-latch phase is a fraction of the pixel period. Oscillators, the flicker corner and fault
-rates are used as given, since line time and frame period are native. Fault durations
-are native lines scaled to the virtual rows, CTE counts native transfers, and ISP radii
-are fractions of the width.
+setup time, `1 / ff_fmax_hz`, the bus drivers' slew) describe the hardware in seconds at
+the native clock and are multiplied by `Timing::resolution_scale`, `dsp_pixel_period_s /
+native_pixel_period_s`, keeping their length in pixels at every resolution while a
+reclocked timing generator leaves them fixed in seconds, so a slower oscillator settles
+more per pixel; so is the bus line capacitance, which keeps the lines' time constants in
+pixels; the latch phase is a fraction of the pixel period. Oscillators, the flicker
+corner and fault rates are used as given, since line time and frame period are native;
+from frame to frame they advance over the processor's frame period, VD to VD. Fault
+durations are native lines scaled to the virtual rows, CTE counts native transfers, and
+ISP radii are fractions of the width.
 
 ## 5. Determinism and randomness
 

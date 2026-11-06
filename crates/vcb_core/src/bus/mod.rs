@@ -14,7 +14,10 @@
 //!   bit of the code being converted for the whole pixel period; during blanking the
 //!   ADC converts the pedestal and the drivers hold the black code. At the start of a
 //!   pixel period a driver that changes its bit slews at `driver_slew_v_per_us`, so a
-//!   full swing takes `v_oh / driver_slew_v_per_us`, which must fit in a pixel period.
+//!   full swing takes `v_oh / driver_slew_v_per_us`, which must fit in the camera's own
+//!   pixel period. A reclocked timing generator faster than the swing allows
+//!   (`[bend.clock]`) gets a swing of one pixel period instead: the drivers are taken
+//!   to reach the new level within each period, which they could not.
 //! - **Line capacitance.** Every tapped line carries `line_pf` to ground (pin, trace and
 //!   the processor's input), and so do the bend's wires S and T. A line therefore
 //!   charges through its driver's resistance and is still moving for part of each
@@ -66,9 +69,14 @@
 //! choice, make the divider's runs irregular.
 //!
 //! The gate delays, the minimum pulse, the setup time, `1 / ff_fmax_hz` and the
-//! drivers' slew time are multiplied by `pixel_period_s / native_pixel_period_s`, and
-//! the line capacitance with them, so at match-input resolution they and the lines'
-//! time constants span the same number of pixel periods as on the camera's own clock.
+//! drivers' slew time are multiplied by
+//! [`Timing::resolution_scale`](crate::Timing::resolution_scale), `dsp_pixel_period_s
+//! / native_pixel_period_s`, and the line capacitance with them, so at match-input
+//! resolution they and the lines' time constants span the same number of pixel periods
+//! as on the camera's own clock. A reclocked timing generator does not enter the scale:
+//! the chips and lines keep their timing in seconds while the drivers' period moves, so
+//! a slower oscillator leaves the lines more time to settle and the gates more pixels
+//! per delay, and a faster one less.
 //!
 //! # Numerical method
 //!
@@ -398,11 +406,11 @@ impl Params {
         let latched = tapped & read as u16;
         // Gate timing, the drivers' slew and the line time constants are sub-line
         // constants: scaled so they keep their native length in pixel periods at
-        // match-input resolution. The driver resistance is physical, so the line
-        // capacitance carries the scale.
-        let scale = timing.pixel_period_s / timing.native_pixel_period_s;
+        // match-input resolution, and fixed in seconds under a reclocked sensor clock.
+        // The driver resistance is physical, so the line capacitance carries the scale.
+        let scale = timing.resolution_scale();
         let ramp_s = adc.v_oh / (adc.driver_slew_v_per_us * 1e6) * scale;
-        if ramp_s > timing.pixel_period_s * (1.0 + RAMP_TOLERANCE) {
+        if ramp_s > timing.dsp_pixel_period_s * (1.0 + RAMP_TOLERANCE) {
             return Err(Error::config(format!(
                 "adc.driver_slew_v_per_us {}: a full swing takes {:.1} ns, longer than the \
                  {:.1} ns native pixel period",
@@ -411,6 +419,12 @@ impl Params {
                 timing.native_pixel_period_s * 1e9
             )));
         }
+        // A faster sensor clock whose period the swing outlasts gets a one-period swing.
+        let ramp_s = if ramp_s > timing.pixel_period_s * (1.0 + RAMP_TOLERANCE) {
+            timing.pixel_period_s
+        } else {
+            ramp_s
+        };
         let ramp = Ramp::new(ramp_s, dt_s);
         let latch = latch_step(adc.latch_phase, oversample);
         let topology = Topology {

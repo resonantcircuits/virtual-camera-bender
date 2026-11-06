@@ -226,6 +226,11 @@ impl Layout {
     }
 
     /// Returns the duration of one frame, including vertical blanking, in seconds.
+    ///
+    /// The timing generator's own frame on the layout's clock. Without `[bend.clock]`
+    /// it is the processor's frame; under a reclocked oscillator VD ends the frame at
+    /// [`Timing::frame_period_s`](crate::Timing::frame_period_s) instead, cutting a slow
+    /// generator short and stretching a fast one's vertical blanking.
     #[must_use]
     pub fn frame_period_s(&self) -> f64 {
         f64::from(self.rows + self.vblank_lines) * self.line_period_s()

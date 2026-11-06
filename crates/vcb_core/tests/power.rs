@@ -1,5 +1,6 @@
 //! The supply rail: its sag under load and spikes, its memory, and what it does to the
-//! AFE, the bus bend and the processor.
+//! AFE, the bus bend and the processor, whose black clamp corrects only within its
+//! range.
 
 #![cfg(all(feature = "serde", feature = "test-util"))]
 
@@ -757,4 +758,166 @@ fn a_dip_covers_the_same_share_of_the_frame_at_every_resolution() {
         (native - small).abs() <= 2.0 * (native_line + small_line),
         "the dips cover {native} of the native frame and {small} of the 640 wide one"
     );
+}
+
+/// The camera with a black clamp that corrects any offset, as without a range.
+fn unlimited_clamp() -> Camera {
+    let mut camera = camera();
+    camera.isp.clamp_range = 1e9;
+    camera
+}
+
+/// A simulator of `camera` and `preset` for scenes of the given size.
+fn build_on(camera: Camera, preset: Preset, (width, height): (u32, u32)) -> Simulator {
+    Simulator::builder((camera, preset))
+        .input_size(width, height)
+        .build()
+        .unwrap()
+}
+
+/// The means of the red, green and blue 8-bit channels of row `row`.
+fn channel_means(frame: &Frame, row: u32) -> [f64; 3] {
+    let mut sums = [0.0; 3];
+    for x in 0..frame.width() {
+        for (sum, value) in sums.iter_mut().zip(frame.pixel(x, row)) {
+            *sum += f64::from(value);
+        }
+    }
+    sums.map(|sum| sum / f64::from(frame.width()))
+}
+
+/// The largest difference between two channel means of a row: 0 for a neutral grey.
+fn cast(means: [f64; 3]) -> f64 {
+    means.iter().copied().fold(f64::MIN, f64::max) - means.iter().copied().fold(f64::MAX, f64::min)
+}
+
+#[test]
+fn a_locked_out_stripe_keeps_its_colour_where_an_unlimited_clamp_blackens_it() {
+    let power = camera().power;
+    // The lockout test's plateau between the processor's brownout and the AFE's
+    // lockout, held for 8 ms: about 35 locked-out lines of the tall frame.
+    let source_ohm = 5.0;
+    let plateau_v = f64::midpoint(power.afe_uvlo_v, power.dsp_brownout_v);
+    let bend = RailBend {
+        spike_ma: (power.rail_v - plateau_v) / source_ohm * 1000.0,
+        spike_hz: 4.0,
+        spike_ms: 8.0,
+        source_ohm: Some(source_ohm),
+        ..RailBend::default()
+    };
+    // A light grey card: the held word lies far above black, mid-scale.
+    let scene = Scene::from_srgb8(TALL.0, TALL.1, &vec![200; (TALL.0 * TALL.1 * 3) as usize]);
+    let mut limited = build(railed(Mode::Still, bend), TALL);
+    let mut unlimited = build_on(unlimited_clamp(), railed(Mode::Still, bend), TALL);
+    let mut clean = build(shipped("clean", Mode::Still), TALL);
+    for index in 0..12 {
+        let kept = limited.frame(&scene, index).clone();
+        let lost = unlimited.frame(&scene, index).clone();
+        let grey = clean.frame(&scene, index).clone();
+        let rail = limited.rail();
+        let below = |line: u32| rail.start_v(line).max(rail.end_v(line)) < power.afe_uvlo_v;
+        let Some(first) = (0..rail.lines()).find(|&line| below(line)) else {
+            continue;
+        };
+        let held = (first..rail.lines())
+            .take_while(|&line| below(line))
+            .count() as u32;
+        assert!(held > 24, "frame {index}: {held} locked-out lines");
+        let word = line_words(limited.codes(), first + held / 2)[0];
+        let max_code = f64::from(camera().dsp_max_code());
+        let view = f64::from(word >> camera().adc.dsp_lsb);
+        assert!(
+            view > max_code / 4.0,
+            "frame {index}: the held word {view} is a picture's, not black's"
+        );
+        for row in first + 12..first + held - 4 {
+            let (kept, lost, grey) = (
+                channel_means(&kept, row),
+                channel_means(&lost, row),
+                channel_means(&grey, row),
+            );
+            assert!(
+                cast(grey) < 10.0,
+                "frame {index}: row {row} of the card {grey:?}"
+            );
+            assert!(
+                cast(kept) > 30.0 && kept.iter().sum::<f64>() > 3.0 * 40.0,
+                "frame {index}: locked-out row {row} develops {kept:?}"
+            );
+            assert!(
+                lost.iter().sum::<f64>() < kept.iter().sum::<f64>() / 3.0,
+                "frame {index}: an unlimited clamp leaves row {row} at {lost:?}"
+            );
+        }
+        return;
+    }
+    panic!("no spike locked the AFE out in twelve frames");
+}
+
+#[test]
+fn the_clamp_follows_a_few_codes_of_drift_and_corrects_no_further_than_its_range() {
+    let camera = camera();
+    let preset = shipped("clean", Mode::Still);
+    let timing = Timing::derive(&camera, &preset, TALL.0, TALL.1).unwrap();
+    let params = isp::Params::resolve(&camera, &preset, &timing).unwrap();
+    let mut wide = params.clone();
+    wide.clamp_range = 1e9;
+    let layout = Layout::from_timing(&timing, Direction::TopDown);
+    let rail = Rail::new(&layout, camera.power.rail_v);
+    let (ob, len) = (layout.ob_cols() as usize, layout.line_len() as usize);
+    let shift = 1u16 << camera.adc.dsp_lsb;
+    // Optical black lifted by `codes` processor codes from line 300 on.
+    let drifted = |codes: u16| {
+        let mut words = hashed_codes(&layout, camera.adc.black_level);
+        for line in words.words_mut().chunks_exact_mut(len).skip(300) {
+            line[..ob].fill(camera.adc.black_level + codes * shift);
+        }
+        words
+    };
+    let clamp = |params: &isp::Params, codes: &Codes| {
+        let mut raw = Raw::new(layout.cols(), layout.rows());
+        isp::clamp_black(params, codes, &rail, &mut raw);
+        raw
+    };
+
+    // Five codes of drift: followed as by an unlimited clamp, onto the new black.
+    let few = drifted(5);
+    let followed = clamp(&params, &few);
+    assert_eq!(followed, clamp(&wide, &few));
+    let settled = f64::from(followed.black_levels()[400]);
+    assert!(
+        (settled - (params.black_code + 5.0)).abs() < 0.01,
+        "black settles at {settled}"
+    );
+
+    // Far beyond the range the loop holds at its edge, and the rest stays in the picture.
+    let far = drifted(params.clamp_range as u16 + 60);
+    let held = clamp(&params, &far);
+    let edge = params.black_code + params.clamp_range;
+    assert!(
+        held.black_levels()
+            .iter()
+            .all(|&level| f64::from(level) <= edge + 1e-9)
+    );
+    assert!((f64::from(held.black_levels()[400]) - edge).abs() < 1e-9);
+    let unheld = clamp(&wide, &far);
+    let lift = held.plane().row(400)[0] - unheld.plane().row(400)[0];
+    assert!((lift - 60.0).abs() < 0.01, "the excess stays: {lift}");
+}
+
+#[test]
+fn the_shipped_presets_never_reach_the_clamps_range() {
+    let scene = ramp((160, 120));
+    for name in ["clean", "hpf", "div", "inv"] {
+        for mode in [Mode::Still, Mode::Movie] {
+            let preset = shipped(name, mode);
+            let limited = render(&mut build(preset.clone(), (160, 120)), &scene, 3);
+            let unlimited = render(
+                &mut build_on(unlimited_clamp(), preset, (160, 120)),
+                &scene,
+                3,
+            );
+            assert_eq!(limited, unlimited, "{name} {mode}");
+        }
+    }
 }

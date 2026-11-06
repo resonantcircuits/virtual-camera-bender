@@ -4,7 +4,8 @@
 //!
 //! Scene, sensor, readout, power, AFE, ADC, bus bend, then **[`reframe`]**, then the
 //! black clamp, memory, development and codec. [`reframe`] rewrites the ADC words in
-//! place, between the bus bend and the processor's black clamp.
+//! place, between the bus bend and the processor's black clamp, and reads the supply
+//! [`Rail`] of [`power::track`](crate::power::track), which feeds the oscillator.
 //!
 //! # Model
 //!
@@ -69,9 +70,12 @@
 //! with `f_1 = drift_hz` and `f_2` the golden ratio times it ([`DRIFT_RATIO`]), so
 //! `|w| <= 1`, `drift_ppm` is the peak wander, and the sum wanders without repeating over
 //! any span a user watches. The phases start at offsets seeded from the preset seed and
-//! run on in real time from frame to frame ([`State`]). The supply term reads the
-//! camera's nominal `[power] rail_v`: the capture does not yet take the
-//! [`power`](crate::power) stage's rail, so `ppm_per_v` has no effect.
+//! run on in real time from frame to frame ([`State`]). The supply term counts from the
+//! camera's nominal `[power] rail_v`; `v_rail` is the rail of the
+//! [`power`](crate::power) stage where the TG stands when the processor line starts:
+//! TG line `n` read in readout order at fraction `P / L - n` of its period
+//! ([`Rail::v_at`]), the last line's end once the TG has read its last line. Without
+//! `[bend.rail]` the rail is nominal and the term vanishes.
 //!
 //! **Bayer parity.** Nothing corrects the mosaic. Where the TG's period `m` and the
 //! processor's sample `j` differ in parity, or the TG's line `n` and the processor's
@@ -115,7 +119,9 @@
 //!   the TG's period, the source-period phase, not the processor's latch instant. The
 //!   capture then takes whole bus words, so where the processor would catch a line
 //!   mid-transition between two TG words, it reads the word the bus bend latched.
-//! - The ratio holds over each processor line; drift and supply move over many lines.
+//! - The ratio holds over each processor line, with the drift and the rail taken at the
+//!   line's start; drift and supply move over many lines. At match-input the rail is
+//!   read at the virtual line the TG's native position falls in, `P / (L R / r)`.
 //! - An HD inside the window before the processor's nominal line end starts the next
 //!   line early; the earlier line's latches that fall after it still read the bus.
 //! - The blanking word is the nominal black code, without the AFE's noise.
@@ -127,8 +133,9 @@
 //! drift rate continues the wander. [`State`] also holds the frame's working buffers:
 //! a copy of the TG's words and the start of every native processor line.
 //!
-//! A steady oscillator at exactly the nominal frequency latches every word where the TG
-//! put it, at every resolution, so [`reframe`] leaves the words alone then.
+//! A steady oscillator at exactly the nominal frequency, on a nominal rail or with no
+//! supply sensitivity, latches every word where the TG put it, at every resolution, so
+//! [`reframe`] leaves the words alone then.
 
 use std::f64::consts::TAU;
 use std::fmt::{self, Debug, Formatter};
@@ -138,6 +145,7 @@ use rayon::slice::ParallelSliceMut;
 
 use crate::adc::Codes;
 use crate::noise;
+use crate::power::Rail;
 use crate::preset::ReclockBend;
 use crate::readout::Layout;
 use crate::{Camera, Error, Preset, Timing};
@@ -320,10 +328,12 @@ impl Params {
 
     /// Returns whether the oscillator runs at exactly the nominal frequency all the time.
     ///
-    /// No drift, and the rail at its nominal voltage, as it is until the capture
-    /// reads the power stage's rail.
-    fn steady(&self) -> bool {
-        self.osc_hz.to_bits() == self.nominal_hz.to_bits() && self.bend.drift_ppm == 0.0
+    /// No drift, and either no supply sensitivity or `rail` at its nominal voltage on
+    /// every line.
+    fn steady(&self, rail: &Rail) -> bool {
+        self.osc_hz.to_bits() == self.nominal_hz.to_bits()
+            && self.bend.drift_ppm == 0.0
+            && (self.bend.ppm_per_v == 0.0 || rail.is_nominal())
     }
 
     /// Returns the drift `w(t)` in `[-1, 1]`, `t_s` seconds after VD, from the phases at VD.
@@ -334,20 +344,39 @@ impl Params {
         f64::midpoint((TAU * first).sin(), (TAU * second).sin())
     }
 
-    /// Returns the TG's frequency over the processor's, `u` native periods after VD.
-    fn ratio_at(&self, cycles: [f64; 2], u: f64) -> f64 {
+    /// Returns the TG's frequency over the processor's at time `u` on a rail of `rail_v`.
+    ///
+    /// `u` counts native periods after VD, `rail_v` volts.
+    fn ratio_at(&self, cycles: [f64; 2], u: f64, rail_v: f64) -> f64 {
         let drift = self.drift(cycles, u * self.native_pixel_period_s);
-        self.oscillator_hz(self.rail_v, drift) / self.nominal_hz
+        self.oscillator_hz(rail_v, drift) / self.nominal_hz
+    }
+
+    /// Returns the supply rail in volts where the TG stands `p` native periods after VD.
+    ///
+    /// The rail of the virtual readout line that the TG's native position falls in, at
+    /// the fraction of its period reached; past the last line read, the last line's end.
+    fn rail_at(&self, rail: &Rail, p: f64) -> f64 {
+        let lines = p / (f64::from(self.native.line_len) * self.map.row_scale);
+        let line = lines.floor();
+        match rail.lines().checked_sub(1) {
+            Some(last) if line < f64::from(last + 1) => rail.v_at(line as u32, lines - line),
+            Some(last) => rail.end_v(last),
+            None => rail.nominal_v(),
+        }
     }
 
     /// Finds where every native processor line of the frame starts, into `starts`.
-    fn plan(&self, cycles: [f64; 2], starts: &mut Vec<LineStart>) {
+    ///
+    /// Each line's ratio is the oscillator's at the line's start, on the rail where the
+    /// TG stands then.
+    fn plan(&self, cycles: [f64; 2], rail: &Rail, starts: &mut Vec<LineStart>) {
         let line = f64::from(self.native.line_len);
         starts.clear();
         let mut start = LineStart {
             u: 0.0,
             p: 0.0,
-            ratio: self.ratio_at(cycles, 0.0),
+            ratio: self.ratio_at(cycles, 0.0, self.rail_at(rail, 0.0)),
         };
         starts.push(start);
         for _ in 1..self.native.rows {
@@ -355,7 +384,7 @@ impl Params {
             start = LineStart {
                 u,
                 p,
-                ratio: self.ratio_at(cycles, u),
+                ratio: self.ratio_at(cycles, u, self.rail_at(rail, p)),
             };
             starts.push(start);
         }
@@ -538,20 +567,36 @@ impl Debug for State {
 /// Without a bend (`params` is `None`) it does nothing. With one, each processor latch
 /// takes the word the timing generator drove at that instant, or the blanking word, as
 /// the [module documentation](self) describes, and the drift's phases advance by one
-/// frame. The capture draws no noise; `index` only labels the frame's trace event.
+/// frame. `rail` is the supply rail of every readout line from
+/// [`power::track`](crate::power::track): the oscillator's frequency moves with it by
+/// `ppm_per_v`. The capture draws no noise; `index` only labels the frame's trace event.
 ///
 /// # Panics
 ///
-/// Panics if `codes` does not have the readout the parameters were resolved for.
-pub fn reframe(params: Option<&Params>, state: &mut State, index: u64, codes: &mut Codes) {
+/// Panics if `codes` does not have the readout the parameters were resolved for, or
+/// `rail` has another number of lines.
+pub fn reframe(
+    params: Option<&Params>,
+    state: &mut State,
+    rail: &Rail,
+    index: u64,
+    codes: &mut Codes,
+) {
     let Some(params) = params else {
         return;
     };
     params.check(codes.layout());
-    if !params.steady() {
+    assert_eq!(
+        rail.lines(),
+        codes.layout().rows(),
+        "the rail has {} lines but the codes {}",
+        rail.lines(),
+        codes.layout().rows()
+    );
+    if !params.steady(rail) {
         state.source.clear();
         state.source.extend_from_slice(codes.words());
-        params.plan(state.drift_cycles, &mut state.starts);
+        params.plan(state.drift_cycles, rail, &mut state.starts);
         let (starts, source) = (&state.starts, &state.source);
         codes
             .words_mut()
@@ -562,7 +607,7 @@ pub fn reframe(params: Option<&Params>, state: &mut State, index: u64, codes: &m
     tracing::trace!(
         name: "capture.reframe.done",
         index,
-        ratio_at_vd = params.ratio_at(state.drift_cycles, 0.0),
+        ratio_at_vd = params.ratio_at(state.drift_cycles, 0.0, params.rail_at(rail, 0.0)),
         "frame captured"
     );
     state.advance(params);

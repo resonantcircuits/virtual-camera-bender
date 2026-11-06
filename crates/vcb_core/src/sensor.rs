@@ -48,13 +48,14 @@
 //!
 //! where `mean_e` is the mean photo-charge of the column before the well limit (the
 //! register sees the light, not the clipped well), `readout_s` the time the frame's
-//! rows take to read and `exposure_s` the integration time. Since `mean_e` grows with
-//! the exposure time, the smear charge depends only on the light and the transfer
-//! time: a shorter exposure leaves the same streak on a weaker signal. Assumptions:
-//! the leak is uniform along the column (one streak of constant height, no gradient
-//! from the position of the packet), the register does not saturate, and the smear
-//! charge carries its own shot noise. With the mechanical shutter (still mode) the
-//! array is dark during the transfer and there is no smear.
+//! rows take to read on the sensor's clock, at most the processor's frame period since
+//! the sensor reads until VD, and `exposure_s` the integration time. Since `mean_e`
+//! grows with the exposure time, the smear charge depends only on the light and the
+//! transfer time: a shorter exposure leaves the same streak on a weaker signal.
+//! Assumptions: the leak is uniform along the column (one streak of constant height,
+//! no gradient from the position of the packet), the register does not saturate, and
+//! the smear charge carries its own shot noise. With the mechanical shutter (still
+//! mode) the array is dark during the transfer and there is no smear.
 //!
 //! [`expose`] writes a [`Charge`] plane in electrons at sensor resolution, which
 //! [`readout::read`](crate::readout::read) transfers out of the array.
@@ -218,6 +219,10 @@ pub struct Params {
     /// Integration time in seconds; the collected charge scales with it.
     pub exposure_s: f32,
     /// Time the vertical transfer takes to read the frame's rows, in seconds.
+    ///
+    /// The rows read on the sensor-side clock, capped at the processor's frame period:
+    /// the timing generator reads until VD, which a slow `[bend.clock]` oscillator reaches
+    /// before its last line.
     pub readout_s: f32,
     /// Whether the readout leaves the array exposed during transfer (electronic shutter).
     pub smear: bool,
@@ -301,7 +306,8 @@ impl Params {
             hot_pixels_per_mpix: sensor.hot_pixels_per_mpix as f32,
             cfa: sensor.cfa,
             exposure_s: exposure_s as f32,
-            readout_s: (f64::from(timing.rows_read) * timing.line_period_s) as f32,
+            readout_s: (f64::from(timing.rows_read) * timing.line_period_s)
+                .min(timing.frame_period_s) as f32,
             smear,
             ae,
             exposure_scale: None,

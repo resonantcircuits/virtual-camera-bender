@@ -306,6 +306,7 @@ impl Camera {
         fraction("isp.ae_target", isp.ae_target)?;
         positive("isp.ae_tau_s", isp.ae_tau_s)?;
         positive("isp.wb_tau_s", isp.wb_tau_s)?;
+        non_negative("isp.clamp_range", isp.clamp_range)?;
 
         let tables = &self.jpeg.tables;
         for (name, pair) in [
