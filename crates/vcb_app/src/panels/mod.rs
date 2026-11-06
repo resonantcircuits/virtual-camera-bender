@@ -1,24 +1,28 @@
 //! The inspector's panels, one per stage of the signal chain, and their shared widgets.
 //!
-//! The panels follow the signal: [`scene`], optics, [`sensor`], [`readout`],
-//! [`clocks`], [`afe`], [`bus`], the master clock, [`isp`] (the processor and its JPEG
-//! encoder), the frame memory, and the power rail last, with the [`strip`] above them
-//! as a map. Each panel edits the preset and reports an [`Edit`]: whether a value
-//! changed, whether a control is being dragged, and whether a drag just ended. The
-//! app turns those into preview and full renders. The optics, master clock, memory
-//! and power panels are [`placeholder`]s that show only their title.
+//! The panels follow the signal: [`scene`], [`optics`], [`sensor`], [`readout`],
+//! [`clocks`], [`afe`], [`bus`], the master clock ([`reclock`]), [`isp`] (the processor
+//! and its JPEG encoder), the frame [`memory`], and the supply [`rail`] last, with the
+//! [`strip`] above them as a map. Each panel edits the preset and reports an [`Edit`]:
+//! whether a value changed, whether a control is being dragged, and whether a drag
+//! just ended. The app turns those into preview and full renders.
 //!
-//! Panels of bends ([`clocks`], [`afe`], [`bus`]) hold their switch positions and
-//! values even while the bend is switched off, which the preset cannot store, and
-//! write their section of the preset with `apply`; [`Panels`] holds the three. The
-//! other panels edit the preset directly. Every control shows a physical value with
-//! its unit; [`Knob`] describes how a stored value is shown.
+//! Panels of bends ([`optics`], [`clocks`], [`afe`], [`bus`], [`reclock`], [`memory`],
+//! [`rail`]) hold their switch positions and values even while the bend is switched
+//! off, which the preset cannot store, and write their section of the preset with
+//! `apply`; [`Panels`] holds the seven. The other panels edit the preset directly.
+//! Every control shows a physical value with its unit; [`Knob`] describes how a stored
+//! value is shown.
 
 pub mod afe;
 pub mod bus;
 pub mod clocks;
 pub mod isp;
+pub mod memory;
+pub mod optics;
+pub mod rail;
 pub mod readout;
+pub mod reclock;
 pub mod scene;
 pub mod sensor;
 pub mod strip;
@@ -26,8 +30,8 @@ pub mod strip;
 use std::ops::{BitOrAssign, RangeInclusive};
 
 use eframe::egui::{
-    self, Align, Align2, Button, Color32, CornerRadius, Layout, Response, RichText, Sense, Slider,
-    SliderClamping, Stroke, StrokeKind, TextStyle, Ui, WidgetInfo,
+    self, Align, Align2, Button, Color32, ComboBox, CornerRadius, Layout, Response, RichText,
+    Sense, Slider, SliderClamping, Stroke, StrokeKind, TextStyle, Ui, WidgetInfo,
 };
 use vcb_core::Preset;
 
@@ -112,15 +116,44 @@ pub enum PanelId {
     Power,
 }
 
-/// The panels that hold state the preset cannot: the three bends.
+impl PanelId {
+    /// The panel's title in the inspector.
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Scene => "Scene",
+            Self::Optics => "Optics",
+            Self::Sensor => "Sensor",
+            Self::Readout => "Readout",
+            Self::Clocks => "Clocks",
+            Self::Afe => "Analog front end",
+            Self::Bus => "Bus bend",
+            Self::Clock => "Master clock",
+            Self::Processor => "Processor",
+            Self::Jpeg => "JPEG encoder",
+            Self::Memory => "Memory",
+            Self::Power => "Power",
+        }
+    }
+}
+
+/// The panels that hold state the preset cannot: the seven bends.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Panels {
-    /// The clock bend.
+    /// The IR-cut filter bend.
+    pub optics: optics::OpticsPanel,
+    /// The CCD transfer clock bend.
     pub clocks: clocks::ClocksPanel,
     /// The analog front end bend.
     pub afe: afe::AfePanel,
     /// The bus bend.
     pub bus: bus::BusPanel,
+    /// The master-clock reclock bend.
+    pub reclock: reclock::ReclockPanel,
+    /// The frame-buffer SDRAM bend.
+    pub memory: memory::MemoryPanel,
+    /// The supply-rail bend.
+    pub rail: rail::RailPanel,
 }
 
 impl Panels {
@@ -134,16 +167,24 @@ impl Panels {
 
     /// Sets every bend panel from `preset`.
     pub fn load(&mut self, preset: &Preset) {
+        self.optics.load(preset);
         self.clocks.load(preset);
         self.afe.load(preset);
         self.bus.load(preset);
+        self.reclock.load(preset);
+        self.memory.load(preset);
+        self.rail.load(preset);
     }
 
     /// Writes every bend panel into `preset`.
     pub fn apply(&self, preset: &mut Preset) {
+        self.optics.apply(preset);
         self.clocks.apply(preset);
         self.afe.apply(preset);
         self.bus.apply(preset);
+        self.reclock.apply(preset);
+        self.memory.apply(preset);
+        self.rail.apply(preset);
     }
 }
 
@@ -195,6 +236,8 @@ pub struct Knob {
     pub unit: &'static str,
     /// Decimals shown; `None` shows three significant digits.
     pub decimals: Option<usize>,
+    /// What the field shows for zero instead of a number and the unit, if anything.
+    pub zero: Option<&'static str>,
 }
 
 impl Knob {
@@ -208,6 +251,7 @@ impl Knob {
             scale: Scale::Plain,
             unit,
             decimals: Some(decimals),
+            zero: None,
         }
     }
 
@@ -223,6 +267,7 @@ impl Knob {
             scale: Scale::Plain,
             unit,
             decimals: None,
+            zero: None,
         }
     }
 
@@ -239,6 +284,50 @@ impl Knob {
         self.decimals = Some(decimals);
         self
     }
+
+    /// The same knob showing `text` for zero, such as "free-running" for a window of 0 px.
+    #[must_use]
+    pub const fn zero_reads(mut self, text: &'static str) -> Self {
+        self.zero = Some(text);
+        self
+    }
+
+    /// The text the knob's field shows for `shown`, a value in shown units.
+    #[must_use]
+    pub fn format(&self, shown: f64) -> String {
+        if let Some(zero) = self.zero
+            && shown == 0.0
+        {
+            return zero.to_owned();
+        }
+        let number = match self.decimals {
+            Some(decimals) => format!("{shown:.decimals$}"),
+            None => significant(shown, 3),
+        };
+        format!("{number}{}", self.unit)
+    }
+
+    /// The value in shown units that `text`, typed into the field, stands for.
+    ///
+    /// Takes a number with or without the unit, or the zero text.
+    #[must_use]
+    pub fn parse(&self, text: &str) -> Option<f64> {
+        let text = text.trim();
+        if self
+            .zero
+            .is_some_and(|zero| text.eq_ignore_ascii_case(zero))
+        {
+            return Some(0.0);
+        }
+        let number: String = text
+            .strip_suffix(self.unit.trim())
+            .unwrap_or(text)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .map(|c| if c == '−' { '-' } else { c })
+            .collect();
+        number.parse().ok()
+    }
 }
 
 /// A slider with a numeric field over `value`, shown through `knob`.
@@ -254,14 +343,24 @@ pub fn knob(ui: &mut Ui, value: &mut f64, knob: &Knob) -> Response {
         scale.show(*value)
     })
     .logarithmic(knob.log)
-    .clamping(SliderClamping::Edits)
-    .suffix(knob.unit);
+    .clamping(SliderClamping::Edits);
     if knob.log && *knob.range.start() <= 0.0 {
         slider = slider.smallest_positive(knob.smallest);
     }
-    slider = match knob.decimals {
-        Some(decimals) => slider.fixed_decimals(decimals),
-        None => slider.custom_formatter(|shown, _| significant(shown, 3)),
+    if let Some(decimals) = knob.decimals {
+        slider = slider.fixed_decimals(decimals);
+    }
+    slider = if knob.zero.is_some() {
+        // The formatter writes the unit itself, so zero can read as a word without one.
+        slider
+            .custom_formatter(|shown, _| knob.format(shown))
+            .custom_parser(|text| knob.parse(text))
+    } else {
+        let slider = slider.suffix(knob.unit);
+        match knob.decimals {
+            Some(_) => slider,
+            None => slider.custom_formatter(|shown, _| significant(shown, 3)),
+        }
     };
     ui.scope(|ui| {
         ui.spacing_mut().interact_size.x = VALUE_WIDTH;
@@ -399,16 +498,6 @@ pub fn hint_row(ui: &mut Ui, text: &str) {
     ui.end_row();
 }
 
-/// The hint of a panel whose controls are not built yet.
-pub const PLACEHOLDER_HINT: &str = "Controls arrive with stage 13";
-
-/// A panel that shows only its title and [`PLACEHOLDER_HINT`]; it never edits.
-pub fn placeholder(ui: &mut Ui, text: &str) -> Edit {
-    header(ui, text, None);
-    hint(ui, PLACEHOLDER_HINT);
-    Edit::default()
-}
-
 /// A panel title with an optional power switch on the right; returns the switch's response.
 pub fn header(
     ui: &mut Ui,
@@ -425,6 +514,94 @@ pub fn header(
         })
     })
     .inner
+}
+
+/// A bend panel's title with its power switch, the switch's position named beside it.
+///
+/// `part` names what the switch moves, such as "IR-cut filter", and `positions` its
+/// off and on positions, such as "seated" and "pulled".
+pub fn bend_header(
+    ui: &mut Ui,
+    text: &str,
+    on: &mut bool,
+    part: &str,
+    positions: [&str; 2],
+) -> Response {
+    ui.horizontal(|ui| {
+        title(ui, text);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let hover = format!("{part}: {} or {}", positions[0], positions[1]);
+            let response = power(ui, on, &hover);
+            let position = if *on { positions[1] } else { positions[0] };
+            ui.label(
+                RichText::new(format!("{part} {position}"))
+                    .small()
+                    .color(theme::label_colour(*on)),
+            )
+            .on_hover_text(hover);
+            response
+        })
+        .inner
+    })
+    .inner
+}
+
+/// A grid row over a value the preset always stores, dimmed while it equals the camera's.
+///
+/// For a value such as an oscillator's frequency, which the preset must hold even at
+/// the camera's own `default`: the knob is dimmed while the value equals it, and the
+/// reset button returns it there.
+pub fn default_row(
+    ui: &mut Ui,
+    edit: &mut Edit,
+    label: &str,
+    hover: &str,
+    value: &mut f64,
+    default: f64,
+    spec: &Knob,
+) {
+    let mut slot = value.total_cmp(&default).is_ne().then_some(*value);
+    let before = slot;
+    override_row(ui, edit, label, hover, &mut slot, default, spec);
+    if slot != before {
+        *value = slot.unwrap_or(default);
+    }
+}
+
+/// A drop-down choice among `options`; the response reports a change of `value`.
+pub fn dropdown<T: PartialEq + Copy, S: AsRef<str>>(
+    ui: &mut Ui,
+    id: impl egui::AsIdSalt,
+    value: &mut T,
+    options: &[(T, S)],
+    width: f32,
+) -> Response {
+    let selected = options
+        .iter()
+        .find(|(option, _)| option == value)
+        .map_or("", |(_, label)| label.as_ref());
+    let mut picked = None;
+    let mut response = ComboBox::from_id_salt(id)
+        .selected_text(selected)
+        .width(width)
+        .show_ui(ui, |ui| {
+            for (option, label) in options {
+                if ui
+                    .selectable_label(option == value, label.as_ref())
+                    .clicked()
+                {
+                    picked = Some(*option);
+                }
+            }
+        })
+        .response;
+    if let Some(option) = picked
+        && option != *value
+    {
+        *value = option;
+        response.mark_changed();
+    }
+    response
 }
 
 /// Formats `value` with `digits` significant digits, without an exponent.

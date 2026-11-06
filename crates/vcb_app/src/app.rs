@@ -1338,6 +1338,7 @@ impl App {
                 f64::from(timing.developed_size().0)
             });
         let timing = self.timing.clone();
+        let mode = self.preset.readout.mode;
         ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -1347,7 +1348,7 @@ impl App {
                     panels::scene::show(ui, &mut self.preset.scene)
                 });
                 edit |= section(ui, target, PanelId::Optics, |ui| {
-                    panels::placeholder(ui, "Optics")
+                    self.panels.optics.show(ui, &base)
                 });
                 edit |= section(ui, target, PanelId::Sensor, |ui| {
                     panels::sensor::show(ui, &mut self.preset, &base)
@@ -1363,18 +1364,18 @@ impl App {
                 });
                 edit |= section(ui, target, PanelId::Bus, |ui| self.panels.bus.show(ui));
                 edit |= section(ui, target, PanelId::Clock, |ui| {
-                    panels::placeholder(ui, "Clock")
+                    self.panels.reclock.show(ui, &base, mode, timing.as_ref())
                 });
                 edit |= section(ui, target, PanelId::Processor, |ui| {
                     panels::isp::show(ui, &mut self.preset, &base, width, target)
                 });
                 edit |= section(ui, target, PanelId::Memory, |ui| {
-                    panels::placeholder(ui, "Memory")
+                    self.panels.memory.show(ui, &base)
                 });
                 if target == Some(PanelId::Power) {
                     ui.scroll_to_cursor(Some(Align::TOP));
                 }
-                edit |= panels::placeholder(ui, "Power");
+                edit |= self.panels.rail.show(ui, &base);
                 ui.add_space(theme::GRID * 2.0);
             });
         edit

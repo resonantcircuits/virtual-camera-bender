@@ -2,8 +2,9 @@
 //!
 //! A window in which a photo or a video sits in front of the simulated camera: the
 //! user picks a camera and a preset, sets every stage of the signal chain on panels in
-//! physical units (scene, sensor, readout and clocks, analog front end, the bus bend
-//! drawn after its schematic, the processor), and sees the camera's output as the
+//! physical units (scene and optics, sensor, readout and clocks, analog front end, the
+//! bus bend drawn after its schematic, the master clock, the processor, the frame
+//! memory's address pins, the supply rail), and sees the camera's output as the
 //! controls move. Renders run on a worker thread ([`render`]) whose simulators keep
 //! running between renders: a reduced preview while a control is dragged, the full
 //! preset when it is released. Videos are read frame by frame on demand, played

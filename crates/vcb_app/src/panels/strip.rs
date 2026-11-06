@@ -1,12 +1,16 @@
 //! The signal-path strip: the camera's stages in signal order, above the panels.
 //!
 //! Scene → Sensor → Readout → AFE → ADC → Bus → Clock → Processor → Memory → JPEG. A
-//! stage with a bend patched in (the clocks on the readout, the AFE bend, the bus
-//! bend, the master-clock reclock, the memory's address faults) or with processor
-//! overrides is lit in the accent colour. The supply rail has no stage of its own:
-//! it feeds the AFE, the bus and the processor, so a rail bend lights those three.
-//! Clicking a stage asks the inspector to scroll to its panel; the ADC has no
-//! controls of its own and leads to the bus bend on its output lines.
+//! stage with a bend patched in (the IR-cut filter pulled off the sensor, the clocks
+//! on the readout, the AFE bend, the bus bend, the master-clock reclock, the memory's
+//! address faults) or with processor overrides is lit in the accent colour. The
+//! supply rail has no stage of its own: it feeds the AFE, the bus and the processor,
+//! so a rail bend lights those three.
+//!
+//! Clicking a stage asks the inspector to scroll to the panel of what bends it: a lit
+//! scene to the optics, a lit readout to the clocks, a stage lit by the rail alone to
+//! the power panel. An unlit stage leads to its own panel; the ADC has no controls of
+//! its own and leads to the bus bend on its output lines.
 
 use eframe::egui::{self, Button, RichText, Ui};
 use vcb_core::Preset;
@@ -71,9 +75,9 @@ impl Stage {
         }
     }
 
-    /// The panel a click on the stage scrolls to.
+    /// The stage's own panel, where a click leads while nothing bends the stage.
     #[must_use]
-    pub fn panel(self) -> PanelId {
+    pub fn home(self) -> PanelId {
         match self {
             Self::Scene => PanelId::Scene,
             Self::Sensor => PanelId::Sensor,
@@ -87,21 +91,51 @@ impl Stage {
         }
     }
 
-    /// Whether `preset` bends or overrides the stage.
+    /// The panel of what bends or overrides the stage in `preset`, if anything does.
     ///
-    /// A rail bend (`[bend.rail]`) bends the AFE, the bus and the processor, which the
-    /// rail feeds.
+    /// The stage's own bend comes first; a rail bend (`[bend.rail]`) bends the AFE, the
+    /// bus and the processor, which the rail feeds, and leads to the Power panel.
+    #[must_use]
+    pub fn bent_by(self, preset: &Preset) -> Option<PanelId> {
+        let bend = &preset.bend;
+        let rail = bend.rail.is_some().then_some(PanelId::Power);
+        match self {
+            Self::Scene => bend.optics.is_some().then_some(PanelId::Optics),
+            Self::Readout => bend.clocks.is_some().then_some(PanelId::Clocks),
+            Self::Afe => bend.afe.is_some().then_some(PanelId::Afe).or(rail),
+            Self::Bus => bend.bus.is_some().then_some(PanelId::Bus).or(rail),
+            Self::Clock => bend.clock.is_some().then_some(PanelId::Clock),
+            Self::Processor => preset.isp.is_some().then_some(PanelId::Processor).or(rail),
+            Self::Memory => bend.memory.is_some().then_some(PanelId::Memory),
+            Self::Sensor | Self::Adc | Self::Jpeg => None,
+        }
+    }
+
+    /// Whether `preset` bends or overrides the stage.
     #[must_use]
     pub fn is_bent(self, preset: &Preset) -> bool {
-        let rail = preset.bend.rail.is_some();
-        match self {
-            Self::Readout => preset.bend.clocks.is_some(),
-            Self::Afe => preset.bend.afe.is_some() || rail,
-            Self::Bus => preset.bend.bus.is_some() || rail,
-            Self::Clock => preset.bend.clock.is_some(),
-            Self::Processor => preset.isp.is_some() || rail,
-            Self::Memory => preset.bend.memory.is_some(),
-            Self::Scene | Self::Sensor | Self::Adc | Self::Jpeg => false,
+        self.bent_by(preset).is_some()
+    }
+
+    /// The panel a click on the stage scrolls to: what bends it, else its own.
+    #[must_use]
+    pub fn panel(self, preset: &Preset) -> PanelId {
+        self.bent_by(preset).unwrap_or_else(|| self.home())
+    }
+
+    /// The stage's tooltip: whether it is bent and where a click leads.
+    #[must_use]
+    pub fn hover(self, preset: &Preset) -> String {
+        match self.bent_by(preset) {
+            Some(panel) if panel == self.home() => {
+                format!("{}: bent or overridden; show its panel", self.name())
+            }
+            Some(panel) => format!(
+                "{}: bent through the {} panel; show it",
+                self.name(),
+                panel.title()
+            ),
+            None => format!("{}: show its panel", self.name()),
         }
     }
 }
@@ -130,13 +164,8 @@ pub fn show(ui: &mut Ui, preset: &Preset) -> Option<PanelId> {
             } else {
                 button.fill(theme::HOUSING)
             };
-            let hover = if bent {
-                format!("{}: bent or overridden; show its panel", stage.name())
-            } else {
-                format!("{}: show its panel", stage.name())
-            };
-            if ui.add(button).on_hover_text(hover).clicked() {
-                clicked = Some(stage.panel());
+            if ui.add(button).on_hover_text(stage.hover(preset)).clicked() {
+                clicked = Some(stage.panel(preset));
             }
         }
     });
