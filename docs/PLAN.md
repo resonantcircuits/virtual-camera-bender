@@ -652,3 +652,80 @@ vary them); the mirror bank is a still look (movie rows lie below the pin's bit)
 vertical roll needs a timing generator that free-runs across VD. Stage 15 is the
 user's testing round; nobody has clicked the four new panels by hand (drop-downs,
 typed values and tooltips were checked only headless and in screenshots).
+
+## Milestone 4: the rest of the bender's reach (started 2026-11-06)
+
+Goal: the bends of section 7 item 4, in the order of their ranking, each with its own
+presets, panels and docs, built while milestone 3 is in the user's hands. The cheap
+sensor-side pair first (stages 16 and 17, in parallel, both in `vcb_core`), their
+panels, presets and docs next (stage 18), then the memory and AFE items (stage 19)
+and the JPEG buffer (stage 20) once the user's stage 15 findings are in.
+
+### 3.10 The models
+
+**Sensor bend, `[bend.sensor]`** (sensor stage, stage 16). Two things a bender does to
+the sensor itself. `temperature_c` (default the camera's `reference_temp_c`): the dark
+current follows the Arrhenius rule, doubling every `dark_doubling_c` degrees (C, 6 to 8
+for CCD silicon; `dark_e_per_s` and the hot photosites' multiples scale together), the
+read noise rises `read_noise_per_c` per degree (PROVISIONAL), and the output amplifier's
+glow, `amp_glow_e_per_s` of extra dark current at its corner falling off over
+`amp_glow_radius_frac` of the width (PROVISIONAL; the corner is the readout's first
+sample), scales the same way, so long exposures at temperature glow in that corner.
+`substrate_v` (default the camera's `substrate_v`, C-class 12 V for Sony interline
+parts): a pot on the substrate bias moves the vertical overflow drain's barrier; the full
+well falls by `full_well_frac_per_v` per volt above nominal (PROVISIONAL, half the well
+at +2 V) and the anti-blooming ratio falls with it, so a raised bias clips and blooms,
+and a lowered one deepens the well and the drain until the electronic shutter, which
+pulses the substrate, stops clearing in movie mode (smear grows). Camera `[sensor]`
+gains `reference_temp_c`, `dark_doubling_c`, `read_noise_per_c`, `amp_glow_e_per_s`,
+`amp_glow_radius_frac`, `substrate_v`, `full_well_frac_per_v`. State: none. The
+optical-black clamp removes the mean dark, so what shows is grain, hot crosses, the
+glow's gradient and clipping, as on a real hot sensor.
+
+**Reset bend, `[bend.reset]`** (AFE stage, stage 17). The reset gate pulse that empties
+the floating diffusion before each packet is a wire on the sensor ribbon. With
+correlated double sampling, a missed or weak reset cancels in the difference, so what a
+bender sees is the output stage running out of range: with `drop_hz` missed pulses per
+second, each lasting `hold_px` pixel periods (geometric, mean), the diffusion keeps
+accumulating packets until the source follower's swing `fd_swing_v` (C, the AD9949's
+1.0 V p-p CDS input is the matching limit; the CCD's own swing PROVISIONAL 1.0 V) is
+used up, after which packets are lost: the CDS reads zero (black) until the next reset.
+A weak reset, `reset_frac` in `[0, 1]` (1 is a full reset), leaves that fraction of the
+diffusion's charge behind each pixel, so the diffusion walks towards saturation in
+bright runs at a rate set by the scene, and bright streaks end in black. The model
+lives in the AFE's CDS step: a state for the diffusion's charge carried across pixels,
+lines and frames (it empties in blanking only if a reset arrives), seeded drops from the
+stage seed with a new salt. Camera `[afe]` gains `fd_swing_v`.
+
+### Stage 16: the sensor bend (small, one agent)
+
+`preset/sensor_bend.rs` (`SensorBend`, section `[bend.sensor]`), the camera keys with
+letters and citations, the model in `sensor.rs`, tests (dark doubling per
+`dark_doubling_c`; hot photosites scale with it; the glow is strongest at the readout's
+first corner and grows with exposure; a raised substrate bias clips a grey card that was
+unclipped and spills along columns; inert values byte-identical; replay; `Kept`), a sheet
+(heat gun at 45 and 70 °C with a long exposure; substrate +1.5 V and −1.5 V).
+
+### Stage 17: the reset bend (small, one agent)
+
+`preset/reset.rs` (`ResetBend`, section `[bend.reset]`), `[afe] fd_swing_v`, the model
+in `afe.rs`, tests (a dropped reset over a bright run goes black after the swing is used
+up, a dark run survives; `reset_frac` 1 is byte-identical to no bend; the diffusion's
+state carries across lines and frames; replay; `Kept`), a sheet (drops at a few per
+second; `reset_frac` 0.7).
+
+### Stage 18: panels, presets, docs for both (medium, two agents)
+
+A Sensor panel section for temperature and substrate bias and a Reset section in the AFE
+panel (app agent, with the guide); presets `a520-heat-gun`, `a520-substrate`,
+`a520-reset-drag` and one combination with goldens, benches, architecture, changelog,
+README and tuning note (docs agent). The strip lights Sensor and AFE for them.
+
+### Stage 19: memory data pins and refresh, AFE serial, light leaks
+
+Specified after stage 15's findings; models per section 7 item 4.
+
+### Stage 20: the JPEG buffer
+
+The entropy coder in the codec stage, then address and data faults on the compressed
+buffer. Specified when stage 19 lands.
