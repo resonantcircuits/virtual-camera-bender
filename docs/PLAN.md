@@ -736,3 +736,22 @@ Specified after stage 15's findings; models per section 7 item 4.
 
 The entropy coder in the codec stage, then address and data faults on the compressed
 buffer. Specified when stage 19 lands.
+
+### Status (2026-11-07)
+
+Stages 16, 17 and 18 are complete and merged on `rust-rewrite`: the sensor bend
+(temperature, substrate bias; dark-current non-uniformity proportional to the dark
+charge beside the fixed DSNU offset; the drain gone two volts below nominal; the glow
+∝ k − 1), the reset bend (a 0.6 V source-follower swing, PROVISIONAL; runs keep their
+length in time), their panel blocks and guide sections, the presets `a520-heat-gun`
+(120 °C at the daylight exposure: a 0.5 s exposure blows the sample out),
+`a520-substrate` (10 V at a fixed 1/13 s: the deepened well spills only from clipped
+sites), `a520-reset-drag` and `a520-hot-reclock`, with goldens, benches,
+`docs/research/milestone4-tuning-notes.md` and the docs. Found and fixed on the way:
+the movie readout's optical black integrated a whole frame period where the image
+integrated the shutter time, which crushed hot movie frames green. Eleven milestone 3
+goldens were regenerated for a rounding-level change from the dark spread. Open for
+the fix round: a weak reset needs about 20 to 25 % on daylight scenes, blooming needs
+clipped highlights, the glow needs a dark long exposure, and movie frames of the
+heat-gun presets are now worth re-checking. Stages 19 and 20 wait for the user's
+stage 15 findings.
