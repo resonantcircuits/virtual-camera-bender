@@ -138,6 +138,10 @@ fn presets_lists_every_preset_file() {
         ("a520-reclock-roll", "clock"),
         ("a520-s9000-tear", "memory"),
         ("a520-mirror-bank", "memory"),
+        ("a520-heat-gun", "sensor"),
+        ("a520-substrate", "sensor"),
+        ("a520-reset-drag", "reset"),
+        ("a520-hot-reclock", "sensor,clock"),
     ];
     for (name, bends) in shipped {
         let line = stdout
@@ -153,20 +157,22 @@ fn presets_lists_every_preset_file() {
 }
 
 #[test]
-fn presets_names_the_optics_rail_clock_and_memory_bends() {
+fn presets_names_the_milestone_3_and_4_bends() {
     let dir = scratch("presets-milestone3");
     std::fs::create_dir_all(&dir).unwrap();
     let preset = "camera = \"a520\"\n\
                   [bend.optics]\n\
+                  [bend.sensor]\n\
                   [bend.rail]\n\
                   [bend.clock]\nosc_mhz = 27.0\n\
-                  [bend.memory]\n";
+                  [bend.memory]\n\
+                  [bend.reset]\n";
     std::fs::write(dir.join("a520-every-new-bend.toml"), preset).unwrap();
     let run = vcb(&["presets", "--dir", path_arg(&dir)]);
     assert!(run.status.success(), "stderr: {}", text(&run.stderr));
     let stdout = text(&run.stdout);
     assert!(
-        stdout.contains("bends=optics,rail,clock,memory"),
+        stdout.contains("bends=optics,sensor,rail,clock,memory,reset"),
         "{stdout}"
     );
 }

@@ -5,6 +5,56 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Milestone 4: the rest of the bender's reach
+
+The bends a bender makes on the sensor itself and on its reset gate, each modelled in
+the stage whose hardware it changes, with presets tuned by eye.
+
+#### Added
+
+- The sensor bend, `[bend.sensor]`, in the sensor stage: the CCD's `temperature_c`
+  and its `substrate_v`. Heat raises the dark current by the Arrhenius rule, doubling
+  every `dark_doubling_c`, with its spread over the photosites and the hot photosites;
+  raises the read noise; and lights the output amplifier's glow at the corner the
+  readout samples first. The optical-black photosites share the temperature, so the
+  black clamp removes the mean dark and the heat shows as grain, hot crosses and the
+  glow. A raised substrate bias shrinks the well, so highlights clip; a lowered one
+  deepens it and takes the overflow drain's capacity away, so highlights bloom along
+  their columns and the movie shutter's smear grows.
+- The reset bend, `[bend.reset]`, in the AFE's correlated double sampling: missed
+  runs of reset pulses (`drop_hz`, `hold_px`) and weak pulses that clear only
+  `reset_frac` of the floating diffusion's charge. The diffusion carries its charge
+  across pixels, lines and frames; the CDS cancels what is left until it uses up the
+  output stage's swing, after which packets read black, so bright runs end in black
+  and a weak reset solarises a bright sky.
+- Camera values in `cameras/a520.toml`: `[sensor]` `reference_temp_c` 25 °C,
+  `dark_doubling_c` 6, `read_noise_per_c` 0.003, `amp_glow_e_per_s` 1.0,
+  `amp_glow_radius_frac` 0.15, `substrate_v` 12 V, `full_well_frac_per_v` 0.25,
+  `drain_loss_v` 2 V and `dark_nonuniformity` 0.3, and `[afe] fd_swing_v` 0.6 V,
+  graded by confidence, most of them PROVISIONAL.
+- Four presets: `a520-heat-gun` (mottled shadows and hot crosses in daylight, the
+  readout corner's glow on a dark, long exposure), `a520-substrate` (highlights that
+  bloom along their columns), `a520-reset-drag` (bright runs ending in black streaks,
+  a solarised sky) and `a520-hot-reclock` (the loose-sync oscillator on a hot, grainy
+  sensor).
+- Tests of both bends' physics, replay and reconfiguration (`sensor_bend`, `reset`),
+  golden frames of the four presets, and benchmarks of the sensor with a hot and a
+  drainless CCD and of the AFE with a weak, flaky reset gate.
+- `docs/research/milestone4-tuning-notes.md`, how the presets were chosen and what
+  the sample could not show.
+
+#### Changed
+
+- The dark current gains its own spread over the photosites, `dark_nonuniformity`,
+  beside `dsnu_e`, which stays the readout chain's fixed offset pattern; at the
+  reference temperature it moves eleven goldens by at most 4 codes. The simulator
+  applies the sensor's read-noise rise to the AFE's read noise.
+- `vcb presets` names the sensor and reset bends.
+- `docs/ARCHITECTURE.md` describes both bends, the reset stream and the diffusion's
+  state, the new configuration, their cost and their limits; the README lists the
+  presets.
+- The fourteen existing golden frames are unchanged by the new presets.
+
 ### Milestone 3: the bends from the old presets' spirit
 
 The legacy JavaScript presets' looks return as physical models in the stage whose

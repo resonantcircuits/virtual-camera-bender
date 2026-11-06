@@ -1,0 +1,28 @@
+# Canon PowerShot A520 with the LTC1799 reclock and a heat gun on the CCD: loose sync on a hot sensor.
+# The oscillator of a520-loose-sync: the timing generator and AFE run 18.5 ppm below the camera's
+# 27 MHz, wandering 600 ppm either way at about 10 Hz, and the processor resets its line counter
+# to the timing generator's line start within 1.5 pixels, so the picture holds, shears into a V
+# with colour-phase static, and snaps back. The oscillator ignores the supply (ppm_per_v 0; no
+# rail bend is fitted anyway). The sensor of a520-heat-gun: 120 C at the camera's own 1/125 s,
+# the dark current about 58,000 times its room-temperature value, so its fixed pattern mottles
+# the held and the sheared stretches alike, with hot crosses and a higher read noise.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
+camera = "a520"
+seed = 1                            # also seeds the wander's phases, which place the snaps
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[isp]
+ae_mode = "scene"                   # as a520-heat-gun
+
+[bend.sensor]
+temperature_c = 120.0               # PROVISIONAL, by eye: as a520-heat-gun; at 60 C the heat does not show on a daylight frame
+
+[bend.clock]
+osc_mhz = 26.9995                   # as a520-loose-sync
+drift_ppm = 600.0                   # as a520-loose-sync
+drift_hz = 10.0                     # as a520-loose-sync
+hd_lock_px = 1.5                    # as a520-loose-sync
+ppm_per_v = 0.0                     # the oscillator does not follow the supply

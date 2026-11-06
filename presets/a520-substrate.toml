@@ -1,0 +1,26 @@
+# Canon PowerShot A520 with the substrate bias turned down: highlights that bloom along their columns.
+# The VSUB pot 2 V below the nominal 12 V raises the vertical overflow drain's barrier until the
+# drain takes no excess at all, and deepens the well by half (26,700 e). Charge beyond it spills
+# into the CCD column, half each way, filling the wells it meets: the bright water floods the
+# dead tree and the sky the hill crests, in streaks across the readout lines (horizontal in a
+# portrait still). The exposure is 1/13 s, 3.3 stops over the daylight 1/125 s, since the sample
+# holds no highlight that reaches the deepened well at a daylight exposure; the same exposure on
+# the unbent camera only clips flat. In movie mode the electronic shutter, which pulses the
+# substrate, clears the photodiodes less: the smear doubles.
+# The other way only clips: a raised bias lowers the barrier, the well shrinks a quarter per volt
+# and the drain takes the excess all the more readily. At 14 V the well holds less than reference
+# white and the clouds clip flat; at 15 V the clipped sky develops violet and the clouds pink, since
+# the processor still assumes the nominal well. Nothing blooms.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[sensor]
+exposure_s = 0.077                  # PROVISIONAL, by eye: 1/13 s; at 1/30 s only the hill crests fringe, at 1/10 s the trunk washes out
+
+[bend.sensor]
+substrate_v = 10.0                  # the drain's capacity is gone drain_loss_v (2 V) below nominal

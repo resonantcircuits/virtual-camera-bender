@@ -57,10 +57,10 @@ section states the contracts.
 | Stage | Function | In → out | Parameters | State |
 |---|---|---|---|---|
 | Scene | `scene::prepare` | `Scene` → `Scene` (sensor size) | camera `[isp]` `[lens]` `[sensor] nir_response`; preset `[scene]` `[bend.optics]` | – (working planes only) |
-| Sensor | `sensor::expose` | `Scene` → `Charge` (electrons) | camera `[sensor]` `[still]` `[movie]` `[isp]`; preset `[sensor]` `[isp]` | – |
+| Sensor | `sensor::expose` | `Scene` → `Charge` (electrons) | camera `[sensor]` `[still]` `[movie]` `[isp]`; preset `[sensor]` `[isp]` `[bend.sensor]` | – |
 | Readout | `readout::read` | `Charge` → `Stream` (readout order) | camera clocking; preset `[bend.clocks]` | running faults |
 | Power | `power::track` | the bend's current of the last frame → `Rail` (volts per line) | camera `[power]`; preset `[bend.rail]` | decoupling voltage, ripple phase, running spike |
-| AFE | `afe::process` | `Stream`, `Rail` → `Analog` (volts) | camera `[sensor]` `[afe]` `[adc]` `[power]`; preset `[bend.afe]` | node, flicker, phases, lockout |
+| AFE | `afe::process` | `Stream`, `Rail` → `Analog` (volts) | camera `[sensor]` `[afe]` `[adc]` `[power]`; preset `[bend.afe]` `[bend.reset]` | node, flicker, phases, lockout, floating diffusion |
 | ADC | `adc::convert` | `Analog` → `Codes` (words) | camera `[adc]` | – |
 | Bus | `bus::bend` | `Codes` in place, reading `Rail` | preset `[bend.bus]`; camera `[adc]` `[logic]` `[power]` | capacitor and line voltages, diodes, gates, current per line |
 | Capture | `capture::reframe` | `Codes` in place, reading `Rail` | preset `[bend.clock]`; camera `[still]` `[movie]` `[adc]` `[power]` | drift phases |
@@ -120,6 +120,25 @@ exposure time within its two stops, as the aperture would; with `"fixed"` the ti
 alone sets the brightness. The image processor normalises by the code of reference
 white at the nominal exposure.
 
+With `[bend.sensor]` the CCD runs at `temperature_c` on a substrate bias of
+`substrate_v`, by default the camera's `reference_temp_c` and `substrate_v`, where
+every factor is exactly 1 and the charge is the unbent camera's. Heat raises the dark
+current by the Arrhenius rule, doubling every `dark_doubling_c`; its spread over the
+photosites (`dark_nonuniformity` of each site's dark charge) and the hot photosites
+rise with it, while `dsnu_e` stays the readout chain's fixed offset. The read noise,
+which the AFE adds, rises by `read_noise_per_c` per degree. The output amplifier glows
+from the corner the readout samples first, `amp_glow_e_per_s` times the dark current's
+rise above the reference, falling off over `amp_glow_radius_frac` of the width. The
+optical-black photosites share the temperature, so the processor's clamp removes the
+mean dark and the heat shows as grain, hot crosses after the demosaic, the glow and
+clipping. The bias moves the overflow drain's barrier: above nominal the well shrinks
+by `full_well_frac_per_v` per volt while the drain takes the excess, so highlights clip
+flat; below it the well deepens and the drain's capacity falls to nothing
+`drain_loss_v` below nominal, so highlights bloom along their columns, and more than a
+volt below nominal the movie shutter, which pulses the substrate, clears less and the
+smear grows. Reference white's charge stays on the nominal well, so metering is
+unchanged. The section keeps no state.
+
 ### Readout
 
 Each line carries `ob_cols` optical-black samples, then the active ones; blanking is
@@ -171,6 +190,19 @@ applies `pga_gain_db`, optionally modulated by `gain_mod`, and one pole of
 oscillators roll on across lines and frames. The supply is the rail of the power
 stage, read per sample; a line at the nominal rail takes the ideal path, which gives
 the ideal supply's bytes. Bandwidth and slew rate are provisional.
+
+With `[bend.reset]` the reset gate, which empties the CCD's floating diffusion before
+each packet, misses runs of pulses (runs starting at `drop_hz` per second of readout,
+lasting `hold_px` pixel periods on average) or clears only `reset_frac` of the
+diffusion's charge. That charge is state, carried across pixels, blanking, lines and
+frames. The CDS step reads the difference of the diffusion's level after the reset and
+after the packet, each clipped at the output stage's swing `[afe] fd_swing_v`, so a
+missed or weak reset cancels until the charge left behind uses up the swing; then
+packets are lost and read black. A bright run therefore ends in black; under a weak
+reset a run brighter than `reset_frac` of the swing per packet dims, and from
+`reset_frac / (1 - reset_frac)` of it reads black, brighter light reading darker.
+Optical black passes through the same diffusion, and the read noise is added after it.
+With no drops and full resets the step is skipped.
 
 ### ADC
 
@@ -369,7 +401,10 @@ clock and samples the result onto the virtual grid, since a match-input line is
 mostly blanking and would tear differently at every size; `hd_lock_px` counts native
 periods. The memory faults' address weights scale with the virtual pitch and rows and
 round to powers of two, so a fold keeps its fraction of the frame, exactly where the
-size ratios are powers of two.
+size ratios are powers of two. Of the milestone 4 bends, the reset gate's `drop_hz` is
+a rate in camera time and its `hold_px` counts periods of the camera's own pixel clock
+at every resolution, so a missed run covers the same share of a line in a match-input
+preview as at native; the amplifier glow's radius is a fraction of the width.
 
 ## 5. Determinism and randomness
 
@@ -395,6 +430,17 @@ bend the current it drew on each line, for the next frame's rail; the capture th
 drift's two phases; the frame buffer every SDRAM word the frames have reached since
 power-on and each contact's state. The scene keeps only the NIR's working planes.
 
+The milestone 4 bends add one stream and one piece of state. The sensor bend draws no
+randomness of its own: the dark current's spread hashes the unit seed (salt
+`sensor.dark.spread`), like the hot photosites, so its grain belongs to the unit and
+stays put from frame to frame, and the glow joins the dark charge before its shot noise
+is drawn. The reset bend draws its missed-pulse runs from a `Pcg32` seeded with its own
+stage seed (salt `reset`) and the frame index, in readout order. The AFE's state gains
+the floating diffusion's charge and whether a run was in progress at the end of the
+frame, which the next frame continues afresh from its own stream, exact since the
+geometric run length has no memory; with a sound gate the diffusion holds the frame's
+last packet.
+
 The contract: the same sequence of scenes and indices, from a fresh simulator or after
 `Simulator::reset`, with the same camera, preset and seed, is identical byte for byte.
 An index rendered twice without a reset need not repeat: the state has moved on.
@@ -411,8 +457,10 @@ whether the pot is at zero, the common bus and whether patch resistors are fitte
 new component values keep the charge. The rail's state, the drift's phases and the
 SDRAM's content and contacts carry on whatever `[bend.optics]`, `[bend.rail]`,
 `[bend.clock]` and `[bend.memory]` become, a new oscillator frequency included, and
-new memory faults read the old content. A new wiring, or adding or removing the bus
-bend, returns that bend to power-on; removing `[bend.rail]` returns the rail to the
+new memory faults read the old content; the floating diffusion's charge carries on
+whatever `[bend.reset]` becomes, and `[bend.sensor]`, which has no state, takes effect
+with the next frame. A new wiring, or adding or removing the bus bend, returns that
+bend to power-on; removing `[bend.rail]` returns the rail to the
 nominal voltage and removing `[bend.memory]` forgets the SDRAM; a servo that the
 preset turns off forgets its value; a new geometry rebuilds everything as `build`
 does. Values that leave the geometry alone, such as the exposure time, take
@@ -436,7 +484,16 @@ height. `[logic]` describes the bend's 74HC chips, including input protection
 rail (`rail_v`, `source_ohm`, `decoupling_uf`, `quiescent_ma`) and its failure
 thresholds (`afe_uvlo_v`, `logic_min_v`, `dsp_brownout_v`, each below `rail_v`) with
 the AFE's `afe_restart_lines`. `[isp] clamp_range` is the black clamp's correction
-range either side of black, in processor codes. `[memory]` gives the frame-buffer
+range either side of black, in processor codes. For the sensor bend, `[sensor]` gives
+the temperature its dark current and read noise are stated at (`reference_temp_c`),
+the dark current's doubling interval (`dark_doubling_c`) and relative spread over the
+photosites (`dark_nonuniformity`), the read noise's rise per degree
+(`read_noise_per_c`), the amplifier glow's dark current at its corner one doubling
+above the reference and its falloff (`amp_glow_e_per_s`, `amp_glow_radius_frac`), the
+nominal substrate bias (`substrate_v`), the well's change per volt above it
+(`full_well_frac_per_v`) and how far below it the overflow drain's capacity is gone
+(`drain_loss_v`); for the reset bend, `[afe] fd_swing_v` is the output stage's swing in
+volts. `[memory]` gives the frame-buffer
 SDRAM's `column_bits`, `row_bits` and `bank_bits` and the raw buffer's word address
 `raw_base`. Each physical value carries a confidence letter from the key-constants
 table of `docs/research/a520-technical.md`: **A** measured or stated for the A520,
@@ -460,7 +517,14 @@ position `ir_cut_pulled_frac` and the NIR estimate (`nir_weights`, `foliage_nir`
 `high`, or `bridge` `with` another pin) and, for a marginal contact, `on_frac` and
 `switch_hz`, a pin carrying one fault at most. Whether a pin exists on the camera's
 SDRAM is checked when the simulator resolves the preset. `[bend.clock]` and
-`[bend.clocks]` are different sections: the second is the CCD's transfer clocks.
+`[bend.clocks]` are different sections: the second is the CCD's transfer clocks. The
+milestone 4 bends: `[bend.sensor]` the CCD's `temperature_c` (−40 to 150 °C) and
+`substrate_v`, each optional and defaulting to the camera's, so an empty section is
+the unbent camera; `[bend.reset]` the reset gate's `drop_hz`, `hold_px` (at least 1,
+default 8) and `reset_frac` (0 to 1, default 1), inert at no drops and full resets.
+The heat and the exposure trade against each other, the dark charge being the dark
+current times the exposure time: at the camera's exposure a daylight frame shows the
+heat from about 110 °C, and the glow wants a dark scene and a long exposure.
 
 To add a camera, write a camera file with a confidence letter and citation per value
 and name it in a preset; the RGGB mosaic and the selector banks are still code. To add
@@ -477,16 +541,18 @@ stages feel publishes a buffer they read, as the rail does.
 Tests of the public API live in `crates/*/tests/`, one file per area (`noise`,
 `timing`, `config`, `stages`, `clean_camera`, `readout_afe`, `bus`, `codec`,
 `simulator`, `interactive`, `servo`, `optics`, `power`, `capture`, `memory`,
-`milestone3_plumbing`, `golden`, `io`, `video`, `cli`, and the app's
-panels, render worker, video, export and viewport); the `test-util` feature exposes
+`milestone3_plumbing`, `sensor_bend`, `reset`, `golden`, `io`, `video`, `cli`, and the
+app's panels, render worker, video, export and viewport); the `test-util` feature exposes
 internal state to them. They assert physical properties and invariants, never restated
 constants: a 1 kHz square injection crosses zero twice per cycle, equal drivers meet
 at half rail, the divider skips pixel-rate edges, flat fields stay flat, the rail of an
 unloaded camera is the nominal to the bit, an oscillator at the nominal frequency
 captures byte-identically to none, a solid stuck pin aliases exactly in powers of two,
-the NIR of a pure blue sky stays below a twentieth of a white's, every bend replays
-identically from power-on. There is no random-input framework. Video tests
-generate clips with ffmpeg and skip without it.
+the NIR of a pure blue sky stays below a twentieth of a white's, the dark current
+doubles every `dark_doubling_c`, a missed reset over a bright run goes black once the
+swing is used up while a dark run survives, every bend replays identically from
+power-on. There is no random-input framework. Video tests generate clips with ffmpeg
+and skip without it.
 
 The golden tests guard against unintended change: a synthetic 160 by 120 scene (a
 gradient, a bright disc, a dark rectangle) goes through each preset in still mode at
@@ -537,6 +603,15 @@ against 86 ms on the nominal one, 4 % of a frame more, since a line off the nomi
 rail leaves the AFE's ideal path. Without their sections the three new stages return
 in nanoseconds.
 
+The milestone 4 bends were timed on the same VM, against a clean frame of 450 ms.
+`sensor::expose` on the heat gun's 120 °C CCD takes 124.8 ms against 116.3 ms, 2 % of a
+frame more, for the glow's falloff at every photosite and the scene auto-exposure the
+preset meters with; on the substrate preset's drainless, overexposed CCD it takes
+120.7 ms, the spill walking the columns. `afe::process` with the reset drag's weak,
+flaky gate takes 100.0 ms against 87.5 ms, 3 % of a frame more, for the floating
+diffusion carried through every sample and the missed runs drawn in readout order.
+Without their sections both stages take their unbent paths.
+
 ## 9. Extension points and known limitations
 
 Extension points are the `[bend.*]` sections, camera files, new stages in
@@ -557,7 +632,7 @@ bandwidth and many sensor values (the nominal exposure among them) are stand-ins
 provisional; defect concealment is absent. The movie line skip and the AFE part are
 inferred. The A520 bend layout is hard-coded. No post stage or GPU path exists: the
 desktop app renders on the CPU and shows each frame as a texture. The bus bends are
-validated by eye against one composite, the milestone 3 bends by eye alone.
+validated by eye against one composite, the milestone 3 and 4 bends by eye alone.
 
 The milestone 3 bends add their own. The NIR estimate guesses at what an RGB photo
 never recorded: the weights are a mild assumption, `foliage_nir` an explicit one (that
@@ -576,3 +651,21 @@ processor's latch instant. The frame buffer holds one sample per word: DIGIC's p
 SDRAM's burst counter, `a10`'s auto-precharge, refresh, or the interleaving of the next
 frame's writes with this frame's reads, and the A520's SDRAM part is unidentified. Its
 row pins above `a8` lie beyond the movie raw and act on stills only.
+
+The milestone 4 bends add theirs. The amplifier glow's geometry, an exponential falloff
+from the first-read corner over `amp_glow_radius_frac` of the width, is a guess, and its
+strength, the read noise's rise per degree and the dark current's spread are
+PROVISIONAL; the sensor's temperature is uniform and steady, without a gradient from
+where the heat gun points or a drift through a video. The substrate bias moves the well
+and the drain linearly, and its effect on the movie shutter is a linear growth of the
+smear, all PROVISIONAL. A deepened well holds more than the ADC's full scale, so every
+highlight that blooms is clipped already, and a daylight scene without clipped
+highlights blooms only when overexposed. The output stage's swing `fd_swing_v` is
+PROVISIONAL, the source follower's saturation signal plus a margin. The floating
+diffusion does not spill: its charge is unbounded, and an over-full diffusion does not
+leak over the reset gate's barrier, which matters only for how fast a weak reset
+drains it after a run of missed pulses. In movie mode the optical-black photosites
+integrate dark current over a whole frame and the image's over the shutter's
+exposure; at the reference temperature the two differ by hundredths of an electron,
+but on a hot sensor with a movie exposure shorter than the frame the black clamp
+removes too much and the shadows crush green.
