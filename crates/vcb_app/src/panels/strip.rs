@@ -12,7 +12,7 @@
 //! the power panel. An unlit stage leads to its own panel; the ADC has no controls of
 //! its own and leads to the bus bend on its output lines.
 
-use eframe::egui::{self, Button, RichText, Ui};
+use eframe::egui::{self, Align, Button, Layout, RichText, TextStyle, Ui};
 use vcb_core::Preset;
 
 use crate::panels::PanelId;
@@ -147,27 +147,66 @@ pub fn show(ui: &mut Ui, preset: &Preset) -> Option<PanelId> {
         ui.spacing_mut().item_spacing.x = theme::GRID * 0.25;
         ui.spacing_mut().button_padding = egui::vec2(theme::GRID * 0.5, theme::GRID * 0.25);
         for (i, stage) in Stage::ALL.into_iter().enumerate() {
-            if i > 0 {
-                ui.label(RichText::new("→").small().color(theme::TEXT_WEAK));
-            }
-            let bent = stage.is_bent(preset);
-            let text = RichText::new(stage.name()).small().color(if bent {
-                theme::ACCENT
-            } else {
-                theme::TEXT
-            });
-            let mut button = Button::new(text).corner_radius(theme::GRID * 0.5);
-            button = if bent {
-                button
-                    .fill(theme::ACCENT_FAINT)
-                    .stroke(egui::Stroke::new(1.0, theme::ACCENT))
-            } else {
-                button.fill(theme::HOUSING)
-            };
-            if ui.add(button).on_hover_text(stage.hover(preset)).clicked() {
+            // The arrow belongs to the stage after it: both go in one group as wide as
+            // they are, which the wrapping row places as a unit, so a wrap breaks before
+            // an arrow and never leaves one at the end of a row.
+            let arrow = i > 0;
+            let size = egui::vec2(group_width(ui, stage, arrow), ui.spacing().interact_size.y);
+            let response = ui
+                .allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+                    if arrow {
+                        ui.label(RichText::new(ARROW).small().color(theme::TEXT_WEAK));
+                    }
+                    ui.add(button(stage, preset))
+                        .on_hover_text(stage.hover(preset))
+                })
+                .inner;
+            if response.clicked() {
                 clicked = Some(stage.panel(preset));
             }
         }
     });
     clicked
+}
+
+/// The arrow between two stages.
+pub const ARROW: &str = "→";
+
+/// Width added to a stage's group, in points, so rounding never makes it overflow.
+const GROUP_SLACK: f32 = 1.0;
+
+/// The width of a stage's group on the strip: the arrow before it, if any, and its button.
+fn group_width(ui: &Ui, stage: Stage, arrow: bool) -> f32 {
+    let font = TextStyle::Small.resolve(ui.style());
+    let width = |text: &str| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font.clone(), theme::TEXT)
+            .size()
+            .x
+    };
+    let spacing = ui.spacing();
+    let button = width(stage.name()) + 2.0 * spacing.button_padding.x;
+    let arrow = if arrow {
+        width(ARROW) + spacing.item_spacing.x
+    } else {
+        0.0
+    };
+    arrow + button + GROUP_SLACK
+}
+
+/// A stage's button, lit in the accent colour while `preset` bends the stage.
+fn button(stage: Stage, preset: &Preset) -> Button<'static> {
+    let bent = stage.is_bent(preset);
+    let text =
+        RichText::new(stage.name())
+            .small()
+            .color(if bent { theme::ACCENT } else { theme::TEXT });
+    let button = Button::new(text).corner_radius(theme::GRID * 0.5);
+    if bent {
+        button
+            .fill(theme::ACCENT_FAINT)
+            .stroke(egui::Stroke::new(1.0, theme::ACCENT))
+    } else {
+        button.fill(theme::HOUSING)
+    }
 }
