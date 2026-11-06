@@ -257,9 +257,11 @@ fn list_presets(args: &PresetsArgs) -> Result<()> {
                     preset.bend.clocks.as_ref().map(|_| "clocks"),
                     preset.bend.afe.as_ref().map(|_| "afe"),
                     preset.bend.optics.as_ref().map(|_| "optics"),
+                    preset.bend.sensor.as_ref().map(|_| "sensor"),
                     preset.bend.rail.as_ref().map(|_| "rail"),
                     preset.bend.clock.as_ref().map(|_| "clock"),
                     preset.bend.memory.as_ref().map(|_| "memory"),
+                    preset.bend.reset.as_ref().map(|_| "reset"),
                 ]
                 .into_iter()
                 .flatten()

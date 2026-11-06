@@ -1,0 +1,23 @@
+# Canon PowerShot A520 with a weak, flaky reset gate: bright runs ending in black, a solarised sky.
+# The reset-gate wire on the sensor ribbon through a poor contact: each pulse that arrives clears
+# only a fifth of the floating diffusion's charge, and the contact opens about 4,000 times a
+# second for 250 pixel periods on average (9 us, a fourteenth of a still line). Correlated double
+# sampling cancels the charge left behind until it uses up the output stage's 0.6 V swing
+# (23,000 e): with a fifth cleared, a run of packets settles at five times its own charge, so the sky
+# from about half of reference white up loses its packets and reads black, the mosaic's rows in
+# turn as their charge crosses the swing: yellow, then orange, then black towards the horizon.
+# During an open contact the diffusion adds every packet, reads normally for a few pixels and
+# then black to the run's end: thin streaks along the readout lines (vertical in a portrait
+# still), coloured by the row of the mosaic they black out.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
+camera = "a520"
+seed = 1                            # also seeds the contact's open runs
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.reset]
+drop_hz = 4000.0                    # PROVISIONAL, by eye: about 900 open runs in a still frame
+hold_px = 250.0                     # PROVISIONAL, by eye: mean run length in native pixel periods
+reset_frac = 0.2                    # PROVISIONAL, by eye: a weak reset shows on daylight from about 0.25 down; 0.2 solarises half the sky

@@ -257,3 +257,23 @@ fn the_s9000_tear_memory_renders_its_golden_frame() {
 fn the_mirror_bank_memory_renders_its_golden_frame() {
     check("a520-mirror-bank");
 }
+
+#[test]
+fn the_heat_gun_sensor_renders_its_golden_frame() {
+    check("a520-heat-gun");
+}
+
+#[test]
+fn the_substrate_sensor_renders_its_golden_frame() {
+    check("a520-substrate");
+}
+
+#[test]
+fn the_reset_drag_renders_its_golden_frame() {
+    check("a520-reset-drag");
+}
+
+#[test]
+fn the_hot_reclock_renders_its_golden_frame() {
+    check("a520-hot-reclock");
+}

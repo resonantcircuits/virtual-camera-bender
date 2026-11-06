@@ -4,10 +4,13 @@
 //! sun, textured ground, dark buildings with lit windows) through `cameras/a520.toml`
 //! in still mode at native resolution. Every stage runs with two presets: `clean`, the
 //! unmodified camera, and `hpf`, the bus bend with the bypass function. The stages that
-//! milestone 3 bent also run a bent case: the scene with `full-spectrum` (the IR-cut
-//! filter removed), the supply rail and the AFE on it with `brownout` (a sagging,
-//! rippling rail), the processor's capture with `reclock-roll` (a detuned, wandering
-//! oscillator) and the frame buffer with `s9000-tear` (two marginal address contacts).
+//! milestones 3 and 4 bent also run a bent case: the scene with `full-spectrum` (the
+//! IR-cut filter removed), the sensor with `heat-gun` (a hot CCD: its dark current,
+//! the current's spread and the amplifier's glow) and `substrate` (no overflow drain,
+//! an overexposure that blooms), the supply rail and the AFE on it with `brownout` (a sagging, rippling rail),
+//! the AFE with `reset-drag` (a weak, flaky reset gate), the processor's capture with
+//! `reclock-roll` (a detuned, wandering oscillator) and the frame buffer with
+//! `s9000-tear` (two marginal address contacts).
 //!
 //! Each stage bench times one public stage function on the signal that the stages
 //! before it produced. Persistent state carries on from one iteration to the next, as
@@ -45,8 +48,11 @@ const PRESETS: [&str; 2] = ["clean", "hpf"];
 /// Presets of the scene bench: the two of every stage and the IR-cut filter removed.
 const SCENE_PRESETS: [&str; 3] = ["clean", "hpf", "full-spectrum"];
 
-/// Presets of the AFE bench: the two of every stage and a sagging rail.
-const AFE_PRESETS: [&str; 3] = ["clean", "hpf", "brownout"];
+/// Presets of the sensor bench: the two of every stage, a hot CCD and a drainless one.
+const SENSOR_PRESETS: [&str; 4] = ["clean", "hpf", "heat-gun", "substrate"];
+
+/// Presets of the AFE bench: the two of every stage, a sagging rail and a weak reset gate.
+const AFE_PRESETS: [&str; 4] = ["clean", "hpf", "brownout", "reset-drag"];
 
 /// Presets of the supply-rail bench: no rail bend, and a loaded, rippling rail.
 const POWER_PRESETS: [&str; 2] = ["clean", "brownout"];
@@ -58,11 +64,13 @@ const CAPTURE_PRESETS: [&str; 2] = ["clean", "reclock-roll"];
 const MEMORY_PRESETS: [&str; 2] = ["clean", "s9000-tear"];
 
 /// Presets of the whole-chain bench: the two of every stage and one per bent stage.
-const FRAME_PRESETS: [&str; 6] = [
+const FRAME_PRESETS: [&str; 8] = [
     "clean",
     "hpf",
     "full-spectrum",
+    "heat-gun",
     "brownout",
+    "reset-drag",
     "reclock-roll",
     "s9000-tear",
 ];
@@ -320,7 +328,7 @@ fn scene_prepare(bencher: Bencher, preset: &str) {
     });
 }
 
-#[divan::bench(args = PRESETS, sample_count = 20)]
+#[divan::bench(args = SENSOR_PRESETS, sample_count = 20)]
 fn sensor_expose(bencher: Bencher, preset: &str) {
     let mut chain = Chain::new(preset);
     let Chain {

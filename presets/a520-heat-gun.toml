@@ -1,0 +1,23 @@
+# Canon PowerShot A520 with a heat gun on the CCD: mottled shadows and hot crosses; on a dark scene, a corner glow.
+# The sensor at 120 C, 95 C above the 25 C its dark current is given at: with the doubling every
+# 6 C the dark current rises 2^15.8, about 58,000 times, to some 470 electrons in the camera's
+# own 1/125 s. The processor's black clamp removes that mean; what shows in daylight is its
+# spread over the photosites, a fixed pattern of about 140 e rms that mottles the shadows and
+# stays put from frame to frame, the hot photosites saturated into crosses by the demosaic, and
+# read noise 29 % higher. Scene auto-exposure meters the scene as the camera would.
+# The output amplifier's glow at the corner the readout samples first (bottom left in a portrait
+# still, top left in landscape) is faint here; it needs a dark scene and a long exposure, a lens
+# cap or a night shot with the exposure time turned up in the Sensor panel.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[isp]
+ae_mode = "scene"                   # the camera meters the scene
+
+[bend.sensor]
+temperature_c = 120.0               # PROVISIONAL, by eye: a daylight frame at 1/125 s shows the heat from about 110 C; 130 C buries it in grain
