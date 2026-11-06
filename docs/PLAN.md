@@ -636,3 +636,19 @@ feels the rail through the default `ppm_per_v`; the HPF bend darkens held words,
 chromatic-sieve preset wants the rail bend without it; the bend's own pot current only
 loads the rail from the next frame on. Next: stage 13 (panels) and stage 14 (presets,
 goldens, docs, benches for the new stages).
+
+### Status (2026-11-06, night)
+
+Stages 13 and 14 are complete and merged (3f033ef plus this status): the Optics,
+Master clock, Memory and Power panels with the strip lighting every bent stage and
+headless tests of load, apply, power switches, the pin grid and reachability; the ten
+presets of the table above with goldens, `vcb presets` and CLI tests; benches for the
+power, capture and memory stages; `docs/ARCHITECTURE.md`, `CHANGELOG.md`, `README.md`,
+`docs/USER-GUIDE.md` and `docs/research/milestone3-tuning-notes.md`. Looks stage 14
+could not fully reach without core changes, for milestone 4 or a fix round: brownout
+bands are soft (the lockout caps the ratiometric brightening at 22 %); a locked-out
+AFE holds one word, so sieve stripes have one hue (a latch-up to a rail code would
+vary them); the mirror bank is a still look (movie rows lie below the pin's bit); a
+vertical roll needs a timing generator that free-runs across VD. Stage 15 is the
+user's testing round; nobody has clicked the four new panels by hand (drop-downs,
+typed values and tooltips were checked only headless and in screenshots).
