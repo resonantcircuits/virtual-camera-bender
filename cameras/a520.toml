@@ -129,10 +129,14 @@ wb_tau_s = 0.5                      # PROVISIONAL: time constant of the auto-whi
 demosaic = "malvar"                 # PROVISIONAL: DIGIC's algorithm is unpublished; gradient-corrected linear
 
 [memory]
-column_bits = 9                     # PROVISIONAL: frame-buffer SDRAM column address
-row_bits = 12                       # PROVISIONAL: frame-buffer SDRAM row address
-bank_bits = 2                       # PROVISIONAL: four banks
-raw_base = 0                        # PROVISIONAL: word address of the raw buffer
+# The frame-buffer SDRAM. The A520's part is unidentified; the bits are the JEDEC
+# organisation of a 128 Mbit x16 SDR SDRAM (4 banks of 4096 rows of 512 columns,
+# 2^23 words, 16 MiB), which holds a 2272 x 1704 raw at one sample per word. The
+# controller maps the linear word address row-bank-column (a modelling choice).
+column_bits = 9                     # PROVISIONAL: 512 columns, multiplexed on pins a0..a8
+row_bits = 12                       # PROVISIONAL: 4096 rows, multiplexed on pins a0..a11
+bank_bits = 2                       # PROVISIONAL: four banks on their own pins, between column and row bits
+raw_base = 0                        # PROVISIONAL: word address of the raw buffer; DIGIC's memory map is unpublished
 
 [jpeg]
 subsampling = "4:2:2"               # A: measured (section 7)
