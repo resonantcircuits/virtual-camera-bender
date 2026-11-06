@@ -1,18 +1,20 @@
 //! The scene, sensor, clock, AFE and processor panels write presets that survive TOML,
-//! keep only what the user touched, and with the bus panel and the four panels of
-//! milestone 3 reproduce every shipped preset; the strip leads to every bend's panel.
+//! keep only what the user touched, and with the bus panel, the four panels of
+//! milestone 3 and the sensor and reset blocks reproduce every shipped preset; the
+//! strip leads to every bend's panel.
 
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use vcb_app::panels::afe::{self, AfePanel};
+use vcb_app::panels::afe::{self, AfePanel, ResetPanel};
 use vcb_app::panels::clocks::{self, ClocksPanel};
 use vcb_app::panels::isp::{self, Field};
 use vcb_app::panels::memory::MemoryPanel;
 use vcb_app::panels::optics::OpticsPanel;
 use vcb_app::panels::rail::RailPanel;
 use vcb_app::panels::reclock::ReclockPanel;
+use vcb_app::panels::sensor::SensorBendPanel;
 use vcb_app::panels::strip::Stage;
 use vcb_app::panels::{PanelId, Panels, Scale, sensor};
 use vcb_app::presets;
@@ -20,7 +22,7 @@ use vcb_core::afe::{GainMod, Inject, Wave};
 use vcb_core::isp::{AeMode, WbMode};
 use vcb_core::preset::{
     ClockBend, FaultKind, IspOverride, MemoryBend, Mode, OpticsBend, RailBend, ReclockBend,
-    Resolution,
+    ResetBend, Resolution, SensorBend,
 };
 use vcb_core::{Camera, Preset, Timing};
 
@@ -121,6 +123,21 @@ fn everything() -> (Preset, Panels) {
             ..RailBend::default()
         },
     };
+    panels.sensor = SensorBendPanel {
+        enabled: true,
+        bend: SensorBend {
+            temperature_c: Some(48.0),
+            substrate_v: Some(11.2),
+        },
+    };
+    panels.reset = ResetPanel {
+        enabled: true,
+        bend: ResetBend {
+            drop_hz: 150.0,
+            hold_px: 24.0,
+            reset_frac: 0.6,
+        },
+    };
     panels.apply(&mut preset);
     isp::set(&mut preset.isp, Field::ToneContrast, 1.4);
     isp::set(&mut preset.isp, Field::SharpenRadius, 0.001);
@@ -148,9 +165,11 @@ fn every_shipped_preset_survives_the_panels() {
         ReclockPanel::from_preset(&preset).apply(&mut alone);
         MemoryPanel::from_preset(&preset).apply(&mut alone);
         RailPanel::from_preset(&preset).apply(&mut alone);
+        SensorBendPanel::from_preset(&preset).apply(&mut alone);
+        ResetPanel::from_preset(&preset).apply(&mut alone);
         assert_eq!(
             alone, preset,
-            "{name} survives the optics, master clock, memory and power panels"
+            "{name} survives the optics, master clock, memory and power panels and the sensor and reset blocks"
         );
         through_toml(&rebuilt);
     }
@@ -175,6 +194,7 @@ fn a_preset_using_every_panel_round_trips_through_toml() {
     );
     let bend = &parsed.bend;
     assert!(bend.optics.is_some() && bend.clock.is_some() && bend.rail.is_some());
+    assert!(bend.sensor.is_some() && bend.reset.is_some());
     let faults = &bend.memory.as_ref().expect("the memory bend").faults;
     assert_eq!(
         faults.iter().map(|fault| fault.pin).collect::<Vec<_>>(),
@@ -192,6 +212,8 @@ fn a_switched_off_bend_leaves_the_preset_but_keeps_its_values() {
     panels.reclock.enabled = false;
     panels.memory.enabled = false;
     panels.rail.enabled = false;
+    panels.sensor.enabled = false;
+    panels.reset.enabled = false;
     let mut off = preset.clone();
     panels.apply(&mut off);
     assert!(off.bend.clocks.is_none() && off.bend.afe.is_none());
@@ -200,7 +222,9 @@ fn a_switched_off_bend_leaves_the_preset_but_keeps_its_values() {
         bend.optics.is_none()
             && bend.clock.is_none()
             && bend.memory.is_none()
-            && bend.rail.is_none(),
+            && bend.rail.is_none()
+            && bend.sensor.is_none()
+            && bend.reset.is_none(),
         "a switched-off bend writes no section"
     );
     through_toml(&off);
@@ -224,6 +248,8 @@ fn a_switched_off_bend_leaves_the_preset_but_keeps_its_values() {
     reloaded.reclock.enabled = true;
     reloaded.memory.enabled = true;
     reloaded.rail.enabled = true;
+    reloaded.sensor.enabled = true;
+    reloaded.reset.enabled = true;
     let mut on = off.clone();
     reloaded.apply(&mut on);
     assert_eq!(
@@ -531,6 +557,7 @@ fn the_strip_follows_the_signal_and_marks_the_bends() {
         marked,
         [
             Stage::Scene,
+            Stage::Sensor,
             Stage::Readout,
             Stage::Afe,
             Stage::Bus,
@@ -566,6 +593,16 @@ fn the_strip_follows_the_signal_and_marks_the_bends() {
         [Stage::Scene],
         "a pulled IR-cut filter lights the scene"
     );
+    assert_eq!(
+        bent_by(|p| p.bend.sensor = Some(SensorBend::default())),
+        [Stage::Sensor],
+        "the sensor bend lights the sensor"
+    );
+    assert_eq!(
+        bent_by(|p| p.bend.reset = Some(ResetBend::default())),
+        [Stage::Afe],
+        "the reset gate lights the AFE"
+    );
 }
 
 #[test]
@@ -579,9 +616,13 @@ fn every_bend_panel_is_reachable_from_the_strip() {
     let rail = with(|p| p.bend.rail = Some(RailBend::default()));
     let clock = with(|p| p.bend.clock = Some(ReclockBend::new(26.7)));
     let memory = with(|p| p.bend.memory = Some(MemoryBend::default()));
+    let sensor = with(|p| p.bend.sensor = Some(SensorBend::default()));
+    let reset = with(|p| p.bend.reset = Some(ResetBend::default()));
     assert_eq!(Stage::Scene.panel(&optics), PanelId::Optics);
     assert_eq!(Stage::Clock.panel(&clock), PanelId::Clock);
     assert_eq!(Stage::Memory.panel(&memory), PanelId::Memory);
+    assert_eq!(Stage::Sensor.panel(&sensor), PanelId::Sensor);
+    assert_eq!(Stage::Afe.panel(&reset), PanelId::Afe);
     for stage in [Stage::Afe, Stage::Bus, Stage::Processor] {
         assert_eq!(
             stage.panel(&rail),
@@ -603,17 +644,27 @@ fn every_bend_panel_is_reachable_from_the_strip() {
         "a stage's own bend comes before the rail"
     );
 
-    let reachable: HashSet<PanelId> =
-        [Preset::new("a520"), optics, rail, clock, memory, everything]
-            .iter()
-            .flat_map(|preset| Stage::ALL.map(|stage| stage.panel(preset)))
-            .collect();
+    let reachable: HashSet<PanelId> = [
+        Preset::new("a520"),
+        optics,
+        rail,
+        clock,
+        memory,
+        sensor,
+        reset,
+        everything,
+    ]
+    .iter()
+    .flat_map(|preset| Stage::ALL.map(|stage| stage.panel(preset)))
+    .collect();
     for panel in [
         PanelId::Optics,
+        PanelId::Sensor,
         PanelId::Clock,
         PanelId::Memory,
         PanelId::Power,
         PanelId::Clocks,
+        PanelId::Afe,
     ] {
         assert!(
             reachable.contains(&panel),

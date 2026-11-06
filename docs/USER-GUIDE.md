@@ -27,20 +27,23 @@ screen pixel; hold the space bar to see the original.
 The camera keeps running between renders, as a real one does: oscillator phases,
 the bus capacitor's charge, the servos and running clock faults carry over, and each
 render is the next frame. Rewiring the bus bend resets the bend alone ("circuit
-reset" in the status line); moving the filter, the oscillator, the rail's loads or an
-address fault keeps everything running. Readout → "Reset circuit" powers the camera
-off and on; the next full render is exactly what `vcb render` writes.
+reset" in the status line); moving the filter, the sensor's temperature or bias, the
+reset gate, the oscillator, the rail's loads or an address fault keeps everything
+running. Readout → "Reset circuit" powers the camera off and on; the next full render
+is exactly what `vcb render` writes.
 
 ## The panels
 
 The strip at the top of the inspector shows the signal path, Scene → Sensor →
 Readout → AFE → ADC → Bus → Clock → Processor → Memory → JPEG. Stages with a bend
 switched on, or with processor overrides, are lit: the scene by the optics, the
-readout by the clocks, and the AFE, the bus and the processor also by a loaded
-supply rail, which feeds all three. Click a stage to scroll to the panel of what
-bends it, or to its own panel when nothing does. Bend panels have an on/off switch
-in their title, with its position named beside it, and remember their settings while
-off.
+sensor by the sensor bend, the readout by the clocks, the AFE by its bend or the
+reset gate, and the AFE, the bus and the processor also by a loaded supply rail,
+which feeds all three. Click a stage to scroll to the panel of what bends it, or to
+its own panel when nothing does. Bend panels have an on/off switch in their title,
+with its position named beside it, and remember their settings while off; the
+sensor bend and the reset gate, blocks in the Sensor and AFE panels, have theirs
+beside the block's name.
 
 **Scene.** *Headroom* (×, 1 to 16): how much brighter than reference white the
 input's clipped white really was; 1 takes the photo as it is. *Shoulder start* (% of
@@ -63,6 +66,18 @@ brightens by a stop until the well or converter clips, unless auto-exposure
 compensates; dark charge and hot pixels grow too. Movie mode shows the shutter's
 time read-only, at most one frame (66.7 ms at 15 fps). *Smear* shows whether light
 reaches the CCD during transfer: off for stills, on for movie.
+
+*Sensor bend* (a block with its own switch; the sensor stock or bent). *Temperature*
+(°C, −20 to 120): a heat gun or freeze spray on the CCD, dimmed at the camera's
+25 °C until moved and returned there by ↺; the dark current doubles every 6 °C, and
+with it the grain, the hot pixels and the output amplifier's glow in the corner the
+readout starts from, while the read noise rises. *Substrate bias* (V, 8 to 16): a pot
+on the CCD's substrate voltage, dimmed at the camera's nominal 12 V; above it the
+well shrinks and highlights clip early while the overflow drain takes the excess,
+below it the well deepens but the drain takes less and nothing at all 2 V below, so
+highlights bloom along their columns and the movie mode's smear grows. Below, the
+dark current as a multiple of the camera's at 25 °C, and the full well in electrons
+at the set bias, with what is left of the drain below nominal.
 
 **Readout.** *Mode*: still reads every row; movie reads one row pair in four and
 bins columns into the 640 × 480 movie frame, with smear. *Resolution*: native uses
@@ -88,6 +103,19 @@ the amplifier's gain by *Depth* (%, 5 to 50) at its own *Frequency*. *CDS clamp
 timing*: *Reset lag* (px, 0 to 8) takes the reset sample late, and *Echo* (%, 0 to
 100) is how much of the earlier level it subtracts, leaving a dark echo after every
 edge.
+
+*Reset gate* (a block at the end of the panel with its own switch, apart from the
+AFE bend's; the reset pulses sound or faulted). The gate empties the CCD's floating
+diffusion before each pixel, and correlated double sampling hides a missed or weak
+pulse until the charge left on the diffusion passes the output stage's swing, 23 077
+electrons on the A520. *Missed pulses* (Hz, 0 to 100 000): the mean rate of runs of
+pulses a flaky contact drops; through a run the diffusion adds up the pixels, and
+once they pass the swing the rest of the run reads black. *Run length* (px, 1 to
+2000): the mean length of a run, in pixels of the camera's own clock. *Reset
+strength* (%, 0 to 100): how much of the diffusion's charge each pulse clears,
+dimmed at the sound 100 %; what a weak pulse leaves builds up over bright stretches,
+which darken and, the brightest, end in black. Below, the swing and the pixel charge
+above which a weak reset shows; on daylight scenes it takes about 20 to 25 % to see.
 
 **Bus bend** (bend). The A520's data-bus mod as a front panel: the DIP switches pick
 the source lines D11 to D2, the *Capacitor* (µF, 0.01 to 10) and *Pot* (kΩ, 0 to 1)
@@ -196,7 +224,7 @@ Then switch on the analog front end (a 1.2 kHz, 50 mV square wave by default) fo
 bands, or set Clocks → *Transfer loss* to 20 000 ppm to melt the highlights, and
 open a video to see the bands roll from frame to frame.
 
-The other four bends start from the clean camera (`a520-clean`):
+The other bends start from the clean camera (`a520-clean`):
 
 4. **Filter pulled.** Switch on Optics: the IR-cut filter slides off, and under the
    camera's daylight white balance the infrared turns the frame pink. Set Processor →
@@ -226,3 +254,25 @@ The other four bends start from the clean camera (`a520-clean`):
    solid colour (`a520-sieve`). At 2000 mA the processor browns out and the rest of
    the frame stays black, or, with the memory bend on, shows the previous frame
    (`a520-dying-battery`).
+8. **A heat gun.** Heat shows in the dark, as on a real camera, so open a night shot
+   or a black image (the lens cap on). Switch on Sensor → *Sensor bend*, which starts
+   with a heat gun at 70 °C: the readout under it says 181 times the dark current,
+   still nothing at the camera's 8 ms. Set *Exposure* to 500 ms, and Processor →
+   Auto-exposure to scene to lift the dark frame: hot pixels come up as bright
+   coloured specks and the corner where the readout starts glows faintly, more with
+   a longer exposure or more heat. Back at 25 °C (↺) the same exposure is clean
+   again, so what showed was the heat. On the daylight sample 500 ms is six stops
+   over and clips white. `a520-heat-gun` holds a heat gun with a long exposure, and
+   `a520-hot-reclock` puts a heated sensor behind a loose master clock. The block's
+   other knob, *Substrate bias*, 2 V below nominal leaves no overflow drain, and
+   overexposed highlights bloom along the sensor's columns (`a520-substrate`);
+   raised, the well shrinks and highlights clip early, off-white.
+9. **A flaky reset gate.** Switch on AFE → *Reset gate*, which starts missing 2000
+   runs of reset pulses a second, 8 pixels long on average: short dark dashes
+   appear in the bright sky, along the sensor's lines (upright in the portrait
+   sample), where a run's charge added up past the swing; the dimmer hills and water
+   hide most of them. Then set *Reset strength* to 20 %: each pulse now leaves most
+   of the charge behind, and the readout says a weak reset shows above 4615
+   electrons. The bright sky towards the horizon solarises, yellow and orange, with
+   the brightest clouds green and black, while the hills and the water read as
+   before. `a520-reset-drag` is a weak reset with long runs of missed pulses.

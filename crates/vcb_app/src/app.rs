@@ -1351,7 +1351,9 @@ impl App {
                     self.panels.optics.show(ui, &base)
                 });
                 edit |= section(ui, target, PanelId::Sensor, |ui| {
-                    panels::sensor::show(ui, &mut self.preset, &base)
+                    let mut edit = panels::sensor::show(ui, &mut self.preset, &base);
+                    edit |= self.panels.sensor.show(ui, &base);
+                    edit
                 });
                 edit |= section(ui, target, PanelId::Readout, |ui| {
                     panels::readout::show(ui, &mut self.preset, timing.as_ref(), self.running)
@@ -1360,7 +1362,9 @@ impl App {
                     self.panels.clocks.show(ui, &base, timing.as_ref())
                 });
                 edit |= section(ui, target, PanelId::Afe, |ui| {
-                    self.panels.afe.show(ui, timing.as_ref())
+                    let mut edit = self.panels.afe.show(ui, timing.as_ref());
+                    edit |= self.panels.reset.show(ui, &base);
+                    edit
                 });
                 edit |= section(ui, target, PanelId::Bus, |ui| self.panels.bus.show(ui));
                 edit |= section(ui, target, PanelId::Clock, |ui| {

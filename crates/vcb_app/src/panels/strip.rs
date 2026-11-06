@@ -1,11 +1,11 @@
 //! The signal-path strip: the camera's stages in signal order, above the panels.
 //!
 //! Scene → Sensor → Readout → AFE → ADC → Bus → Clock → Processor → Memory → JPEG. A
-//! stage with a bend patched in (the IR-cut filter pulled off the sensor, the clocks
-//! on the readout, the AFE bend, the bus bend, the master-clock reclock, the memory's
-//! address faults) or with processor overrides is lit in the accent colour. The
-//! supply rail has no stage of its own: it feeds the AFE, the bus and the processor,
-//! so a rail bend lights those three.
+//! stage with a bend patched in (the IR-cut filter pulled off the sensor, the sensor
+//! bend, the clocks on the readout, the AFE bend or the faulted reset gate, the bus
+//! bend, the master-clock reclock, the memory's address faults) or with processor
+//! overrides is lit in the accent colour. The supply rail has no stage of its own: it
+//! feeds the AFE, the bus and the processor, so a rail bend lights those three.
 //!
 //! Clicking a stage asks the inspector to scroll to the panel of what bends it: a lit
 //! scene to the optics, a lit readout to the clocks, a stage lit by the rail alone to
@@ -94,20 +94,25 @@ impl Stage {
     /// The panel of what bends or overrides the stage in `preset`, if anything does.
     ///
     /// The stage's own bend comes first; a rail bend (`[bend.rail]`) bends the AFE, the
-    /// bus and the processor, which the rail feeds, and leads to the Power panel.
+    /// bus and the processor, which the rail feeds, and leads to the Power panel. The
+    /// sensor bend (`[bend.sensor]`) lights the sensor, and the reset gate
+    /// (`[bend.reset]`), whose block sits in the AFE panel, lights the AFE as its bend does.
     #[must_use]
     pub fn bent_by(self, preset: &Preset) -> Option<PanelId> {
         let bend = &preset.bend;
         let rail = bend.rail.is_some().then_some(PanelId::Power);
         match self {
             Self::Scene => bend.optics.is_some().then_some(PanelId::Optics),
+            Self::Sensor => bend.sensor.is_some().then_some(PanelId::Sensor),
             Self::Readout => bend.clocks.is_some().then_some(PanelId::Clocks),
-            Self::Afe => bend.afe.is_some().then_some(PanelId::Afe).or(rail),
+            Self::Afe => (bend.afe.is_some() || bend.reset.is_some())
+                .then_some(PanelId::Afe)
+                .or(rail),
             Self::Bus => bend.bus.is_some().then_some(PanelId::Bus).or(rail),
             Self::Clock => bend.clock.is_some().then_some(PanelId::Clock),
             Self::Processor => preset.isp.is_some().then_some(PanelId::Processor).or(rail),
             Self::Memory => bend.memory.is_some().then_some(PanelId::Memory),
-            Self::Sensor | Self::Adc | Self::Jpeg => None,
+            Self::Adc | Self::Jpeg => None,
         }
     }
 

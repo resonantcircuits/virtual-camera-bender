@@ -8,9 +8,10 @@
 //! just ended. The app turns those into preview and full renders.
 //!
 //! Panels of bends ([`optics`], [`clocks`], [`afe`], [`bus`], [`reclock`], [`memory`],
-//! [`rail`]) hold their switch positions and values even while the bend is switched
-//! off, which the preset cannot store, and write their section of the preset with
-//! `apply`; [`Panels`] holds the seven. The other panels edit the preset directly.
+//! [`rail`]) and the bend blocks inside the sensor and AFE panels (the sensor bend and
+//! the reset gate) hold their switch positions and values even while the bend is
+//! switched off, which the preset cannot store, and write their section of the preset
+//! with `apply`; [`Panels`] holds the nine. The other panels edit the preset directly.
 //! Every control shows a physical value with its unit; [`Knob`] describes how a stored
 //! value is shown.
 
@@ -137,15 +138,19 @@ impl PanelId {
     }
 }
 
-/// The panels that hold state the preset cannot: the seven bends.
+/// The panels that hold state the preset cannot: the nine bends.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Panels {
     /// The IR-cut filter bend.
     pub optics: optics::OpticsPanel,
+    /// The sensor bend, a block in the sensor panel.
+    pub sensor: sensor::SensorBendPanel,
     /// The CCD transfer clock bend.
     pub clocks: clocks::ClocksPanel,
     /// The analog front end bend.
     pub afe: afe::AfePanel,
+    /// The reset-gate bend, a block in the AFE panel.
+    pub reset: afe::ResetPanel,
     /// The bus bend.
     pub bus: bus::BusPanel,
     /// The master-clock reclock bend.
@@ -168,8 +173,10 @@ impl Panels {
     /// Sets every bend panel from `preset`.
     pub fn load(&mut self, preset: &Preset) {
         self.optics.load(preset);
+        self.sensor.load(preset);
         self.clocks.load(preset);
         self.afe.load(preset);
+        self.reset.load(preset);
         self.bus.load(preset);
         self.reclock.load(preset);
         self.memory.load(preset);
@@ -179,8 +186,10 @@ impl Panels {
     /// Writes every bend panel into `preset`.
     pub fn apply(&self, preset: &mut Preset) {
         self.optics.apply(preset);
+        self.sensor.apply(preset);
         self.clocks.apply(preset);
         self.afe.apply(preset);
+        self.reset.apply(preset);
         self.bus.apply(preset);
         self.reclock.apply(preset);
         self.memory.apply(preset);
@@ -529,19 +538,43 @@ pub fn bend_header(
 ) -> Response {
     ui.horizontal(|ui| {
         title(ui, text);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let hover = format!("{part}: {} or {}", positions[0], positions[1]);
-            let response = power(ui, on, &hover);
-            let position = if *on { positions[1] } else { positions[0] };
-            ui.label(
-                RichText::new(format!("{part} {position}"))
-                    .small()
-                    .color(theme::label_colour(*on)),
-            )
-            .on_hover_text(hover);
-            response
-        })
-        .inner
+        named_power(ui, on, part, positions)
+    })
+    .inner
+}
+
+/// A bend block's subsection label with its power switch, as [`bend_header`] for a panel.
+///
+/// For a bend with a section of its own inside another stage's panel, such as the
+/// sensor bend in the sensor panel.
+pub fn block_header(
+    ui: &mut Ui,
+    text: &str,
+    on: &mut bool,
+    part: &str,
+    positions: [&str; 2],
+) -> Response {
+    ui.add_space(SECTION_GAP);
+    ui.horizontal(|ui| {
+        section_label(ui, text);
+        named_power(ui, on, part, positions)
+    })
+    .inner
+}
+
+/// A power switch at the right of the row with its position named beside it.
+fn named_power(ui: &mut Ui, on: &mut bool, part: &str, positions: [&str; 2]) -> Response {
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        let hover = format!("{part}: {} or {}", positions[0], positions[1]);
+        let response = power(ui, on, &hover);
+        let position = if *on { positions[1] } else { positions[0] };
+        ui.label(
+            RichText::new(format!("{part} {position}"))
+                .small()
+                .color(theme::label_colour(*on)),
+        )
+        .on_hover_text(hover);
+        response
     })
     .inner
 }

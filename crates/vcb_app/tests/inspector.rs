@@ -1,6 +1,7 @@
-//! The inspector draws the panels of the four bends of milestone 3 in a headless ui
-//! pass, a click on a lit stage of the strip scrolls their panel into view, and a
-//! wrapped strip breaks before an arrow, never after one.
+//! The inspector draws the panels of the four bends of milestone 3 and the sensor and
+//! reset blocks of milestone 4 in a headless ui pass, a click on a lit stage of the
+//! strip scrolls their panel into view, and a wrapped strip breaks before an arrow,
+//! never after one.
 //!
 //! The passes run the app's real `ui` on an `egui::Context` without a renderer; the
 //! painted text shapes tell what is on screen and where.
@@ -75,6 +76,20 @@ fn every_bend() -> PathBuf {
     };
     panels.apply(&mut preset);
     let path = scratch().join("every-bend.toml");
+    std::fs::write(&path, presets::to_toml(&preset).expect("serialises")).expect("written");
+    path
+}
+
+/// The clean camera with the sensor bend and a weak reset gate on, saved as `sensor-reset.toml`.
+fn sensor_and_reset() -> PathBuf {
+    let mut preset =
+        presets::load_preset(&root().join("presets/a520-clean.toml")).expect("shipped");
+    let mut panels = Panels::from_preset(&preset);
+    panels.sensor.enabled = true;
+    panels.reset.enabled = true;
+    panels.reset.bend.reset_frac = 0.25;
+    panels.apply(&mut preset);
+    let path = scratch().join("sensor-reset.toml");
     std::fs::write(&path, presets::to_toml(&preset).expect("serialises")).expect("written");
     path
 }
@@ -302,6 +317,43 @@ fn the_new_panels_draw_and_the_strip_scrolls_to_them() {
         shows(&painted, "a5") && shows(&painted, "bridged"),
         "a4's partner a5 shows the bridge"
     );
+}
+
+#[test]
+fn the_sensor_and_reset_blocks_draw_and_the_strip_reaches_them() {
+    let mut window = Window::new();
+    window.pass(Vec::new(), vec![sensor_and_reset()]);
+    for (stage, texts) in [
+        (
+            "Sensor",
+            [
+                "Sensor bent",
+                "Dark current 181 × that at 25 °C; full well 17800 e.",
+            ],
+        ),
+        (
+            "AFE",
+            [
+                "Reset pulses faulted",
+                "Swing 23077 e; a weak reset shows on packets above 5769 e.",
+            ],
+        ),
+    ] {
+        let painted = window.settle();
+        window.click(&painted, stage);
+        let painted = window.settle();
+        for text in texts {
+            assert!(
+                shows(&painted, text),
+                "a click on the lit {stage} stage shows \"{text}\": {:?}",
+                painted
+                    .iter()
+                    .filter(|shape| shape.visible)
+                    .map(|shape| format!("{} @ {:.0},{:.0}", shape.text, shape.pos.x, shape.pos.y))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
 }
 
 /// The strip's texts drawn `width` points wide for `preset`, row by row, left to right.

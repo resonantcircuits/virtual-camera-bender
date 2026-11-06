@@ -8,11 +8,20 @@
 //! reset sample can be taken late by a number of pixel periods, subtracting a fraction
 //! of an earlier level, which echoes every edge. [`AfePanel`] keeps every value while
 //! a part, or the whole bend, is switched off.
+//!
+//! At the end of the panel the "Reset gate" block sets the preset's `[bend.reset]`
+//! section with its own power switch, apart from the AFE bend's: missed reset pulses
+//! at a mean rate in hertz, in runs of a mean length in native pixel periods, and the
+//! reset's strength as the percentage of the floating diffusion's charge each pulse
+//! clears, dimmed at the sound 100 %. A readout shows the output stage's swing in
+//! electrons, `fd_swing_v / conv_gain`, and the packet above which a weak reset shows,
+//! `reset_frac` times the swing. [`ResetPanel`] keeps the values while the pulses are
+//! sound.
 
 use eframe::egui::Ui;
 use vcb_core::afe::{GainMod, Inject, Wave};
-use vcb_core::preset::AfeBend;
-use vcb_core::{Preset, Timing};
+use vcb_core::preset::{AfeBend, ResetBend};
+use vcb_core::{Camera, Preset, Timing};
 
 use crate::panels::{self, Edit, Knob, Scale};
 
@@ -33,6 +42,18 @@ pub const LAG: Knob = Knob::linear(0.0..=32.0, " px", 1);
 
 /// The CDS mix knob: 0 to 100 % of the delayed level.
 pub const MIX: Knob = Knob::linear(0.0..=100.0, " %", 0).scaled(Scale::Times(100.0));
+
+/// The missed-pulse knob: runs a second up to 100 kHz, logarithmic, with zero for none.
+pub const DROPS: Knob = Knob::log(0.0..=100_000.0, 0.1, " Hz");
+
+/// The run-length knob: 1 to 2000 native pixel periods, logarithmic.
+pub const RUN: Knob = Knob::log(1.0..=2000.0, 1.0, " px");
+
+/// The reset-strength knob: 0 to 100 % of the diffusion's charge cleared per pulse.
+pub const STRENGTH: Knob = Knob::linear(0.0..=100.0, " %", 0).scaled(Scale::Times(100.0));
+
+/// The missed-pulse rate of a fresh reset-gate bend, in runs a second.
+pub const DEFAULT_DROP_HZ: f64 = 2000.0;
 
 /// The waveform choices, in panel order.
 const WAVES: [(Wave, &str); 4] = [
@@ -296,6 +317,133 @@ pub fn cycle_length(freq_hz: f64, timing: &Timing) -> String {
         format!(
             "{} px per cycle",
             panels::significant(timing.samples_per_cycle(freq_hz), 3)
+        )
+    }
+}
+
+/// The reset-gate bend's switch and values, a block at the end of the AFE panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResetPanel {
+    /// Whether the reset pulses are faulted: the section is written.
+    pub enabled: bool,
+    /// The values, kept while the pulses are sound.
+    pub bend: ResetBend,
+}
+
+impl Default for ResetPanel {
+    /// A flaky contact dropping 2000 runs of pulses a second, otherwise full resets; sound.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bend: ResetBend {
+                drop_hz: DEFAULT_DROP_HZ,
+                ..ResetBend::default()
+            },
+        }
+    }
+}
+
+impl ResetPanel {
+    /// The panel showing `preset`'s reset bend, or the default values, sound.
+    #[must_use]
+    pub fn from_preset(preset: &Preset) -> Self {
+        let mut panel = Self::default();
+        panel.load(preset);
+        panel
+    }
+
+    /// Sets the panel from `preset`; without a reset bend only the switch moves.
+    pub fn load(&mut self, preset: &Preset) {
+        match preset.bend.reset {
+            Some(bend) => {
+                self.enabled = true;
+                self.bend = bend;
+            }
+            None => self.enabled = false,
+        }
+    }
+
+    /// The preset's `[bend.reset]` section; `None` while the pulses are sound.
+    #[must_use]
+    pub fn bend(&self) -> Option<ResetBend> {
+        self.enabled.then_some(self.bend)
+    }
+
+    /// Writes the panel into `preset`.
+    pub fn apply(&self, preset: &mut Preset) {
+        preset.bend.reset = self.bend();
+    }
+
+    /// Draws the block for `camera`, whose output stage sets the swing.
+    pub fn show(&mut self, ui: &mut Ui, camera: &Camera) -> Edit {
+        let mut edit = Edit::default();
+        edit.record(&panels::block_header(
+            ui,
+            "Reset gate",
+            &mut self.enabled,
+            "Reset pulses",
+            ["sound", "faulted"],
+        ));
+        ui.scope(|ui| {
+            if !self.enabled {
+                ui.multiply_opacity(panels::OFF_OPACITY);
+            }
+            let bend = &mut self.bend;
+            panels::grid(ui, "afe-reset", |ui| {
+                panels::knob_row(
+                    ui,
+                    &mut edit,
+                    "Missed pulses",
+                    "Mean rate of runs of missed reset pulses, a flaky contact on the reset-gate wire: the floating diffusion keeps every packet of a run, so the CDS reads them as usual until their sum uses up the output stage's swing, then black until the next reset",
+                    &mut bend.drop_hz,
+                    &DROPS,
+                );
+                panels::knob_row(
+                    ui,
+                    &mut edit,
+                    "Run length",
+                    "Mean length of a run of missed pulses, in pixel periods of the camera's own clock at every resolution",
+                    &mut bend.hold_px,
+                    &RUN,
+                );
+                panels::default_row(
+                    ui,
+                    &mut edit,
+                    "Reset strength",
+                    "Share of the diffusion's charge each reset pulse clears: what a weak pulse leaves behind builds up over bright runs until the swing is used up, so they dim and the brightest end in black; 100 % is a sound reset, shown dimmed",
+                    &mut bend.reset_frac,
+                    1.0,
+                    &STRENGTH,
+                );
+            });
+            panels::hint(ui, &reset_readout(camera, bend));
+            panels::hint(ui, "On daylight scenes a weak reset takes about 20 to 25 % to see.");
+        });
+        edit
+    }
+}
+
+/// The swing of the CCD's output stage in electrons, `fd_swing_v / conv_gain`.
+///
+/// Charge on the floating diffusion beyond it no longer moves the output.
+#[must_use]
+pub fn swing_e(camera: &Camera) -> f64 {
+    camera.afe.fd_swing_v / (camera.sensor.conv_gain_uv_per_e * 1e-6)
+}
+
+/// The readout under the reset gate's knobs: the swing, and the packet a weak reset shows on.
+///
+/// A run of packets of at most `reset_frac` times the swing never reaches it under a
+/// weak reset and reads unchanged; brighter runs dim.
+#[must_use]
+pub fn reset_readout(camera: &Camera, bend: &ResetBend) -> String {
+    let swing = swing_e(camera);
+    if bend.reset_frac >= 1.0 {
+        format!("Swing {swing:.0} e; a full reset leaves no charge behind.")
+    } else {
+        format!(
+            "Swing {swing:.0} e; a weak reset shows on packets above {:.0} e.",
+            bend.reset_frac * swing
         )
     }
 }
