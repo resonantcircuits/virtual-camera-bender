@@ -165,7 +165,7 @@ impl OpticsPanel {
             panels::hint(
                 ui,
                 &format!(
-                    "A grey surface reflects {:.2} × its visible level in infrared, pure blue {:.2} ×.",
+                    "Infrared of grey {:.2} ×, of pure blue {:.2} ×, relative to visible.",
                     grey_nir(bend),
                     bend.nir_scale * bend.nir_weights[2],
                 ),

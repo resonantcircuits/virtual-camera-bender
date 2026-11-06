@@ -1,5 +1,6 @@
 //! The inspector draws the panels of the four bends of milestone 3 in a headless ui
-//! pass, and a click on a lit stage of the strip scrolls their panel into view.
+//! pass, a click on a lit stage of the strip scrolls their panel into view, and a
+//! wrapped strip breaks before an arrow, never after one.
 //!
 //! The passes run the app's real `ui` on an `egui::Context` without a renderer; the
 //! painted text shapes tell what is on screen and where.
@@ -18,9 +19,10 @@ use vcb_app::panels::memory::MemoryPanel;
 use vcb_app::panels::optics::OpticsPanel;
 use vcb_app::panels::rail::RailPanel;
 use vcb_app::panels::reclock::ReclockPanel;
-use vcb_app::presets;
-use vcb_core::Frame;
-use vcb_core::preset::FaultKind;
+use vcb_app::panels::strip::{self, Stage};
+use vcb_app::{presets, theme};
+use vcb_core::preset::{FaultKind, RailBend};
+use vcb_core::{Frame, Preset};
 
 fn root() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
@@ -99,11 +101,12 @@ struct Window {
     time: f64,
 }
 
-/// Text painted in one pass: the text, where it starts, and whether it is visible.
+/// Text painted in one pass: the text, where it starts, its centre, and whether it is visible.
 #[derive(Debug, Clone)]
 struct Painted {
     text: String,
     pos: Pos2,
+    centre: Pos2,
     visible: bool,
 }
 
@@ -203,11 +206,21 @@ impl Drop for Window {
 fn collect(shape: &Shape, clip: Rect, out: &mut Vec<Painted>) {
     match shape {
         Shape::Text(text) => {
-            // A right-aligned galley lies left of its position.
-            let rect = text.galley.rect.translate(text.pos.to_vec2());
+            // Where the glyphs are: a right-aligned galley lies left of its position, and
+            // a label in a wrapping row starts at the row's edge with leading space.
+            let rect = text
+                .galley
+                .rows
+                .iter()
+                .filter(|row| !row.glyphs.is_empty())
+                .map(egui::epaint::text::PlacedRow::rect_without_leading_space)
+                .reduce(Rect::union)
+                .unwrap_or(text.galley.rect)
+                .translate(text.pos.to_vec2());
             out.push(Painted {
                 text: text.galley.text().to_owned(),
                 pos: rect.min,
+                centre: rect.center(),
                 visible: clip.contains(rect.center()),
             });
         }
@@ -289,4 +302,94 @@ fn the_new_panels_draw_and_the_strip_scrolls_to_them() {
         shows(&painted, "a5") && shows(&painted, "bridged"),
         "a4's partner a5 shows the bridge"
     );
+}
+
+/// The strip's texts drawn `width` points wide for `preset`, row by row, left to right.
+fn strip_rows(ctx: &egui::Context, preset: &Preset, width: f32) -> Vec<Vec<String>> {
+    let mut output = None;
+    // The first pass takes in the theme's fonts; the second lays the strip out with them.
+    for _ in 0..2 {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+            ..RawInput::default()
+        };
+        let mut pass = ctx.run_ui(input, |ui| {
+            ui.allocate_ui(egui::vec2(width, 400.0), |ui| {
+                ui.set_max_width(width);
+                strip::show(ui, preset);
+            });
+        });
+        // No renderer takes the font atlas; drop its updates.
+        pass.textures_delta.clear();
+        output = Some(pass);
+    }
+    let mut painted = Vec::new();
+    for clipped in &output.expect("two passes ran").shapes {
+        collect(&clipped.shape, clipped.clip_rect, &mut painted);
+    }
+    painted.sort_by(|a, b| a.centre.y.total_cmp(&b.centre.y));
+    let mut rows: Vec<(f32, Vec<Painted>)> = Vec::new();
+    for shape in painted {
+        match rows.last_mut() {
+            Some((y, row)) if (shape.centre.y - *y).abs() < 4.0 => row.push(shape),
+            _ => rows.push((shape.centre.y, vec![shape])),
+        }
+    }
+    rows.into_iter()
+        .map(|(_, mut row)| {
+            row.sort_by(|a, b| a.pos.x.total_cmp(&b.pos.x));
+            row.into_iter().map(|shape| shape.text).collect()
+        })
+        .collect()
+}
+
+#[test]
+fn a_wrapped_strip_breaks_before_an_arrow() {
+    let ctx = egui::Context::default();
+    theme::apply(&ctx);
+    let mut preset = Preset::new("a520");
+    preset.bend.rail = Some(RailBend::default());
+    let names: Vec<&str> = Stage::ALL.iter().map(|stage| stage.name()).collect();
+    let mut wrapped = 0;
+    for width in (160..=600).step_by(4) {
+        let width = width as f32;
+        let rows = strip_rows(&ctx, &preset, width);
+        let stages: Vec<&str> = rows
+            .iter()
+            .flatten()
+            .map(String::as_str)
+            .filter(|text| *text != strip::ARROW)
+            .collect();
+        assert_eq!(stages, names, "at {width} pt every stage is drawn in order");
+        assert_eq!(
+            rows.iter()
+                .flatten()
+                .filter(|text| *text == strip::ARROW)
+                .count(),
+            names.len() - 1
+        );
+        assert_ne!(
+            rows[0].first().map(String::as_str),
+            Some(strip::ARROW),
+            "at {width} pt the strip starts with a stage: {rows:?}"
+        );
+        for row in &rows {
+            assert_ne!(
+                row.last().map(String::as_str),
+                Some(strip::ARROW),
+                "at {width} pt a row ends with an arrow: {rows:?}"
+            );
+            for (i, text) in row.iter().enumerate() {
+                if text == strip::ARROW {
+                    assert!(
+                        row.get(i + 1)
+                            .is_some_and(|next| names.contains(&next.as_str())),
+                        "at {width} pt an arrow shares its row with the stage after it: {rows:?}"
+                    );
+                }
+            }
+        }
+        wrapped += usize::from(rows.len() > 1);
+    }
+    assert!(wrapped > 10, "the narrower widths wrap the strip");
 }
