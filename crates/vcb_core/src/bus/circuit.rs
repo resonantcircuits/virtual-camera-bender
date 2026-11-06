@@ -49,7 +49,14 @@
 //! lines and both levels of the gate output, so one sub-step costs a table lookup and
 //! one multiply-add per state variable for each voltage, in fixed-size arithmetic
 //! ([`Kernel`]). While the drivers slew, a sub-step blends the tables of the old and
-//! the new pattern.
+//! the new pattern. At the latch the voltages read are every tapped pin, for the image
+//! processor and for the current the drivers source, and node T, for the current the
+//! gate sources.
+//!
+//! With the bend's logic unpowered ([`Topology::gate_driven`] false) the gate's output
+//! floats: node T loses its path through the 74HC output resistance and the gate's
+//! level has no part in any voltage. The state's layout is the same either way, so
+//! the simulation can move between the powered and the unpowered network.
 //!
 //! # Constant sources
 //!
@@ -98,8 +105,11 @@ pub(crate) const MAX_STATES: usize = 13;
 /// The state of the network: capacitor voltages in volts, the coupling capacitor first.
 pub(crate) type Vector = [f64; MAX_STATES];
 
-/// Most pins the image processor can latch through the bend: the source bank's ten lines.
+/// Most tapped pins: the source bank's ten lines, which hold the target bank.
 pub(crate) const MAX_PINS: usize = 10;
+
+/// Most voltages read at the latch: every tapped pin, then node T.
+pub(crate) const MAX_SENSED: usize = MAX_PINS + 1;
 
 /// Share of a deviation from the slow mode below which blanking may drop the fast modes.
 ///
@@ -176,6 +186,8 @@ pub(crate) struct Topology<'a> {
     pub pot_node: PotNode,
     /// Output resistance of the gate driving node T in ohms.
     pub gate_ohm: f64,
+    /// Whether the gate's output drives node T; false while the logic is unpowered.
+    pub gate_driven: bool,
     /// Supply of the logic chips, high level of the drivers and the gate output, in volts.
     pub v_oh: f64,
     /// Forward voltage of an input protection diode in volts.
@@ -186,8 +198,6 @@ pub(crate) struct Topology<'a> {
     pub leak_ohm: f64,
     /// Duration of one sub-step in seconds.
     pub dt_s: f64,
-    /// Bit mask of the tapped lines whose pins the image processor latches.
-    pub latched: u16,
     /// Width of the ADC codes in bits.
     pub bits: u8,
     /// How a pixel period falls onto sub-steps.
@@ -206,6 +216,11 @@ pub(crate) struct Sampling<'a> {
 }
 
 impl Topology<'_> {
+    /// Returns whether a gate drives node T.
+    fn drives_t(&self) -> bool {
+        self.function != Function::Bypass && self.gate_driven
+    }
+
     /// Returns the voltage behind the conducting protection diodes of `clamp`.
     fn clamp_source_v(&self, clamp: Clamp) -> f64 {
         match clamp {
@@ -347,13 +362,32 @@ impl Responses {
     }
 }
 
-/// The pins the image processor latches, as functions of the sources.
+/// The voltages read at the latch, as functions of the sources.
 #[derive(Clone, PartialEq)]
 pub(crate) struct Latched {
-    /// Bit number of every latched line.
+    /// Bit number of every tapped line.
     bits: Box<[u8]>,
-    /// The pin voltage of every latched line, in the order of `bits`.
+    /// The pin voltage of every tapped line, in the order of `bits`, then node T.
     volts: Responses,
+}
+
+/// What the rail feeds into the circuit: the sources' high level and conductances.
+///
+/// The current the rail delivers is the sum over the sources that are high of their
+/// level minus the node they drive, times their conductance, less what the protection
+/// diodes to the supply return.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Supply {
+    /// High level of the line drivers and the gate output, in volts.
+    pub v_oh: f64,
+    /// Conductance from each tapped line's driver to its pin, in siemens, in tapped-line order.
+    pub line_s: [f64; MAX_PINS],
+    /// Conductance from the gate's output to node T, in siemens; 0 without a driven gate.
+    pub gate_s: f64,
+    /// Conductance of the conducting protection diodes on node F, in siemens.
+    pub clamp_s: f64,
+    /// Voltage of node F above which the diodes to the supply conduct.
+    pub ceiling_v: f64,
 }
 
 /// A voltage as a linear function of the sources, one coefficient per tapped driver.
@@ -800,14 +834,14 @@ pub(crate) struct Kernel<'a, const M: usize> {
     f: &'a [f64],
     /// Volts of node F per volt of each previous state variable.
     f_state: [f64; M],
-    /// Gated driver part of the latched pins, `pins` values per pattern and gate level.
+    /// Gated driver part of the sensed voltages, `pin_count + 1` values per pattern and gate level.
     pins: &'a [f64],
-    /// Number of latched pins.
+    /// Number of tapped pins; node T follows them.
     pin_count: usize,
-    /// Bit number of every latched pin.
+    /// Bit number of every tapped pin.
     pin_bits: [u8; MAX_PINS],
-    /// Volts of every latched pin per volt of each previous state variable.
-    pin_state: [[f64; M]; MAX_PINS],
+    /// Volts of every tapped pin, then node T, per volt of each previous state variable.
+    pin_state: [[f64; M]; MAX_SENSED],
 }
 
 impl<'a, const M: usize> Kernel<'a, M> {
@@ -821,7 +855,7 @@ impl<'a, const M: usize> Kernel<'a, M> {
         let pin_count = latched.bits.len();
         assert!(
             pin_count <= MAX_PINS,
-            "{pin_count} latched pins, more than {MAX_PINS}"
+            "{pin_count} tapped pins, more than {MAX_PINS}"
         );
         Self {
             next: &next.gated,
@@ -833,7 +867,7 @@ impl<'a, const M: usize> Kernel<'a, M> {
             pin_bits: std::array::from_fn(|i| latched.bits.get(i).copied().unwrap_or(0)),
             pin_state: std::array::from_fn(|i| {
                 std::array::from_fn(|j| {
-                    if i < pin_count {
+                    if i <= pin_count {
                         latched.volts.coefficient(i, j)
                     } else {
                         0.0
@@ -860,7 +894,7 @@ impl<'a, const M: usize> Kernel<'a, M> {
         }
     }
 
-    /// Returns `(bit, volts)` for every latched pin at the given sources and state.
+    /// Returns `(bit, volts)` for every tapped pin at the given sources and state.
     #[inline]
     pub(crate) fn pins<'k>(
         &'k self,
@@ -869,9 +903,17 @@ impl<'a, const M: usize> Kernel<'a, M> {
         gate: usize,
     ) -> impl Iterator<Item = (u8, f64)> + 'k {
         (0..self.pin_count).map(move |i| {
-            let driven = drive.select_gated(self.pins, self.pin_count, i, gate);
+            let driven = drive.select_gated(self.pins, self.pin_count + 1, i, gate);
             (self.pin_bits[i], affine(driven, &self.pin_state[i], z))
         })
+    }
+
+    /// Returns node T at the given sources and state.
+    #[inline]
+    pub(crate) fn t_v(&self, drive: Drive, z: &[f64; M], gate: usize) -> f64 {
+        let t = self.pin_count;
+        let driven = drive.select_gated(self.pins, t + 1, t, gate);
+        affine(driven, &self.pin_state[t], z)
     }
 }
 
@@ -900,11 +942,11 @@ pub(crate) struct Period {
     f_steady: Box<[f64]>,
     /// The share of a slewing pixel's old pattern in node F, `oversample` per pattern.
     f_ramp: Box<[f64]>,
-    /// The latched pins per volt of each start state variable, `states` per pin.
+    /// The sensed voltages (tapped pins, then node T) per volt of each start state variable, `states` per voltage.
     pin_gain: Box<[f64]>,
-    /// The latched pins for a steady pattern, one per pin and pattern.
+    /// The sensed voltages for a steady pattern, one per voltage and pattern.
     pin_steady: Box<[f64]>,
-    /// The share of a slewing pixel's old pattern in the latched pins.
+    /// The share of a slewing pixel's old pattern in the sensed voltages.
     pin_ramp: Box<[f64]>,
     /// The state at the end per volt of the start state, `Φ^oversample`.
     end_gain: Box<[f64]>,
@@ -919,7 +961,7 @@ impl Period {
     fn new(solution: &Solution, gate: usize, sampling: &Sampling<'_>, patterns: usize) -> Self {
         let next = &solution.next;
         let m = next.states;
-        let pins = solution.latched.bits.len();
+        let pins = solution.latched.bits.len() + 1;
         let steps = sampling.oversample;
         let slew = |k: usize| 1.0 - sampling.ramp.get(k).copied().unwrap_or(1.0);
         let phi = &next.state;
@@ -1010,9 +1052,9 @@ impl Period {
 pub(crate) struct Pixel<'a, const M: usize> {
     /// Sub-steps per pixel period.
     steps: usize,
-    /// Number of latched pins.
+    /// Number of tapped pins; node T follows them.
     pin_count: usize,
-    /// Bit number of every latched pin.
+    /// Bit number of every tapped pin.
     pin_bits: [u8; MAX_PINS],
     /// Node F at every sub-step per volt of the start state.
     f_gain: &'a [[f64; M]],
@@ -1020,11 +1062,11 @@ pub(crate) struct Pixel<'a, const M: usize> {
     f_steady: &'a [f64],
     /// The old pattern's share of node F.
     f_ramp: &'a [f64],
-    /// The latched pins per volt of the start state.
-    pin_gain: [[f64; M]; MAX_PINS],
-    /// The latched pins for steady patterns.
+    /// The tapped pins, then node T, per volt of the start state.
+    pin_gain: [[f64; M]; MAX_SENSED],
+    /// The sensed voltages for steady patterns.
     pin_steady: &'a [f64],
-    /// The old pattern's share of the latched pins.
+    /// The old pattern's share of the sensed voltages.
     pin_ramp: &'a [f64],
     /// The end state per volt of the start state.
     end_gain: [[f64; M]; M],
@@ -1046,7 +1088,7 @@ impl<'a, const M: usize> Pixel<'a, M> {
             f_ramp: &period.f_ramp,
             pin_gain: std::array::from_fn(|i| {
                 std::array::from_fn(|j| {
-                    if i < pin_count {
+                    if i <= pin_count {
                         period.pin_gain[i * M + j]
                     } else {
                         0.0
@@ -1086,7 +1128,7 @@ impl<'a, const M: usize> Pixel<'a, M> {
             })
     }
 
-    /// Returns `(bit, volts)` for every latched pin of a pixel, from its start state.
+    /// Returns `(bit, volts)` for every tapped pin of a pixel at the latch, from its start state.
     #[inline]
     pub(crate) fn pins<'k>(
         &'k self,
@@ -1094,14 +1136,24 @@ impl<'a, const M: usize> Pixel<'a, M> {
         from: Option<usize>,
         z: &'k [f64; M],
     ) -> impl Iterator<Item = (u8, f64)> + 'k {
-        let n = self.pin_count;
-        (0..n).map(move |i| {
-            let mut constant = self.pin_steady[to * n + i];
-            if let Some(from) = from {
-                constant += self.pin_ramp[from * n + i] - self.pin_ramp[to * n + i];
-            }
-            (self.pin_bits[i], affine(constant, &self.pin_gain[i], z))
-        })
+        (0..self.pin_count).map(move |i| (self.pin_bits[i], self.sensed(i, to, from, z)))
+    }
+
+    /// Returns node T of a pixel at the latch, from its start state.
+    #[inline]
+    pub(crate) fn t_v(&self, to: usize, from: Option<usize>, z: &[f64; M]) -> f64 {
+        self.sensed(self.pin_count, to, from, z)
+    }
+
+    /// Returns sensed voltage `i` at the latch: a tapped pin, or node T after them.
+    #[inline]
+    fn sensed(&self, i: usize, to: usize, from: Option<usize>, z: &[f64; M]) -> f64 {
+        let n = self.pin_count + 1;
+        let mut constant = self.pin_steady[to * n + i];
+        if let Some(from) = from {
+            constant += self.pin_ramp[from * n + i] - self.pin_ramp[to * n + i];
+        }
+        affine(constant, &self.pin_gain[i], z)
     }
 
     /// Returns the state at the end of a pixel, from its start state.
@@ -1137,8 +1189,9 @@ pub(crate) struct Network {
     /// Voltage of node F above which the diodes to the supply conduct.
     ceiling_v: f64,
     /// Conductance of the conducting diodes on node F.
-    #[cfg(feature = "test-util")]
     clamp_s: f64,
+    /// What the rail feeds into the circuit.
+    supply: Supply,
 }
 
 impl Network {
@@ -1156,6 +1209,11 @@ impl Network {
         assert!(
             states <= MAX_STATES,
             "the bend circuit has {states} state variables, more than {MAX_STATES}"
+        );
+        assert!(
+            top.lines.len() <= MAX_PINS,
+            "the bend circuit taps {} lines, more than {MAX_PINS}",
+            top.lines.len()
         );
         let nodes = Nodes {
             index: &index,
@@ -1193,9 +1251,27 @@ impl Network {
             oversample: top.sampling.oversample,
             floor_v: top.clamp_source_v(Clamp::Ground),
             ceiling_v: top.clamp_source_v(Clamp::Rail),
-            #[cfg(feature = "test-util")]
             clamp_s: top.clamp_siemens(Clamp::Ground),
+            supply: Supply {
+                v_oh: top.v_oh,
+                line_s: std::array::from_fn(|i| {
+                    top.lines.get(i).map_or(0.0, |line| 1.0 / line.driver_ohm)
+                }),
+                gate_s: if top.drives_t() {
+                    1.0 / top.gate_ohm
+                } else {
+                    0.0
+                },
+                clamp_s: top.clamp_siemens(Clamp::Rail),
+                ceiling_v: top.clamp_source_v(Clamp::Rail),
+            },
         })
+    }
+
+    /// Returns what the rail feeds into the circuit.
+    #[inline]
+    pub(crate) fn supply(&self) -> &Supply {
+        &self.supply
     }
 
     /// Returns the pattern of tapped-line levels that `code` drives onto the bus.
@@ -1466,7 +1542,7 @@ fn solve(top: &Topology<'_>, nodes: &Nodes<'_>, clamp: Clamp) -> Result<Solution
         charged,
     } = *nodes;
     let node = |logical: usize| index[logical];
-    let has_gate = top.function != Function::Bypass;
+    let has_gate = top.drives_t();
     let cap_s = top.cap_f / top.dt_s;
     // Current the constant sources inject into node F, per volt of F's response.
     let leak_s = GATE_INPUTS / top.leak_ohm;
@@ -1521,17 +1597,13 @@ fn solve(top: &Topology<'_>, nodes: &Nodes<'_>, clamp: Clamp) -> Result<Solution
     let next: Vec<Linear> = (0..states).map(|k| exact.next(k)).collect();
     let next = Responses::new(&next, tapped, states);
     let slow = Slow::new(&exact);
-    let latched: Vec<(u8, Linear)> = (0..tapped)
-        .filter(|&i| top.latched & (1 << top.lines[i].bit) != 0)
-        .map(|i| (top.lines[i].bit, logical(&[(PIN0 + i, 1.0)])))
+    let sensed: Vec<Linear> = (0..tapped)
+        .map(|i| logical(&[(PIN0 + i, 1.0)]))
+        .chain(std::iter::once(logical(&[(T, 1.0)])))
         .collect();
     let latched = Latched {
-        bits: latched.iter().map(|(bit, _)| *bit).collect(),
-        volts: Responses::new(
-            &latched.into_iter().map(|(_, pin)| pin).collect::<Vec<_>>(),
-            tapped,
-            states,
-        ),
+        bits: top.lines.iter().map(|line| line.bit).collect(),
+        volts: Responses::new(&sensed, tapped, states),
     };
     Ok(Solution {
         next,
@@ -1593,7 +1665,7 @@ fn conductances(top: &Topology<'_>, nodes: &Nodes<'_>, clamp: Clamp) -> Vec<f64>
         stamp(pot_node(top), GND, 1.0 / top.pot_ohm);
     }
     stamp(S, F, top.cap_f / top.dt_s);
-    if top.function != Function::Bypass {
+    if top.drives_t() {
         stamp(T, GND, 1.0 / top.gate_ohm);
     }
     stamp(
@@ -1767,12 +1839,12 @@ mod tests {
             pot_ohm: 500.0,
             pot_node,
             gate_ohm: 90.0,
+            gate_driven: true,
             v_oh: 3.3,
             clamp_v: 0.5,
             clamp_ohm: 50.0,
             leak_ohm: 3.3e6,
             dt_s: 1e-8,
-            latched: 0b111 << 8,
             bits: 12,
             sampling: Sampling {
                 oversample: 4,

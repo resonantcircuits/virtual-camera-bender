@@ -33,17 +33,22 @@ const DEFAULT_RIPPLE_HZ: f64 = 100.0;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
 pub struct RailBend {
-    /// A steady load added to the rail, in milliamperes, at least 0.
+    /// A steady load added to the rail above the camera's quiescent current, in milliamperes, at least 0.
     ///
     /// LEDs, an added oscillator, a potentiometer to ground.
     pub load_ma: f64,
     /// Current of each load spike in milliamperes, at least 0.
     pub spike_ma: f64,
     /// Mean rate of load spikes per second, at least 0; 0 has no spikes.
+    ///
+    /// Spikes arrive as a Poisson process in camera time; one that arrives while a
+    /// spike runs extends it rather than adding to its current.
     pub spike_hz: f64,
     /// Duration of one load spike in milliseconds, positive.
     pub spike_ms: f64,
-    /// Peak amplitude of the ripple on the rail in millivolts, at least 0.
+    /// Peak amplitude of the ripple on the source in millivolts, at least 0.
+    ///
+    /// The rail sees it through the source impedance and the decoupling, a low-pass.
     pub ripple_mv: f64,
     /// Frequency of the ripple in hertz, positive.
     pub ripple_hz: f64,

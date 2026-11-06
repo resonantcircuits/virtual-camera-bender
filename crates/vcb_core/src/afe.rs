@@ -29,14 +29,46 @@
 //!    its input constant, so the exponential response is exact within it; the slew
 //!    limit then clamps the step. The ADC samples the node at the end of each pixel
 //!    period.
-//! 6. **Pedestal and reference.** The black-level clamp adds `pedestal_v`, so zero
-//!    charge lands on the nominal black code. Voltages are referred to the nominal
-//!    ADC reference [`Params::vref_v`] by the factor `vref_v / rail_v`, where
-//!    [`State::rail_v`] is the reference the supply delivers. The supply is ideal
-//!    here, so the factor is one; a supply-sag model sets `rail_v` instead.
+//! 6. **Pedestal and reference.** The black-level clamp adds the pedestal, so zero
+//!    charge lands on the nominal black code. The output is referred to the nominal
+//!    ADC reference [`Params::vref_v`]: the voltage the converter sees, measured
+//!    against the reference the supply delivers ([`State::rail_v`]), as the code
+//!    that voltage would give at the nominal reference.
 //!
-//! Without noise, bends or bandwidth limits the chain reduces to
+//! Without noise, bends, bandwidth limits or a sagging supply the chain reduces to
 //! `volts = pedestal_v + electrons * conv_gain * 10^(pga_gain_db / 20)`.
+//!
+//! # Supply
+//!
+//! The chip runs from the supply rail of [`power`](crate::power), read per sample
+//! from the [`Rail`] at the end of each pixel period, linear within each line. With
+//! `r = rail / nominal`:
+//!
+//! - **Ratiometric reference and pedestal.** The ADC's reference and the clamp's
+//!   pedestal both follow the rail, so the converter sees `(pedestal_v r + node) /
+//!   (vref_v r)` of full scale and the output is `pedestal_v + node / r`: codes above
+//!   black inflate by `1 / r` as the rail sags (rows bloom bright), and black stays
+//!   put. An AD9949 rejects supply variations by 50 dB inside its 2.7 to 3.6 V range
+//!   (`docs/research/a520-technical.md`, section 5); the ratiometric reference is the
+//!   plan's model of a reference that has lost its headroom (PROVISIONAL, plan
+//!   section 3.9).
+//! - **Undervoltage lockout.** Below [`Params::uvlo_v`] the chip stops converting:
+//!   its output drivers tristate and the bus lines' capacitance holds the last word,
+//!   which the processor reads again and again. The output holds the last voltage,
+//!   rounded to the centre of its code ([`Params::code_v`]), so the converter, whose
+//!   dither stays within a third of a code, repeats that word: every sample of a
+//!   locked-out stretch, optical black included, carries it. The analog chain keeps
+//!   its state meanwhile and resumes from it.
+//! - **Restart.** When the rail returns above the lockout the black clamp
+//!   re-establishes the pedestal: it starts from the level the lockout left it at,
+//!   `pedestal_v * uvlo_v / nominal`, and relaxes towards `pedestal_v r` with the
+//!   time constant [`Params::restart_s`] (`afe_restart_lines` native lines), per
+//!   pixel period and across blanking. Black dips while the rail recovers faster than
+//!   the clamp; the image processor's own optical-black clamp follows the dip with
+//!   its four-line lag, so a lockout leaves a few lines of shifted shadows behind it.
+//!
+//! A rail at the nominal voltage on a whole line takes the plain path, `r = 1`, which
+//! gives the ideal supply's bytes.
 //!
 //! # Blanking
 //!
@@ -57,7 +89,9 @@
 //! time scales of hundreds of pixels or more and are used as given: match-input
 //! timing keeps the active-line time and the frame period native, so they span the
 //! same fraction of the image at every resolution. For the same reason the flicker
-//! level is pinned to the white floor at the native pixel period.
+//! level is pinned to the white floor at the native pixel period. The restart time
+//! constant is given in native lines and converted to seconds with the native line
+//! period, so it spans the same fraction of the frame at every resolution.
 
 use std::f64::consts::TAU;
 use std::fmt::{self, Debug, Formatter};
@@ -78,6 +112,12 @@ const GAIN_SALT: u32 = noise::salt("afe.gain_mod");
 
 /// Scale that maps a 32-bit integer onto `[0, 2)`.
 const TWO_OVER_2_32: f64 = 2.0 / 4_294_967_296.0;
+
+/// Pedestal error below which the clamp's restart after a lockout is complete, in volts.
+///
+/// A ten-thousandth of a 12-bit code of a 1 V converter (244 µV): far below the
+/// conversion dither, so ending the relaxation there changes no code.
+const RESTART_SETTLED_V: f64 = 2.4e-8;
 
 /// Waveform of an injected oscillator.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -213,6 +253,12 @@ pub struct Params {
     pub oversample: u32,
     /// Nominal ADC reference: the input voltage of the largest code.
     pub vref_v: f64,
+    /// Input voltage of one ADC code: `vref_v / (2^bits - 1)`.
+    pub code_v: f64,
+    /// Supply voltage below which the chip locks out and the bus holds its last word.
+    pub uvlo_v: f64,
+    /// Time constant of the black clamp re-establishing the pedestal after a lockout, in seconds.
+    pub restart_s: f64,
     /// Delay of the CDS reset sample in pixel periods.
     pub cds_lag_px: f64,
     /// Fraction of the delayed level that the late reset sample subtracts.
@@ -228,12 +274,18 @@ pub struct Params {
 impl Params {
     /// Resolves the analog parameters from the camera, preset and derived timing.
     ///
+    /// The restart time constant is the camera's `afe_restart_lines` in native lines
+    /// of the readout mode, converted to seconds with the camera's own pixel clock.
+    ///
     /// # Errors
     ///
     /// Returns a configuration error if a value is out of range.
     pub fn resolve(camera: &Camera, preset: &Preset, timing: &Timing) -> Result<Self, Error> {
         let afe = &camera.afe;
         let bend = preset.bend.afe.clone().unwrap_or_default();
+        let clock = camera.clocking(timing.mode);
+        let native_line_px = camera.sensor.ob_cols + camera.sensor.native_width + clock.hblank_px;
+        let native_line_s = f64::from(native_line_px) / clock.pixel_clock_hz;
         Ok(Self {
             conv_gain_uv_per_e: camera.sensor.conv_gain_uv_per_e,
             read_noise_e: camera.sensor.read_noise_e,
@@ -245,6 +297,9 @@ impl Params {
             native_pixel_period_s: timing.native_pixel_period_s,
             oversample: timing.oversample,
             vref_v: camera.adc.full_scale_v,
+            code_v: camera.adc.full_scale_v / f64::from(camera.max_code()),
+            uvlo_v: camera.power.afe_uvlo_v,
+            restart_s: f64::from(camera.power.afe_restart_lines) * native_line_s,
             cds_lag_px: bend.cds_lag_px,
             cds_mix: bend.cds_mix,
             inject: bend.inject,
@@ -293,7 +348,9 @@ impl Phase {
 /// Persistent analog state carried from one frame to the next.
 ///
 /// Holds the low-pass node, the flicker-noise process, the phases of both
-/// oscillators and the supply rail. The default is the power-on state.
+/// oscillators, the reference the supply delivered, and the chip's power state: the
+/// last output, whether it is locked out and the pedestal while the clamp restarts.
+/// The default is the power-on state.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
     node_v: f64,
@@ -301,6 +358,12 @@ pub struct State {
     inject: Phase,
     gain: Phase,
     rail_v: f64,
+    /// The last output in volts; while locked out, the held word's voltage.
+    last_v: f64,
+    /// Whether the supply was below the lockout at the last sample.
+    locked: bool,
+    /// The pedestal in volts while the clamp re-establishes it; `None` once settled.
+    restart_v: Option<f64>,
 }
 
 impl State {
@@ -318,14 +381,27 @@ impl State {
         self.node_v
     }
 
-    /// Returns the ADC reference the supply delivered during the last frame, in volts.
+    /// Returns the ADC reference the supply delivered at the end of the last frame, in volts.
     ///
-    /// Zero before the first frame. The supply is ideal, so after a frame it equals
-    /// [`Params::vref_v`]; a supply-sag model sets it below that, and the conversion
-    /// scales every voltage by `vref_v / rail_v` as a ratiometric converter does.
+    /// Zero before the first frame. [`Params::vref_v`] at the nominal rail; it follows
+    /// the rail ratiometrically, `vref_v * rail / nominal`.
     #[must_use]
     pub fn rail_v(&self) -> f64 {
         self.rail_v
+    }
+
+    /// Returns whether the chip was locked out by an undervoltage at the end of the last frame.
+    #[must_use]
+    pub fn locked_out(&self) -> bool {
+        self.locked
+    }
+
+    /// Returns the pedestal while the black clamp re-establishes it after a lockout, in volts.
+    ///
+    /// `None` once it has settled onto the rail's pedestal, as normally.
+    #[must_use]
+    pub fn restart_pedestal_v(&self) -> Option<f64> {
+        self.restart_v
     }
 }
 
@@ -495,6 +571,95 @@ impl ReadNoise {
     }
 }
 
+/// The chip's supply: the rail's ratio to nominal, the lockout and the clamp's restart.
+struct Power {
+    /// The camera's nominal rail in volts.
+    nominal_v: f64,
+    /// The pedestal at the nominal rail in volts.
+    pedestal_v: f64,
+    /// Supply voltage below which the chip locks out.
+    uvlo_v: f64,
+    /// Input voltage of one ADC code.
+    code_v: f64,
+    /// Time constant of the clamp's restart in seconds.
+    restart_s: f64,
+    /// The clamp's restart decay per pixel period.
+    restart_decay: f64,
+    /// The last output in volts; while locked out, the held word's voltage.
+    last_v: f64,
+    /// Whether the chip is locked out.
+    locked: bool,
+    /// The pedestal while the clamp re-establishes it, in volts.
+    restart_v: Option<f64>,
+}
+
+impl Power {
+    fn new(params: &Params, state: &State, nominal_v: f64, pixel_s: f64) -> Self {
+        Self {
+            nominal_v,
+            pedestal_v: params.pedestal_v,
+            uvlo_v: params.uvlo_v,
+            code_v: params.code_v,
+            restart_s: params.restart_s,
+            restart_decay: (-pixel_s / params.restart_s).exp(),
+            last_v: state.last_v,
+            locked: state.locked,
+            restart_v: state.restart_v,
+        }
+    }
+
+    /// Returns the rail's ratio to nominal if a line supplied from `start_v` to `end_v` takes the plain path.
+    ///
+    /// That is a line at one voltage above the lockout, with the clamp settled.
+    fn steady(&self, [start_v, end_v]: [f64; 2]) -> Option<f64> {
+        let steady = start_v.to_bits() == end_v.to_bits()
+            && start_v >= self.uvlo_v
+            && !self.locked
+            && self.restart_v.is_none();
+        steady.then(|| start_v / self.nominal_v)
+    }
+
+    /// Returns the output for the node at `node_v` with the rail at `rail_v`, in volts.
+    ///
+    /// Below the lockout the output holds the last word; above it the pedestal and the
+    /// reference follow the rail, the pedestal through the clamp's restart after a
+    /// lockout. Advances the restart by one pixel period.
+    fn output(&mut self, node_v: f64, rail_v: f64) -> f64 {
+        if rail_v < self.uvlo_v {
+            if !self.locked {
+                self.locked = true;
+                self.restart_v = None;
+                self.last_v = (self.last_v / self.code_v).round() * self.code_v;
+            }
+            return self.last_v;
+        }
+        let ratio = rail_v / self.nominal_v;
+        let settled_v = self.pedestal_v * ratio;
+        if std::mem::take(&mut self.locked) {
+            self.restart_v = Some(self.pedestal_v * self.uvlo_v / self.nominal_v);
+        }
+        let pedestal_v = match self.restart_v {
+            Some(restart_v) => {
+                let next_v = settled_v + (restart_v - settled_v) * self.restart_decay;
+                self.restart_v = ((next_v - settled_v).abs() > RESTART_SETTLED_V).then_some(next_v);
+                next_v
+            }
+            None => settled_v,
+        };
+        self.last_v = (pedestal_v + node_v) / ratio;
+        self.last_v
+    }
+
+    /// Advances the clamp's restart over a blanking interval that ends with the rail at `rail_v`.
+    fn blank(&mut self, duration_s: f64, rail_v: f64) {
+        if let Some(restart_v) = self.restart_v {
+            let settled_v = self.pedestal_v * rail_v / self.nominal_v;
+            let next_v = settled_v + (restart_v - settled_v) * (-duration_s / self.restart_s).exp();
+            self.restart_v = ((next_v - settled_v).abs() > RESTART_SETTLED_V).then_some(next_v);
+        }
+    }
+}
+
 /// The analog chain over one frame: derived constants and the evolving node.
 struct Front<'a> {
     params: &'a Params,
@@ -514,14 +679,16 @@ struct Front<'a> {
     inject: Option<(Osc, f64, Phase)>,
     /// Gain-modulating oscillator, its depth and its phase at the frame start.
     gain_mod: Option<(Osc, f64, Phase)>,
-    /// Factor that refers the ADC input to the nominal reference.
-    reference: f64,
+    /// Pixel periods per line, blanking included: the span of one rail entry.
+    line_px: f64,
+    /// The supply and what it does to the chip.
+    power: Power,
     noise: ReadNoise,
     node_v: f64,
 }
 
 impl<'a> Front<'a> {
-    fn new(params: &'a Params, state: &State, layout: &Layout, index: u64) -> Self {
+    fn new(params: &'a Params, state: &State, layout: &Layout, rail: &Rail, index: u64) -> Self {
         let pixel_s = layout.pixel_period_s();
         let oversample = params.oversample.max(1);
         let sub_s = pixel_s / f64::from(oversample);
@@ -564,7 +731,8 @@ impl<'a> Front<'a> {
             lag_sub: params.cds_lag_px * f64::from(oversample),
             inject,
             gain_mod,
-            reference: params.vref_v / state.rail_v,
+            line_px: f64::from(layout.line_len() + layout.hblank_px()),
+            power: Power::new(params, state, rail.nominal_v(), pixel_s),
             noise: ReadNoise::new(params, pixel_s, index, state.flicker_v),
             node_v: state.node_v,
         }
@@ -601,7 +769,16 @@ impl<'a> Front<'a> {
     }
 
     /// Runs the stored samples of `line`, which starts `start_s` into the frame.
-    fn line(&mut self, line: u32, start_s: f64, electrons: &[f32], volts: &mut [f32]) {
+    ///
+    /// `supply` is the rail at the start of the line and at the end of its blanking.
+    fn line(
+        &mut self,
+        line: u32,
+        start_s: f64,
+        electrons: &[f32],
+        volts: &mut [f32],
+        supply: [f64; 2],
+    ) {
         let first_s = start_s + 0.5 * self.sub_s;
         let mut inject = self.inject.map(|(osc, amplitude, start)| {
             (
@@ -617,7 +794,13 @@ impl<'a> Front<'a> {
         });
         let cds_mix = self.params.cds_mix;
         let plain = inject.is_none() && gain_mod.is_none() && cds_mix <= 0.0;
-        let pedestal_v = self.params.pedestal_v;
+        // On a steady rail the pedestal and the reference factor hold for the line.
+        let steady = self.power.steady(supply);
+        let (pedestal_v, reference) = steady.map_or((0.0, 0.0), |ratio| {
+            (self.params.pedestal_v * ratio, 1.0 / ratio)
+        });
+        let slope_v = (supply[1] - supply[0]) / self.line_px;
+        let mut last_v = self.power.last_v;
         for (sample, (volts, &charge)) in volts.iter_mut().zip(electrons).enumerate() {
             let level = f64::from(charge) * self.volts_per_e + self.noise.sample();
             if plain {
@@ -637,12 +820,23 @@ impl<'a> Front<'a> {
                     self.settle(input * gain);
                 }
             }
-            *volts = ((pedestal_v + self.node_v) * self.reference) as f32;
+            last_v = if steady.is_some() {
+                (pedestal_v + self.node_v) * reference
+            } else {
+                // The ADC samples the node at the end of the pixel period.
+                let rail_v = slope_v.mul_add((sample + 1) as f64, supply[0]);
+                self.power.output(self.node_v, rail_v)
+            };
+            *volts = last_v as f32;
         }
+        self.power.last_v = last_v;
     }
 
     /// Advances the chain over a blanking interval of `duration_s` that ends at `end_s` in `end_line`.
-    fn blank(&mut self, duration_s: f64, end_s: f64, end_line: u32) {
+    ///
+    /// The rail stands at `rail_v` at the end of the interval.
+    fn blank(&mut self, duration_s: f64, end_s: f64, end_line: u32, rail_v: f64) {
+        self.power.blank(duration_s, rail_v);
         self.noise.skip(duration_s);
         let mut input = self.noise.flicker_v;
         if let Some((osc, amplitude, start)) = self.inject {
@@ -665,12 +859,14 @@ impl<'a> Front<'a> {
 /// state ready for the next frame.
 ///
 /// `rail` is the supply rail of every readout line from
-/// [`power::track`](crate::power::track). The supply-sag model of stage 12 of
-/// `docs/PLAN.md` consumes it; until then it is not read and the supply is ideal.
+/// [`power::track`](crate::power::track), which sets the reference and the pedestal,
+/// locks the chip out below [`Params::uvlo_v`] and restarts its clamp after that (see
+/// the module documentation's "Supply").
 ///
 /// # Panics
 ///
-/// Panics if `out` does not have the layout of `stream`.
+/// Panics if `out` does not have the layout of `stream`, or `rail` has another
+/// number of lines.
 pub fn process(
     params: &Params,
     state: &mut State,
@@ -679,15 +875,20 @@ pub fn process(
     index: u64,
     out: &mut Analog,
 ) {
-    let _ = rail;
     let layout = stream.layout();
     assert!(
         out.layout == *layout,
         "analog layout {:?} does not match the stream layout {layout:?}",
         out.layout
     );
-    state.rail_v = params.vref_v;
-    let mut front = Front::new(params, state, layout, index);
+    assert_eq!(
+        rail.lines(),
+        layout.rows(),
+        "the rail has {} lines but the stream {}",
+        rail.lines(),
+        layout.rows()
+    );
+    let mut front = Front::new(params, state, layout, rail, index);
     let line_s = layout.line_period_s();
     let hblank_s = f64::from(layout.hblank_px()) * layout.pixel_period_s();
     let line_len = layout.line_len() as usize;
@@ -695,17 +896,22 @@ pub fn process(
         .volts
         .chunks_exact_mut(line_len)
         .zip(stream.samples().chunks_exact(line_len));
+    let supply = rail.lines_v();
     for (line, (volts, electrons)) in (0..layout.rows()).zip(lines) {
         let start_s = f64::from(line) * line_s;
-        front.line(line, start_s, electrons, volts);
-        front.blank(hblank_s, start_s + line_s, line + 1);
+        let line_supply = supply[line as usize];
+        front.line(line, start_s, electrons, volts, line_supply);
+        front.blank(hblank_s, start_s + line_s, line + 1, line_supply[1]);
     }
     let frame_lines = layout.rows() + layout.vblank_lines();
     let frame_s = f64::from(frame_lines) * line_s;
+    // The rail is not tracked through vertical blanking; it is taken where the last line left it.
+    let end_v = supply.last().map_or(rail.nominal_v(), |line| line[1]);
     front.blank(
         f64::from(layout.vblank_lines()) * line_s,
         frame_s,
         frame_lines,
+        end_v,
     );
     if let Some((osc, _, start)) = front.inject {
         state.inject = osc.phase(start, frame_s, frame_lines);
@@ -715,5 +921,9 @@ pub fn process(
     }
     state.node_v = front.node_v;
     state.flicker_v = front.noise.flicker_v;
+    state.rail_v = params.vref_v * (end_v / rail.nominal_v());
+    state.last_v = front.power.last_v;
+    state.locked = front.power.locked;
+    state.restart_v = front.power.restart_v;
     out.index = index;
 }

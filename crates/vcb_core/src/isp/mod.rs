@@ -208,6 +208,8 @@ pub struct Output {
 pub struct Raw {
     plane: Plane<f32>,
     black: Box<[f32]>,
+    /// The image row where the processor stopped capturing, if it did.
+    dropped: Option<u32>,
 }
 
 impl Raw {
@@ -217,7 +219,20 @@ impl Raw {
         Self {
             plane: Plane::new(width, height),
             black: vec![0.0; height as usize].into_boxed_slice(),
+            dropped: None,
         }
+    }
+
+    /// Returns the first image row the processor did not capture, if a brownout stopped it.
+    ///
+    /// The row is numbered in image order, as the plane's rows are: the image row of
+    /// the first readout line the processor dropped. Every line read after it is lost
+    /// too: with a top-down readout the rows from it to the bottom, with a bottom-up
+    /// one the rows from it to the top. Their sites are zero. `None` when every row was
+    /// captured; [`clamp_black`] sets it afresh for every frame.
+    #[must_use]
+    pub fn dropped_from(&self) -> Option<u32> {
+        self.dropped
     }
 
     /// Returns the sites in processor codes above black, rows in image order, red at `(0, 0)`.
@@ -269,6 +284,8 @@ pub struct Params {
     pub dsp_lsb: u8,
     /// Number of bus lines the processor reads.
     pub dsp_bits: u8,
+    /// Supply voltage at the start of a line below which the processor captures nothing more of the frame.
+    pub dsp_brownout_v: f64,
     /// Colour filter array of the raw plane.
     pub cfa: Cfa,
     /// White balance.
@@ -372,6 +389,7 @@ impl Params {
             full_well_code: full_well_code as f32,
             dsp_lsb: camera.adc.dsp_lsb,
             dsp_bits: camera.adc.dsp_bits,
+            dsp_brownout_v: camera.power.dsp_brownout_v,
             cfa: sensor.cfa,
             wb,
             cam_to_srgb: colour::to_f32(&cam_to_srgb),
@@ -478,15 +496,18 @@ impl Default for State {
 /// image order; [`Raw::black_levels`] records the levels.
 ///
 /// `rail` is the supply rail of every readout line from
-/// [`power::track`](crate::power::track), which powers the processor. The
-/// supply-sag model of stage 12 of `docs/PLAN.md` consumes it for the processor's
-/// brownout; until then it is not read.
+/// [`power::track`](crate::power::track), which powers the processor's capture. A
+/// line that starts with the rail below [`Params::dsp_brownout_v`] browns the
+/// processor out: it captures nothing more of the frame, so that line and every line
+/// read after it become zero rows of `out`, their black levels hold the clamp's last
+/// value, and [`Raw::dropped_from`] names the first such row. The next frame is
+/// captured afresh.
 ///
 /// # Panics
 ///
-/// Panics if `out` is not `cols` by `rows` of the code layout.
+/// Panics if `out` is not `cols` by `rows` of the code layout, or `rail` has another
+/// number of lines.
 pub fn clamp_black(params: &Params, codes: &Codes, rail: &Rail, out: &mut Raw) {
-    let _ = rail;
     let layout = codes.layout();
     assert!(
         out.plane.width() == layout.cols() && out.plane.height() == layout.rows(),
@@ -496,6 +517,18 @@ pub fn clamp_black(params: &Params, codes: &Codes, rail: &Rail, out: &mut Raw) {
         layout.cols(),
         layout.rows()
     );
+    assert_eq!(
+        rail.lines(),
+        layout.rows(),
+        "the rail has {} lines but the readout {}",
+        rail.lines(),
+        layout.rows()
+    );
+    // Lines from the first that starts in a brownout on are never captured.
+    let captured = (0..layout.rows())
+        .find(|&line| rail.start_v(line) < params.dsp_brownout_v)
+        .unwrap_or(layout.rows());
+    out.dropped = (captured < layout.rows()).then(|| layout.image_row(captured));
     let line_len = layout.line_len() as usize;
     let ob = layout.ob_cols() as usize;
     let shift = u32::from(params.dsp_lsb);
@@ -505,9 +538,9 @@ pub fn clamp_black(params: &Params, codes: &Codes, rail: &Rail, out: &mut Raw) {
         return;
     }
 
-    // Measure every line's optical black, stored by image row.
+    // Measure every captured line's optical black, stored by image row.
     let rows = layout.rows();
-    for (line, words) in (0..rows).zip(codes.words().chunks_exact(line_len)) {
+    for (line, words) in (0..captured).zip(codes.words().chunks_exact(line_len)) {
         let sum: u64 = words[..ob].iter().map(|&code| u64::from(view(code))).sum();
         let mean = if ob == 0 { 0.0 } else { sum as f64 / ob as f64 };
         out.black[layout.image_row(line) as usize] = mean as f32;
@@ -515,12 +548,16 @@ pub fn clamp_black(params: &Params, codes: &Codes, rail: &Rail, out: &mut Raw) {
     // The clamp loop runs in readout order.
     let alpha = 1.0 - (-1.0 / CLAMP_TAU_LINES).exp();
     let mut level = None;
-    for line in 0..rows {
+    for line in 0..captured {
         let slot = &mut out.black[layout.image_row(line) as usize];
         let measured = f64::from(*slot);
         let next = level.map_or(measured, |b: f64| b + alpha * (measured - b));
         level = Some(next);
         *slot = next as f32;
+    }
+    let held = level.unwrap_or(0.0) as f32;
+    for line in captured..rows {
+        out.black[layout.image_row(line) as usize] = held;
     }
 
     let width = out.plane.width() as usize;
@@ -535,7 +572,12 @@ pub fn clamp_black(params: &Params, codes: &Codes, rail: &Rail, out: &mut Raw) {
         .for_each(|(row, sites)| {
             // The readout runs forwards or backwards, so the map from lines to rows is
             // its own inverse.
-            let line = layout.image_row(row as u32) as usize;
+            let line = layout.image_row(row as u32);
+            if line >= captured {
+                sites.fill(0.0);
+                return;
+            }
+            let line = line as usize;
             let words = &codes.words()[line * line_len + ob..(line + 1) * line_len];
             let level = black[row];
             for (site, &code) in sites.iter_mut().zip(words) {
