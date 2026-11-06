@@ -360,11 +360,39 @@ Module `bus.rs` plus a small `circuit.rs` nodal solver.
 2. Desktop app (egui + wgpu likely): real-time preview, signal-path UI with physical
    knobs, pin-matrix patch bay for the bus bend, camera gallery.
 3. More bends from the legacy spirit: IR-cut removal, supply-rail sag, master-clock
-   reclock, SDRAM address lines, CDS skew, AWB/AE hunting as servo behaviour.
-4. More cameras (Sony DSC-V1, Fuji S9000, Praktica DC42) as camera files.
-5. Post stage per the policy; preset library rebuilt from the old presets' spirit.
-6. Capture input, virtual camera output, MIDI/OSC, audio-reactive injection.
-7. WASM/WebGPU demo build of `vcb_core`.
+   reclock, SDRAM address lines, CDS skew, AWB/AE hunting as servo behaviour
+   (milestone 3, done).
+4. Milestone 4 candidates, the remaining places a bender can physically reach on a
+   CCD compact, ranked by distinctness per effort (direction approved 2026-11-06;
+   each ships with its own presets):
+   1. **Sensor temperature** (sensor stage): a heat gun on the sensor. Dark current
+      doubles every six to eight degrees (Arrhenius on `dark_e_per_s`), hot
+      photosites multiply, amp glow appears on long exposures. `[bend.sensor]
+      temperature_c`. Trivial and composes with everything.
+   2. **Reset gate and output biases** (sensor ribbon, AFE input): a missed or weak
+      reset pulse leaves charge on the floating diffusion, so values accumulate along
+      the line until they saturate (long drags with hard saturation); a pot on the
+      substrate bias changes full well and anti-blooming (blooming spikes, exposure).
+      `[bend.ccd] reset_drop_hz`, `reset_frac`, `substrate_v`. Cheap: the constants exist.
+   3. **SDRAM data pins and refresh** (memory stage): stuck data bits in the stored
+      raw (a posterised cousin of the bus bend after capture) and refresh or clock
+      faults, where rows fade as the DRAM charge leaks (stale frames that decay).
+      The stage already holds the SDRAM as state.
+   4. **AFE serial configuration** (AFE): the processor programs gain, offset and
+      clamp over a serial bus; corrupting it makes those change at random between
+      writes, the real cause of bands of wrong exposure and colour. Stateful.
+   5. **Light leaks** (scene stage): a drilled or opened body fogs the sensor with a
+      soft gradient from one edge. Simple.
+   6. **JPEG buffer** (codec): the compressed image lives in SDRAM too, so the same
+      address and data faults corrupt the bitstream: shifted macroblocks and DC
+      prediction errors that tint everything after the fault. Needs the entropy coder
+      modelled. The one large item.
+   The second lever is exposing camera constants a bender can reach as pots (the
+   substrate bias, the AFE gain) rather than adding stages.
+5. More cameras (Sony DSC-V1, Fuji S9000, Praktica DC42) as camera files.
+6. Post stage per the policy; preset library rebuilt from the old presets' spirit.
+7. Capture input, virtual camera output, MIDI/OSC, audio-reactive injection.
+8. WASM/WebGPU demo build of `vcb_core`.
 
 ## Milestone 2: the desktop app (direction approved 2026-11-05)
 
@@ -567,10 +595,21 @@ shortcuts, `docs/USER-GUIDE.md` sections, headless panel tests.
 
 ### Stage 14: presets, goldens, docs, tuning (medium, one agent plus the orchestrator)
 
-Presets in the legacy presets' spirit, one file each with a schematic-style header:
-`a520-full-spectrum`, `a520-chlorophyll`, `a520-brownout`, `a520-sieve`,
-`a520-loose-sync`, `a520-reclock-roll`, `a520-s9000-tear`, `a520-mirror-bank`, and
-two that combine bends. Golden hashes and PNGs, `docs/ARCHITECTURE.md` (sections 3,
+Presets in the legacy presets' spirit, one file each with a schematic-style header,
+these ten names (the guide of stage 13 refers to them):
+
+| Preset | Bend | Look |
+|---|---|---|
+| `a520-full-spectrum` | optics, grey-world balance | the washed full-spectrum photograph: cream clouds, teal water, pale vegetation |
+| `a520-chlorophyll` | optics with `foliage_nir`, low red gain | aerochrome-ish: deep sky and water, foliage glowing pink-white |
+| `a520-brownout` | rail, steady load and ripple | breathing bright bands, no failures |
+| `a520-sieve` | rail, spikes, no bus bend | rows that die into solid colour, clustered |
+| `a520-loose-sync` | clock, small detune, HD lock | a held picture with diagonal shear and a few snaps |
+| `a520-reclock-roll` | clock, drift, narrow lock | tears and colour-phase bands that move between frames |
+| `a520-s9000-tear` | memory, marginal contacts | torn bands and stale frames showing through |
+| `a520-mirror-bank` | memory, one solid row pin | a mirrored band, crystalline |
+| `a520-dying-battery` | rail with memory | lockout stripes, then the previous frame below the brownout |
+| `a520-full-spectrum-hpf` | optics with the HPF bus bend | the reference bend on a full-spectrum camera | Golden hashes and PNGs, `docs/ARCHITECTURE.md` (sections 3,
 4, 6, 8, 9), `CHANGELOG.md`, README preset list, benchmarks for the three new stages,
 a tuning note per bend in `docs/research/`. The orchestrator judges each preset by eye
 on the samples and a clip.
