@@ -462,19 +462,25 @@ normalised knobs become bench quantities, their coin flips become circuits with 
 
 **Optics.** `[bend.optics]`: `ir_cut_pulled_frac` in `[0, 1]`, the fraction of the frame
 height the filter has slid off from the top (1 is removed; the filter's shadow edge is
-defocused over `[lens] filter_edge_blur_frac` of the height); `nir_weights = [r, g, b]`,
-the scene's NIR radiance as a weighted sum of its linear sRGB (default
-`[0.5, 0.32, 0.05]`: red-weighted, Rayleigh-blue skies dark); `foliage_nir`, the NIR
-reflectance of chlorophyll relative to its visible green, keyed on greenness (the Wood
-effect, default 4); `nir_scale`, overall NIR radiance relative to visible for a scene
-of equal energy (default 1). Camera: `[sensor] nir_response = [r, g, b]`, each channel's
-charge from unit NIR relative to its charge from reference white (C, dye transmission
-beyond 750 nm: PROVISIONAL `[1.0, 0.75, 0.7]`); `[lens] nir_defocus_frac`, the blur
+the geometric penumbra of a lens pupil partly blocked, `[lens] filter_edge_blur_frac`
+of the height wide); `nir_weights = [r, g, b]`, the scene's NIR radiance as a weighted
+sum of its linear sRGB (default `[0.58, 0.38, 0.04]`, summing to one: red-weighted,
+Rayleigh-blue skies dark); `foliage_nir`, the NIR reflectance of chlorophyll relative
+to its visible green, keyed on greenness (the Wood effect; default 0, a deliberate
+assumption about the scene the user turns on); `nir_scale`, overall NIR radiance
+relative to visible for a scene of equal energy (default 1). The scene's NIR is not
+recoverable from an RGB photo: the estimator is a documented guess like highlight
+reconstruction, and a fourth scene plane of real NIR data would replace it at the
+same point with nothing downstream changing (user decision, 2026-11-06). Camera:
+`[sensor] nir_response = [r, g, b]`, each channel's charge from unit estimated NIR
+relative to the charge reference white gives the green channel (C, dye transmission
+beyond 750 nm: PROVISIONAL `[1.0, 0.55, 0.5]`); `[lens] nir_defocus_frac`, the blur
 radius of the NIR image as a fraction of the width (IR focuses behind the sensor,
-PROVISIONAL 0.003); `[lens] filter_edge_blur_frac` (PROVISIONAL 0.02). In
-`scene::prepare`, after the colour conversion: the NIR plane is built from the linear
-sRGB scene, blurred, multiplied by `nir_response` and the uncovered fraction, and added
-to each channel. The scene auto-exposure meters the sum.
+PROVISIONAL 0.003); `[lens] filter_edge_blur_frac` (a 1 mm gap at f/4 over the sensor
+height, PROVISIONAL 0.06). In `scene::prepare`, after the colour conversion: the NIR
+plane is built from the linear sRGB scene, blurred, multiplied by `nir_response` and
+the uncovered fraction, and added to each channel. The scene auto-exposure meters the
+sum.
 
 **Power.** Camera `[power]`: `rail_v` 3.3, `source_ohm` (regulator and battery
 impedance, PROVISIONAL 0.5), `decoupling_uf` (PROVISIONAL 47), `quiescent_ma`
@@ -506,7 +512,12 @@ readout, AFE, ADC and bus stages run on the sensor-side period as they do today;
 frame period is the processor's, and the sensor reads until VD. `capture::reframe`
 maps each processor latch instant to the bus word valid then, or to the blanking word
 when the timing generator is in blanking, with the optional HD re-synchronisation per
-line. The drift oscillator's phase persists; VD restarts the generator each frame.
+line. The drift oscillator's phase persists; VD restarts the generator each frame. At
+match-input the capture runs on the camera's native line and is sampled onto the
+virtual grid, so a preview shows the native look downscaled (a virtual line is mostly
+blanking). Because VD restarts the generator, a steady oscillator draws the same tears
+in every frame; drift moves them. A generator that free-runs across VD (vertical roll)
+is a later option.
 
 **Memory.** Camera `[memory]`: `column_bits` (PROVISIONAL 9), `row_bits` (12),
 `bank_bits` (2), `raw_base` (word address of the raw buffer, PROVISIONAL 0), one
