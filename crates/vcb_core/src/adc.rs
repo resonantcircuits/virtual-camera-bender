@@ -66,6 +66,20 @@ impl Codes {
     pub fn layout(&self) -> &Layout {
         &self.layout
     }
+
+    /// Gives the codes the timing of `layout`, keeping the words.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `layout` differs from the codes' own in anything but its pixel period.
+    pub(crate) fn retime(&mut self, layout: Layout) {
+        assert!(
+            self.layout.same_shape(&layout),
+            "cannot retime codes of layout {:?} to {layout:?}: only the clock may change",
+            self.layout
+        );
+        self.layout = layout;
+    }
 }
 
 impl Debug for Codes {

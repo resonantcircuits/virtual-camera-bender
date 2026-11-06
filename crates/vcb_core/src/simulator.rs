@@ -116,7 +116,10 @@ fn trace_timing(name: &'static str, camera: &Camera, timing: &Timing) {
 /// capture period, the native pixel period, the frame period, oversampling,
 /// orientation and output size. Then every buffer keeps its size. The sensor-side
 /// pixel period, pixel clock and line period and the clock ratio may differ: they
-/// follow the oscillator of `[bend.clock]`, a knob on the running camera.
+/// follow the oscillator of `[bend.clock]`, a knob on the running camera, and the
+/// kept buffers take the new period ([`Buffers::retime`]).
+///
+/// This is the only test that decides between keeping and rebuilding.
 fn same_geometry(old: &Timing, new: &Timing) -> bool {
     let aligned = Timing {
         resolution: old.resolution,
@@ -209,6 +212,28 @@ impl Buffers {
                 .rotated
                 .then(|| Frame::new(timing.output_width, timing.output_height)),
         }
+    }
+
+    /// Gives every buffer that carries readout timing the layout of `params`, keeping the samples.
+    ///
+    /// The stream, the voltages and the codes store the pixel period of the clock that
+    /// produced them; a reconfiguration that keeps the geometry may move the
+    /// sensor-side clock, so they take the new period while their counts stay.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new layout differs in anything but its pixel period, which a
+    /// kept geometry rules out.
+    fn retime(&mut self, params: &Stages) {
+        let layout = &params.readout.layout;
+        assert_eq!(
+            self.rail.lines(),
+            layout.rows(),
+            "a kept geometry reads the same lines"
+        );
+        self.stream.retime(layout.clone());
+        self.analog.retime(layout.clone());
+        self.codes.retime(layout.clone());
     }
 }
 
@@ -539,6 +564,7 @@ impl Simulator {
         let timing = Timing::derive(&self.camera, &preset, scene_size.0, scene_size.1)?;
         let params = Stages::resolve(&self.camera, &preset, &timing)?;
         let outcome = if same_geometry(&self.timing, &timing) {
+            self.buffers.retime(&params);
             let bus_reset =
                 !bus::same_wiring(self.preset.bend.bus.as_ref(), preset.bend.bus.as_ref());
             if bus_reset {
@@ -636,6 +662,15 @@ impl Simulator {
     #[must_use]
     pub fn power_state(&self) -> &power::State {
         &self.state.power
+    }
+
+    /// Returns the words the processor captured in the last frame, for tests.
+    ///
+    /// The ADC's codes after the bus bend and the capture, before the black clamp.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn codes(&self) -> &Codes {
+        &self.buffers.codes
     }
 
     /// Returns the supply rail of every readout line of the last frame, for tests.

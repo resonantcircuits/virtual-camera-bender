@@ -248,6 +248,18 @@ impl Layout {
             Direction::BottomUp => self.rows - 1 - line,
         }
     }
+
+    /// Returns whether two layouts store the same lines in the same order, whatever their clock.
+    ///
+    /// Everything but the pixel period must agree: lines, columns, optical black,
+    /// blanking periods, line skip, direction and the map from lines to rows.
+    pub(crate) fn same_shape(&self, other: &Self) -> bool {
+        let retimed = Self {
+            pixel_period_s: self.pixel_period_s,
+            ..other.clone()
+        };
+        retimed == *self
+    }
 }
 
 impl Debug for Layout {
@@ -309,6 +321,20 @@ impl Stream {
     #[must_use]
     pub fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    /// Gives the stream the timing of `layout`, keeping its samples.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `layout` differs from the stream's own in anything but its pixel period.
+    pub(crate) fn retime(&mut self, layout: Layout) {
+        assert!(
+            self.layout.same_shape(&layout),
+            "cannot retime a stream of layout {:?} to {layout:?}: only the clock may change",
+            self.layout
+        );
+        self.layout = layout;
     }
 }
 

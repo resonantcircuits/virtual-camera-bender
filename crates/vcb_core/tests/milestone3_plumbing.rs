@@ -232,6 +232,26 @@ fn turning_a_bend_knob_keeps_the_running_camera() {
 }
 
 #[test]
+fn a_new_oscillator_leaves_the_kept_buffers_on_the_sensor_clock() {
+    let scene = scene();
+    for mode in [Mode::Still, Mode::Movie] {
+        let plain = clean(mode);
+        let mut sim = build(plain.clone());
+        sim.frame(&scene, 0);
+        let mut reclocked = plain;
+        reclocked.bend.clock = Some(ReclockBend::new(20.0));
+        assert_eq!(sim.set_preset(reclocked).unwrap(), KEPT, "{mode}");
+        // Every stage checks its buffers against its parameters' clock.
+        sim.frame(&scene, 1);
+        assert_eq!(
+            sim.codes().layout().pixel_period_s().to_bits(),
+            sim.timing().pixel_period_s.to_bits(),
+            "{mode}: the codes carry the sensor-side pixel period"
+        );
+    }
+}
+
+#[test]
 fn the_rail_holds_the_nominal_voltage_on_every_readout_line_without_a_rail_bend() {
     let scene = scene();
     let camera = camera();
