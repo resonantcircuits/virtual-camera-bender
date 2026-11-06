@@ -2,8 +2,9 @@
 
 use std::fmt::{self, Display, Formatter};
 
+use crate::camera::Clocking;
 use crate::preset::{Mode, Orientation, Resolution};
-use crate::validate::at_least;
+use crate::validate::{at_least, positive};
 use crate::{Camera, Error, Preset};
 
 /// Fewest optical-black columns per line on a scaled-down virtual sensor.
@@ -25,8 +26,48 @@ const MIN_HBLANK_PX: u32 = 8;
 /// `hblank_px` blanking periods; a frame of `rows_read` lines and `vblank_lines`
 /// blanking lines. Hence
 ///
-/// - `line_period_s = pixel_period_s * (ob_cols + cols + hblank_px)` and
-/// - `frame_period_s = line_period_s * (rows_read + vblank_lines)`.
+/// - `line_period_s = pixel_period_s * (ob_cols + cols + hblank_px)` on the sensor's
+///   clock and
+/// - `frame_period_s = dsp_pixel_period_s * (ob_cols + cols + hblank_px) * (rows_read +
+///   vblank_lines)` on the processor's.
+///
+/// Without `[bend.clock]` the two clocks are one and `frame_period_s = line_period_s *
+/// (rows_read + vblank_lines)`.
+///
+/// # Two clocks
+///
+/// The camera has two oscillators. The processor's crystal clocks its capture of the bus
+/// and generates vertical sync (VD); the timing generator's clocks the CCD's transfer,
+/// the AFE, the ADC and the bus drivers. A preset's `[bend.clock]` replaces the timing
+/// generator's with one at `osc_mhz` (the LTC1799 mod), so the sensor side runs at
+/// `clock_ratio = osc_mhz * 1e6 / pixel_clock_hz` of the camera's nominal clock while the
+/// processor keeps the nominal:
+///
+/// > `pixel_period_s = dsp_pixel_period_s / clock_ratio`,
+///
+/// where `dsp_pixel_period_s` is the period this derivation gives the readout at this
+/// resolution (the camera's own at native resolution, the fitted one at match-input), so
+/// match-input scaling and the ratio compose. Line and pixel counts are the same on both
+/// sides. The timing generator restarts with every VD, reads until the next and loses
+/// what it has not read by then ([`capture`](crate::capture)). Each consumer uses the
+/// clock of its hardware:
+///
+/// | Consumer | Clock | Quantity |
+/// |---|---|---|
+/// | Sensor: interline smear's transfer time | sensor | `line_period_s` |
+/// | Readout: clock-fault rates per line, the stream's period | sensor | `line_period_s`, `pixel_period_s` |
+/// | AFE: sub-steps, blanking intervals, an oscillator's advance per sample | sensor | `pixel_period_s` |
+/// | ADC and bus bend: one word per period, circuit sub-steps | sensor | `pixel_period_s` |
+/// | Supply rail, sampled per readout line | sensor | `line_period_s` |
+/// | Sub-line analog constants: AFE bandwidth and slew, gate delays and setup, the drivers' slew, line capacitance | fixed in seconds by the hardware | scaled by [`resolution_scale`](Self::resolution_scale) alone |
+/// | Processor's latch on the bus | processor | `dsp_pixel_period_s` |
+/// | Image processor's exposure and white-balance servos, the movie electronic shutter, frame-buffer reads one frame later | processor (VD) | `frame_period_s` |
+/// | Oscillators: AFE injection and gain modulation, flicker corner, ripple, the reclocked oscillator's drift | real time: sensor periods within the readout, VD to VD from frame to frame | seconds |
+///
+/// A slower oscillator therefore lengthens the sensor's lines in seconds while the AFE's
+/// bandwidth stays in hertz, so the bandwidth spans more of a sensor pixel period: it
+/// widens in pixels. The frame period is the processor's at every ratio, so a new
+/// oscillator keeps the geometry of a running simulator.
 ///
 /// # Resolution
 ///
@@ -34,7 +75,7 @@ const MIN_HBLANK_PX: u32 = 8;
 /// the camera's. At [`Resolution::MatchInput`] the sensor takes the input's size,
 /// rounded down to even, and two native durations are kept fixed:
 ///
-/// - the **active-line time**, `cols * pixel_period_s`, so a horizontal time constant
+/// - the **active-line time**, `cols * dsp_pixel_period_s`, so a horizontal time constant
 ///   spans the same fraction of the image width at every resolution, and
 /// - the **frame period**, so a vertical time constant or an oscillator spans the same
 ///   fraction of the image height.
@@ -52,9 +93,12 @@ const MIN_HBLANK_PX: u32 = 8;
 /// delays, minimum pulse and setup time, the flip-flop's maximum clock) are given in
 /// physical time units, which at native resolution means a fixed number of native
 /// pixel periods. Stages that model them scale them by
-/// `pixel_period_s / native_pixel_period_s` so they keep their native meaning in
-/// pixels. The latch phase of the image processor is a fraction of the pixel period
-/// and needs no scaling.
+/// [`resolution_scale`](Self::resolution_scale), `dsp_pixel_period_s /
+/// native_pixel_period_s`, so they keep their native meaning in pixels at every
+/// resolution; without `[bend.clock]` that is `pixel_period_s / native_pixel_period_s`.
+/// The reclocked oscillator does not enter the scale: it moves the clock, not the
+/// analog hardware. The latch phase of the image processor is a fraction of the pixel
+/// period and needs no scaling.
 ///
 /// # Orientation
 ///
@@ -88,29 +132,29 @@ pub struct Timing {
     pub vblank_lines: u32,
     /// One row pair is read out of every `line_skip` row pairs.
     pub line_skip: u32,
-    /// Horizontal pixel clock of the timing generator and AFE in hertz.
+    /// Horizontal pixel clock of the timing generator and AFE in hertz, `1 / pixel_period_s`.
     pub pixel_clock_hz: f64,
     /// Duration of one pixel period of the timing generator and AFE in seconds.
     ///
-    /// The sensor, readout, AFE, ADC and bus stages run on it.
+    /// The sensor, readout, AFE, ADC and bus stages run on it: `dsp_pixel_period_s /
+    /// clock_ratio`.
     pub pixel_period_s: f64,
     /// Duration of one pixel period of the camera's own clock in seconds.
     pub native_pixel_period_s: f64,
     /// Duration of the processor's capture period, one pixel period of its own clock, in seconds.
     ///
-    /// The processor keeps its own crystal and latches the bus once per capture
-    /// period, while the timing generator and the AFE run on the sensor-side
-    /// `pixel_period_s`. Equal to `pixel_period_s` while no `[bend.clock]` reclocks
-    /// the timing generator; reserved for that bend, which derives the two apart.
+    /// The processor keeps its own crystal and latches the bus once per capture period,
+    /// while the timing generator and the AFE run on the sensor-side `pixel_period_s`.
+    /// The camera's own period at native resolution, the fitted one at match-input.
     pub dsp_pixel_period_s: f64,
     /// Frequency of the sensor-side clock over the camera's nominal pixel clock.
     ///
-    /// 1 while no `[bend.clock]` replaces the timing generator's oscillator; reserved
-    /// for that bend, which derives it from `osc_mhz`.
+    /// `osc_mhz * 1e6` over the readout mode's `pixel_clock_hz` with `[bend.clock]`;
+    /// 1 without.
     pub clock_ratio: f64,
-    /// Duration of one line, including optical black and blanking, in seconds.
+    /// Duration of one sensor-side line, including optical black and blanking, in seconds.
     pub line_period_s: f64,
-    /// Duration of one frame, including vertical blanking, in seconds.
+    /// Duration of one frame of the processor, from VD to VD, in seconds.
     pub frame_period_s: f64,
     /// Analog simulation sub-steps per pixel period.
     pub oversample: u32,
@@ -125,8 +169,9 @@ impl Timing {
     ///
     /// # Errors
     ///
-    /// Returns a configuration error if the camera's clocking is invalid, and an input
-    /// error if the input is empty or too small to hold one Bayer quad per output pixel.
+    /// Returns a configuration error if the camera's clocking or the preset's
+    /// `[bend.clock] osc_mhz` is invalid, and an input error if the input is empty or too
+    /// small to hold one Bayer quad per output pixel.
     ///
     /// # Examples
     ///
@@ -192,7 +237,7 @@ impl Timing {
             )));
         }
 
-        let (ob_cols, hblank_px, vblank_lines, pixel_period_s) = match resolution {
+        let (ob_cols, hblank_px, vblank_lines, dsp_pixel_period_s) = match resolution {
             Resolution::Native => (
                 native_ob,
                 clock.hblank_px,
@@ -213,10 +258,13 @@ impl Timing {
             ),
         };
 
+        // The processor keeps the period derived above; the timing generator runs at
+        // the replacement oscillator's share of the nominal clock.
+        let (clock_ratio, pixel_period_s) = sensor_clock(preset, clock, dsp_pixel_period_s)?;
         let line_len = ob_cols + sensor_width + hblank_px;
         let lines = rows + vblank_lines;
         let line_period_s = pixel_period_s * f64::from(line_len);
-        let frame_period_s = line_period_s * f64::from(lines);
+        let frame_period_s = dsp_pixel_period_s * f64::from(line_len) * f64::from(lines);
 
         let (developed_width, developed_height) = match (mode, resolution) {
             (Mode::Still, _) => (sensor_width, rows),
@@ -246,8 +294,8 @@ impl Timing {
             pixel_clock_hz: 1.0 / pixel_period_s,
             pixel_period_s,
             native_pixel_period_s,
-            dsp_pixel_period_s: pixel_period_s,
-            clock_ratio: 1.0,
+            dsp_pixel_period_s,
+            clock_ratio,
             line_period_s,
             frame_period_s,
             oversample: camera.afe.oversample.max(1),
@@ -278,17 +326,51 @@ impl Timing {
         self.rows_read + self.vblank_lines
     }
 
-    /// Returns how many line periods one cycle of an oscillator at `freq_hz` lasts.
+    /// Returns how many sensor-side line periods one cycle of an oscillator at `freq_hz` lasts.
     #[must_use]
     pub fn lines_per_cycle(&self, freq_hz: f64) -> f64 {
         1.0 / (freq_hz * self.line_period_s)
     }
 
-    /// Returns how many pixel periods one cycle of an oscillator at `freq_hz` lasts.
+    /// Returns how many sensor-side pixel periods one cycle of an oscillator at `freq_hz` lasts.
     #[must_use]
     pub fn samples_per_cycle(&self, freq_hz: f64) -> f64 {
         1.0 / (freq_hz * self.pixel_period_s)
     }
+
+    /// Returns the factor that stretches sub-line constants to the virtual resolution.
+    ///
+    /// `dsp_pixel_period_s / native_pixel_period_s`: 1 at native resolution, the
+    /// virtual pixel's duration in native pixel periods at match-input. A stage
+    /// multiplies a sub-line analog constant (a bandwidth's time constant, a gate delay,
+    /// a slew time) by it, so the constant spans the same number of pixels at every
+    /// resolution. It ignores `[bend.clock]`: a reclocked oscillator moves the clock,
+    /// not the analog hardware, so in sensor pixel periods such a constant shrinks as
+    /// the oscillator slows.
+    #[must_use]
+    pub fn resolution_scale(&self) -> f64 {
+        self.dsp_pixel_period_s / self.native_pixel_period_s
+    }
+}
+
+/// Returns the clock ratio and the sensor-side pixel period for the processor's period.
+///
+/// The ratio is the timing generator's oscillator over the readout mode's nominal
+/// `pixel_clock_hz`, 1 without `[bend.clock]`, and the sensor-side period
+/// `dsp_pixel_period_s / ratio`.
+fn sensor_clock(
+    preset: &Preset,
+    clock: Clocking,
+    dsp_pixel_period_s: f64,
+) -> Result<(f64, f64), Error> {
+    let ratio = match preset.bend.clock {
+        Some(bend) => {
+            positive("bend.clock.osc_mhz", bend.osc_mhz)?;
+            bend.osc_mhz * 1e6 / clock.pixel_clock_hz
+        }
+        None => 1.0,
+    };
+    Ok((ratio, dsp_pixel_period_s / ratio))
 }
 
 /// Returns whether the camera is held in portrait for an input of the given size.
@@ -379,6 +461,15 @@ impl Display for Timing {
             self.pixel_period_s * 1e9,
             self.native_pixel_period_s * 1e9
         )?;
+        if self.dsp_pixel_period_s.to_bits() != self.pixel_period_s.to_bits() {
+            writeln!(
+                f,
+                "processor     {:.6} MHz ({:.3} ns per pixel); the sensor runs at {:.6} of it",
+                1e-6 / self.dsp_pixel_period_s,
+                self.dsp_pixel_period_s * 1e9,
+                self.clock_ratio
+            )?;
+        }
         writeln!(
             f,
             "active line   {:.3} µs",

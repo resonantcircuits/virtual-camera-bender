@@ -19,8 +19,14 @@ const DEFAULT_PPM_PER_V: f64 = 1000.0;
 /// The LTC1799 mod: the crystal of the timing generator and AFE is replaced by an
 /// oscillator at `osc_mhz`, while the processor keeps its own crystal, generates
 /// vertical sync and captures the bus at the nominal pixel period. The nominal is the
-/// camera's `[still]` or `[movie] pixel_clock_hz`; an oscillator at the nominal
-/// frequency changes nothing. See [`capture`](crate::capture).
+/// camera's `[still]` or `[movie] pixel_clock_hz`; a steady oscillator at the nominal
+/// frequency changes nothing. See [`capture`](crate::capture) for the model and
+/// [`Timing`](crate::Timing) for the two clocks.
+///
+/// The oscillator's frequency is `osc_mhz * (1 + 1e-6 * (drift_ppm * w(t) + ppm_per_v *
+/// (v - rail_v)))`, where `w(t)` is the drift, a slow seeded wander within `[-1, 1]`
+/// at `drift_hz`, and `v - rail_v` the supply's deviation from the camera's
+/// `[power] rail_v`. All three are physical and used as given at every resolution.
 ///
 /// The section is named `[bend.clock]`; `[bend.clocks]`
 /// ([`ClockBend`](crate::preset::ClockBend)) is the CCD's transfer clocks.
@@ -44,17 +50,22 @@ pub struct ReclockBend {
     #[cfg_attr(feature = "serde", serde(default))]
     pub drift_ppm: f64,
     /// Rate of the drift in hertz, positive.
+    ///
+    /// The drift is the mean of two sines, one at `drift_hz` and one at the golden
+    /// ratio times it, in real time; their phases run on across frames.
     #[cfg_attr(feature = "serde", serde(default = "default_drift_hz"))]
     pub drift_hz: f64,
     /// Supply sensitivity of the oscillator in parts per million per volt, finite.
     ///
-    /// Acts on the rail's deviation from nominal when `[bend.rail]` is present.
+    /// Acts on the rail's deviation from the camera's nominal `[power] rail_v`, so only
+    /// when the rail moves.
     #[cfg_attr(feature = "serde", serde(default = "default_ppm_per_v"))]
     pub ppm_per_v: f64,
     /// Width of the processor's line-start capture window in pixels, at least 0.
     ///
-    /// Within the window the processor re-synchronises each line to the timing
-    /// generator's horizontal sync; 0 is free-running.
+    /// Pixel periods of the camera's own clock, the processor's at native resolution.
+    /// When the timing generator's line start lies within the window of the processor's,
+    /// the processor resets its line counter to it; 0 is free-running.
     #[cfg_attr(feature = "serde", serde(default))]
     pub hd_lock_px: f64,
 }
