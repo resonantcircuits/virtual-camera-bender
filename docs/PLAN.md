@@ -674,11 +674,15 @@ sample), scales the same way, so long exposures at temperature glow in that corn
 `substrate_v` (default the camera's `substrate_v`, C-class 12 V for Sony interline
 parts): a pot on the substrate bias moves the vertical overflow drain's barrier; the full
 well falls by `full_well_frac_per_v` per volt above nominal (PROVISIONAL, half the well
-at +2 V) and the anti-blooming ratio falls with it, so a raised bias clips and blooms,
-and a lowered one deepens the well and the drain until the electronic shutter, which
-pulses the substrate, stops clearing in movie mode (smear grows). Camera `[sensor]`
+at +2 V), so a raised bias clips while the drain takes the excess; a lowered bias
+deepens the well and raises the barrier until the drain no longer takes the excess
+(its capacity is gone `drain_loss_v` below nominal, PROVISIONAL 2 V), so highlights
+bloom along the columns, and the electronic shutter, which pulses the substrate,
+stops clearing in movie mode (smear grows). The glow scales with `k − 1`, since the
+characterised dark at the reference temperature already includes the amplifier's
+share (goldens unchanged). Camera `[sensor]`
 gains `reference_temp_c`, `dark_doubling_c`, `read_noise_per_c`, `amp_glow_e_per_s`,
-`amp_glow_radius_frac`, `substrate_v`, `full_well_frac_per_v`. State: none. The
+`amp_glow_radius_frac`, `substrate_v`, `full_well_frac_per_v`, `drain_loss_v`. State: none. The
 optical-black clamp removes the mean dark, so what shows is grain, hot crosses, the
 glow's gradient and clipping, as on a real hot sensor.
 

@@ -149,6 +149,9 @@ impl Preset {
         if let Some(memory) = &self.bend.memory {
             memory.validate()?;
         }
+        if let Some(reset) = &self.bend.reset {
+            reset.validate()?;
+        }
         if let Some(isp) = &self.isp {
             validate_isp(isp)?;
         }

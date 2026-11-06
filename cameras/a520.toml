@@ -74,6 +74,7 @@ bandwidth_hz = 40_000_000.0         # PROVISIONAL
 slew_v_per_us = 200.0               # PROVISIONAL
 noise_1f_corner_hz = 20_000.0       # PROVISIONAL: CCD output amplifier flicker corner, class typical
 oversample = 4
+fd_swing_v = 0.6                    # PROVISIONAL: the CCD's source follower runs out first, its 460 mV saturation signal (section 3) plus a margin; C: the AD9949's 1.0 V p-p CDS input before saturation (section 5) bounds it from above
 
 [adc]
 bits = 12                           # C: AD9949 class AFE (section 5)

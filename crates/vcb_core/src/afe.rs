@@ -9,7 +9,9 @@
 //!
 //! 1. **CCD output and CDS.** Correlated double sampling turns each charge packet into
 //!    a level of `conv_gain_uv_per_e` microvolts per electron above the reset level,
-//!    held for the pixel period. With a clamp-timing skew (`[bend.afe] cds_lag_px`,
+//!    held for the pixel period: the level the packet adds to the CCD's floating
+//!    diffusion, which the reset gate empties before every packet (see "Reset gate"
+//!    for missed and weak pulses). With a clamp-timing skew (`[bend.afe] cds_lag_px`,
 //!    `cds_mix`) the reset sample is taken `cds_lag_px` pixel periods late, so the
 //!    fraction `cds_mix` of the level that many periods earlier is subtracted: every
 //!    edge gets a negative echo further along the line. Before the line's first
@@ -70,6 +72,70 @@
 //! A rail at the nominal voltage on a whole line takes the plain path, `r = 1`, which
 //! gives the ideal supply's bytes.
 //!
+//! # Reset gate
+//!
+//! The CCD's output stage turns charge into voltage on its floating diffusion. Before
+//! each packet the reset gate empties the diffusion into the reset drain; correlated
+//! double sampling reads the diffusion's level after the reset and again after the
+//! packet has arrived, and the difference is the packet. `[bend.reset]` breaks the
+//! gate's pulse, a wire on the sensor ribbon. The diffusion's charge `q`, in
+//! electrons, is part of [`State`], and in every pixel period
+//!
+//! > the reset pulse, if it arrives, clears `reset_frac` of `q`; the reset sample reads
+//! > `q_reset = q`; the packet `e` joins, `q += e`; and the CDS reads
+//! > `min(q, q_max) - min(q_reset, q_max)` electrons,
+//!
+//! where `q_max = fd_swing_v / conv_gain` is the output stage's swing in electrons
+//! (`[afe] fd_swing_v`, PROVISIONAL: the CCD's source follower runs out before the
+//! AFE does, so the swing is its saturation signal of 460 mV,
+//! `docs/research/a520-technical.md`, section 3, plus a margin, 0.6 V on the A520;
+//! the AD9949's CDS input of 1.0 V p-p before saturation, section 5, C, bounds it
+//! from above). Charge on the diffusion beyond the
+//! swing no longer moves the output, so a packet that lands there is lost and reads
+//! the pedestal: black. Below it the difference is exactly the packet, so the CDS
+//! cancels a missed or weak reset until the charge left on the diffusion uses up the
+//! swing. In blanking no packets arrive and the gate's pulses act on nothing: the
+//! diffusion keeps its charge until the reset at the next line's first sample, and
+//! from the end of one frame to the start of the next. The charge is unbounded; the
+//! spill of an over-full diffusion over the reset gate's barrier is not modelled,
+//! which matters only for how fast a weak reset drains it after a run of missed pulses.
+//!
+//! **Missed pulses** (`drop_hz`, `hold_px`, a flaky contact). A run of missed pulses
+//! starts with probability `drop_hz * pixel_period_s` in each pixel period while none
+//! runs, blanking included (a Poisson process in camera time), and lasts a geometric
+//! number of periods with a mean of `hold_px` periods of the camera's own clock (see
+//! "Time scaling"). The runs come from a [`Pcg32`] seeded with the bend's own stage seed
+//! (salt `"reset"`) and the frame index, in readout order, drawn as the lengths of the
+//! alternating stretches of sound and missed pulses: the exact equivalent of one trial
+//! per period. Whether a run is in progress at the end of a frame is part of the
+//! [`State`]; the next frame draws what is left of it afresh from its own stream,
+//! which the geometric law's lack of memory makes exact. Without drops a run in
+//! progress ends at once, the contact being sound. During a run the diffusion holds
+//! the packet before it and adds every later one: over a bright run of packets `e`
+//! it reads normally while the sum stays within the swing, at most `q_max / e - 1`
+//! packets, then one in part, then black until the run ends and the reset returns. A
+//! dark run whose sum stays below the swing reads unchanged. A run that spans blanking
+//! carries the charge into the next line, one that spans VD into the next frame.
+//!
+//! **Weak pulses** (`reset_frac = r` below 1). Each reset leaves `(1 - r) q` behind.
+//! On a uniform run of packets `e` arriving at an empty diffusion the charge after
+//! `n` packets is
+//!
+//! > `q_n = (e / r) (1 - (1 - r)^n)`,
+//!
+//! and the CDS reads `e` while `q_n <= q_max`, then `q_max - (1 - r) q_(n-1)` (floored
+//! at zero), falling within a few pixels towards `max(0, q_max - (1 - r) e / r)`. A
+//! run with `e <= r q_max` never reaches the swing and reads unchanged; brighter runs
+//! dim, and from `e >= r q_max / (1 - r)` on they end in black, brighter light reading
+//! darker. The dark optical-black samples at the start of each line drain the
+//! diffusion by `(1 - r)^ob_cols` before the active ones.
+//!
+//! Optical-black samples pass through the same diffusion, so the image processor's
+//! black clamp sees what the bend does to them. Read noise arises behind the
+//! diffusion, in the output amplifier and the AFE, and is added after the CDS. With
+//! `drop_hz = 0` and `reset_frac = 1` the step is skipped and every packet reads as
+//! itself, which gives the bytes of a camera without the section.
+//!
 //! # Blanking
 //!
 //! During horizontal and vertical blanking the CCD delivers no charge. Over each
@@ -103,9 +169,21 @@
 //! level is pinned to the white floor at the native pixel period. The restart time
 //! constant is given in native lines and converted to seconds with the native line
 //! period, so it spans the same fraction of the frame at every resolution.
+//!
+//! The runs of missed reset pulses keep their length in time, not in pixels:
+//! [`ResetGate::hold_s`] is `hold_px * native_pixel_period_s`, `hold_px` periods of
+//! the camera's own clock at every resolution and under a reclocked timing generator,
+//! and their rate `drop_hz` is physical. Since the line time is native at every size,
+//! a frame holds the same number of runs per line, covering the same fraction of each
+//! line, at native and at match-input resolution: a preview is the native look
+//! downscaled, and a run spans `hold_px * cols / native_width` pixels (at least one
+//! period). This is the choice the readout makes for its vertical faults, whose
+//! durations are native lines scaled to the virtual rows.
 
 use std::f64::consts::TAU;
 use std::fmt::{self, Debug, Formatter};
+#[cfg(feature = "test-util")]
+use std::ops::Range;
 
 use crate::noise::{self, Pcg32};
 use crate::power::Rail;
@@ -121,8 +199,14 @@ const INJECT_SALT: u32 = noise::salt("afe.inject");
 /// Salt of the gain-modulating sample-and-hold oscillator's levels.
 const GAIN_SALT: u32 = noise::salt("afe.gain_mod");
 
+/// Salt of the reset gate's missed pulses, which have their own stage seed.
+const RESET_SALT: u32 = noise::salt("reset");
+
 /// Scale that maps a 32-bit integer onto `[0, 2)`.
 const TWO_OVER_2_32: f64 = 2.0 / 4_294_967_296.0;
+
+/// Scale that maps a 32-bit integer onto `[0, 1)`.
+const ONE_OVER_2_32: f64 = 1.0 / 4_294_967_296.0;
 
 /// Pedestal error below which the clamp's restart after a lockout is complete, in volts.
 ///
@@ -173,6 +257,25 @@ pub struct GainMod {
     pub freq_hz: f64,
     /// Relative gain swing; the gain moves within `1 ± depth` times its setting.
     pub depth: f64,
+}
+
+/// The reset gate's missed and weak pulses, resolved from the preset's `[bend.reset]`.
+///
+/// See the [module documentation](self), "Reset gate".
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResetGate {
+    /// Mean rate of runs of missed pulses per second of readout.
+    pub drop_hz: f64,
+    /// Mean length of a run of missed pulses in seconds.
+    ///
+    /// The preset's `hold_px` pixel periods of the camera's own clock, at every
+    /// resolution: a run covers the same fraction of a line at native and at
+    /// match-input resolution.
+    pub hold_s: f64,
+    /// Fraction of the diffusion's charge a reset pulse clears; 1 is a full reset.
+    pub reset_frac: f64,
+    /// Seed of the missed pulses, the bend's own stage seed.
+    pub seed: u64,
 }
 
 /// Voltages at the ADC input in readout order.
@@ -283,6 +386,13 @@ pub struct Params {
     pub cds_lag_px: f64,
     /// Fraction of the delayed level that the late reset sample subtracts.
     pub cds_mix: f64,
+    /// Swing of the CCD's output stage in volts.
+    ///
+    /// Charge on the floating diffusion beyond `fd_swing_v / conv_gain` no longer moves
+    /// the output.
+    pub fd_swing_v: f64,
+    /// Missed and weak reset pulses, if the preset has a `[bend.reset]` that is not inert.
+    pub reset: Option<ResetGate>,
     /// Injected oscillator, if the preset patches one in.
     pub inject: Option<Inject>,
     /// Gain-modulating oscillator, if the preset patches one in.
@@ -296,6 +406,8 @@ impl Params {
     ///
     /// The restart time constant is the camera's `afe_restart_lines` in native lines
     /// of the readout mode, converted to seconds with the camera's own pixel clock.
+    /// An inert `[bend.reset]` resolves to no [`ResetGate`]; a live one's run length
+    /// becomes seconds on the camera's own clock.
     ///
     /// # Errors
     ///
@@ -306,6 +418,16 @@ impl Params {
         let clock = camera.clocking(timing.mode);
         let native_line_px = camera.sensor.ob_cols + camera.sensor.native_width + clock.hblank_px;
         let native_line_s = f64::from(native_line_px) / clock.pixel_clock_hz;
+        let reset = preset
+            .bend
+            .reset
+            .filter(|bend| !bend.is_inert())
+            .map(|bend| ResetGate {
+                drop_hz: bend.drop_hz,
+                hold_s: bend.hold_px * timing.native_pixel_period_s,
+                reset_frac: bend.reset_frac,
+                seed: noise::stage_seed(preset.seed, RESET_SALT),
+            });
         Ok(Self {
             conv_gain_uv_per_e: camera.sensor.conv_gain_uv_per_e,
             read_noise_e: camera.sensor.read_noise_e,
@@ -324,6 +446,8 @@ impl Params {
             restart_s: f64::from(camera.power.afe_restart_lines) * native_line_s,
             cds_lag_px: bend.cds_lag_px,
             cds_mix: bend.cds_mix,
+            fd_swing_v: afe.fd_swing_v,
+            reset,
             inject: bend.inject,
             gain_mod: bend.gain_mod,
             seed: noise::stage_seed(preset.seed, SALT),
@@ -370,9 +494,10 @@ impl Phase {
 /// Persistent analog state carried from one frame to the next.
 ///
 /// Holds the low-pass node, the flicker-noise process, the phases of both
-/// oscillators, the reference the supply delivered, and the chip's power state: the
-/// last output, whether it is locked out and the pedestal while the clamp restarts.
-/// The default is the power-on state.
+/// oscillators, the reference the supply delivered, the chip's power state (the last
+/// output, whether it is locked out and the pedestal while the clamp restarts), and
+/// the CCD's floating diffusion: its charge and whether its reset pulses are being
+/// missed. The default is the power-on state, an empty diffusion.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
     node_v: f64,
@@ -386,6 +511,10 @@ pub struct State {
     locked: bool,
     /// The pedestal in volts while the clamp re-establishes it; `None` once settled.
     restart_v: Option<f64>,
+    /// Charge on the CCD's floating diffusion in electrons.
+    fd_charge_e: f64,
+    /// Whether the reset pulse was missing in the frame's last pixel period.
+    reset_missed: bool,
 }
 
 impl State {
@@ -424,6 +553,21 @@ impl State {
     #[must_use]
     pub fn restart_pedestal_v(&self) -> Option<f64> {
         self.restart_v
+    }
+
+    /// Returns the charge on the CCD's floating diffusion after the last frame, in electrons.
+    ///
+    /// With a sound reset gate it is the frame's last packet, which the next line's
+    /// first reset clears; missed and weak resets let it build up.
+    #[must_use]
+    pub fn fd_charge_e(&self) -> f64 {
+        self.fd_charge_e
+    }
+
+    /// Returns whether the reset pulses were being missed at the end of the last frame.
+    #[must_use]
+    pub fn reset_missed(&self) -> bool {
+        self.reset_missed
     }
 }
 
@@ -593,6 +737,121 @@ impl ReadNoise {
     }
 }
 
+/// Returns a geometric number of pixel periods, at least 1, of a stretch of reset pulses.
+///
+/// `stay_ln` is the logarithm of the probability that the stretch goes on past a
+/// period, `ln(1 - p)` for an end probability `p`; 0 is a stretch that never ends.
+fn stretch_periods(rng: &mut Pcg32, stay_ln: f64) -> u64 {
+    if stay_ln == 0.0 {
+        return u64::MAX;
+    }
+    // Inverse CDF of the geometric distribution on {1, 2, ...} from a uniform in (0, 1].
+    let unit = (f64::from(rng.next_u32()) + 1.0) * ONE_OVER_2_32;
+    ((unit.ln() / stay_ln).floor() as u64).saturating_add(1)
+}
+
+/// The reset gate's pulses over one frame: stretches of sound pulses and runs of missed ones.
+#[derive(Clone)]
+struct Resets {
+    rng: Pcg32,
+    /// Logarithm of the probability that a stretch goes on past a period: sound, missed.
+    stay_ln: [f64; 2],
+    /// Whether the pulses of the current stretch are missed.
+    missed: bool,
+    /// Pixel periods left in the current stretch.
+    left: u64,
+}
+
+impl Resets {
+    /// Starts frame `index` with a run of missed pulses in progress if `missed`.
+    fn new(gate: &ResetGate, pixel_s: f64, missed: bool, index: u64) -> Self {
+        // A run starts with probability drop_hz * pixel_s in a period while none runs
+        // and ends with probability 1 / mean in each of its periods.
+        let start_p = (gate.drop_hz * pixel_s).min(1.0);
+        let mean_px = (gate.hold_s / pixel_s).max(1.0);
+        let stay_ln = [(-start_p).ln_1p(), (-1.0 / mean_px).ln_1p()];
+        let mut rng = Pcg32::new(gate.seed, index);
+        // Without drops the contact is sound: a run in progress ends at once.
+        let missed = missed && gate.drop_hz > 0.0;
+        // The stretch in progress goes on for a geometric number of periods from zero.
+        let left = stretch_periods(&mut rng, stay_ln[usize::from(missed)]) - 1;
+        Self {
+            rng,
+            stay_ln,
+            missed,
+            left,
+        }
+    }
+
+    /// Returns whether the reset pulse arrives in the next pixel period, and moves past it.
+    fn arrives(&mut self) -> bool {
+        if self.left == 0 {
+            self.turn();
+        }
+        self.left -= 1;
+        !self.missed
+    }
+
+    /// Moves past `periods` pixel periods at once, as [`arrives`](Self::arrives) that many times.
+    fn skip(&mut self, mut periods: u64) {
+        while periods > self.left {
+            periods -= self.left;
+            self.turn();
+        }
+        self.left -= periods;
+    }
+
+    /// Ends the current stretch and draws the length of the next.
+    fn turn(&mut self) {
+        self.missed = !self.missed;
+        self.left = stretch_periods(&mut self.rng, self.stay_ln[usize::from(self.missed)]);
+    }
+}
+
+/// The CCD's floating diffusion and its reset gate.
+#[derive(Clone)]
+struct Diffusion {
+    resets: Resets,
+    /// Fraction of the charge a reset pulse clears.
+    reset_frac: f64,
+    /// The output stage's swing in electrons.
+    swing_e: f64,
+    /// Charge on the diffusion in electrons.
+    charge_e: f64,
+}
+
+impl Diffusion {
+    fn new(params: &Params, gate: &ResetGate, state: &State, pixel_s: f64, index: u64) -> Self {
+        Self {
+            resets: Resets::new(gate, pixel_s, state.reset_missed, index),
+            reset_frac: gate.reset_frac,
+            swing_e: params.fd_swing_v / (params.conv_gain_uv_per_e * 1e-6),
+            charge_e: state.fd_charge_e,
+        }
+    }
+
+    /// Returns what the CDS reads of a packet of `packet_e` electrons, in electrons.
+    ///
+    /// Advances the diffusion and its reset gate by one pixel period.
+    fn read(&mut self, packet_e: f64) -> f64 {
+        if self.resets.arrives() {
+            self.charge_e -= self.reset_frac * self.charge_e;
+        }
+        let reset_e = self.charge_e.min(self.swing_e);
+        self.charge_e += packet_e;
+        self.charge_e.min(self.swing_e) - reset_e
+    }
+}
+
+/// The diffusion of the line replayed behind the CDS, for its late reset sample.
+struct Echo {
+    diffusion: Diffusion,
+    /// The next sample of the line to replay.
+    next: usize,
+    /// What the CDS read of the last replayed sample, in electrons.
+    read_e: f64,
+}
+
 /// The chip's supply: the rail's ratio to nominal, the lockout and the clamp's restart.
 struct Power {
     /// The camera's nominal rail in volts.
@@ -707,6 +966,10 @@ struct Front<'a> {
     power: Power,
     noise: ReadNoise,
     node_v: f64,
+    /// The floating diffusion, while `[bend.reset]` breaks its reset pulses.
+    diffusion: Option<Diffusion>,
+    /// The diffusion replayed for the late reset sample of the current line.
+    echo: Option<Echo>,
 }
 
 impl<'a> Front<'a> {
@@ -758,6 +1021,11 @@ impl<'a> Front<'a> {
             power: Power::new(params, state, rail.nominal_v(), pixel_s),
             noise: ReadNoise::new(params, pixel_s, index, state.flicker_v),
             node_v: state.node_v,
+            diffusion: params
+                .reset
+                .as_ref()
+                .map(|gate| Diffusion::new(params, gate, state, pixel_s, index)),
+            echo: None,
         }
     }
 
@@ -781,14 +1049,27 @@ impl<'a> Front<'a> {
     }
 
     /// Returns the CCD level the late reset sample sees at sub-step `sub` of `sample`, in volts.
-    fn lagged(&self, electrons: &[f32], sample: usize, sub: u32) -> f64 {
+    ///
+    /// With `[bend.reset]` the level is what the CDS read of the earlier sample, which
+    /// the line's replayed diffusion gives.
+    fn lagged(&mut self, electrons: &[f32], sample: usize, sub: u32) -> f64 {
         let oversample = f64::from(self.oversample);
         let at = (sample as f64 * oversample + f64::from(sub) + 0.5 - self.lag_sub) / oversample;
         if at < 0.0 {
-            0.0
-        } else {
-            f64::from(electrons[at as usize]) * self.volts_per_e
+            return 0.0;
         }
+        let at = at as usize;
+        let read_e = match self.echo.as_mut() {
+            Some(echo) => {
+                while echo.next <= at {
+                    echo.read_e = echo.diffusion.read(f64::from(electrons[echo.next]));
+                    echo.next += 1;
+                }
+                echo.read_e
+            }
+            None => f64::from(electrons[at]),
+        };
+        read_e * self.volts_per_e
     }
 
     /// Runs the stored samples of `line`, which starts `start_s` into the frame.
@@ -817,6 +1098,16 @@ impl<'a> Front<'a> {
         });
         let cds_mix = self.params.cds_mix;
         let plain = inject.is_none() && gain_mod.is_none() && cds_mix <= 0.0;
+        // The late reset sample replays the line's diffusion from where it starts.
+        self.echo = self
+            .diffusion
+            .as_ref()
+            .filter(|_| cds_mix > 0.0)
+            .map(|diffusion| Echo {
+                diffusion: diffusion.clone(),
+                next: 0,
+                read_e: 0.0,
+            });
         // On a steady rail the pedestal and the reference factor hold for the line.
         let steady = self.power.steady(supply);
         let (pedestal_v, reference) = steady.map_or((0.0, 0.0), |ratio| {
@@ -825,7 +1116,11 @@ impl<'a> Front<'a> {
         let slope_v = (supply[1] - supply[0]) / self.line_px;
         let mut last_v = self.power.last_v;
         for (sample, (volts, &charge)) in volts.iter_mut().zip(electrons).enumerate() {
-            let level = f64::from(charge) * self.volts_per_e + self.noise.sample();
+            let packet_e = match self.diffusion.as_mut() {
+                Some(diffusion) => diffusion.read(f64::from(charge)),
+                None => f64::from(charge),
+            };
+            let level = packet_e * self.volts_per_e + self.noise.sample();
             if plain {
                 self.settle_pixel(level * self.gain);
             } else {
@@ -873,13 +1168,72 @@ impl<'a> Front<'a> {
         let limit = self.slew_v_per_s * duration_s;
         self.node_v += (next - self.node_v).clamp(-limit, limit);
     }
+
+    /// Moves the reset gate past `periods` pixel periods of blanking, which bring no packets.
+    fn skip_resets(&mut self, periods: u64) {
+        if let Some(diffusion) = self.diffusion.as_mut() {
+            diffusion.resets.skip(periods);
+        }
+    }
+}
+
+/// Returns the vertical blanking of a frame in seconds: from the last line's blanking to VD.
+fn vblank_s(params: &Params, layout: &Layout) -> f64 {
+    let line_s = layout.line_period_s();
+    let frame_lines = layout.rows() + layout.vblank_lines();
+    // VD ends the frame on the processor's clock. The timing generator's own frame of
+    // `frame_lines` lines ends before it when the generator runs fast and after it when
+    // slow; the vertical blanking stretches or shrinks by the difference, which is
+    // exactly zero on one clock.
+    (f64::from(layout.vblank_lines()) * line_s
+        + (params.frame_period_s - f64::from(frame_lines) * line_s))
+        .max(0.0)
+}
+
+/// Returns the vertical blanking of a frame in whole pixel periods.
+fn vblank_periods(params: &Params, layout: &Layout) -> u64 {
+    (vblank_s(params, layout) / layout.pixel_period_s()).round() as u64
+}
+
+/// Returns the runs of missed reset pulses that frame `index` draws from `state`, for tests.
+///
+/// Each run is a range of pixel periods counted from the frame's first sample,
+/// blanking included: period `p` lies in line `p / (line_len + hblank_px)`, at stored
+/// sample `p % (line_len + hblank_px)` if that is below `line_len` and in the line's
+/// blanking otherwise, and periods from `rows * (line_len + hblank_px)` on lie in the
+/// vertical blanking. A run in progress at the frame's start begins at 0; one in
+/// progress at VD ends at the frame's period count. Empty without a [`ResetGate`].
+#[cfg(feature = "test-util")]
+#[must_use]
+pub fn missed_runs(params: &Params, state: &State, layout: &Layout, index: u64) -> Vec<Range<u64>> {
+    let Some(gate) = params.reset.as_ref() else {
+        return Vec::new();
+    };
+    let line_px = u64::from(layout.line_len() + layout.hblank_px());
+    let periods = u64::from(layout.rows()) * line_px + vblank_periods(params, layout);
+    let mut resets = Resets::new(gate, layout.pixel_period_s(), state.reset_missed, index);
+    let mut runs = Vec::new();
+    let mut start = None;
+    for period in 0..periods {
+        match (resets.arrives(), start) {
+            (false, None) => start = Some(period),
+            (true, Some(first)) => {
+                runs.push(first..period);
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    runs.extend(start.map(|first| first..periods));
+    runs
 }
 
 /// Converts the charge stream to volts at the ADC input for frame `index`.
 ///
 /// Runs the analog chain described in the [module documentation](self) over every
 /// stored sample and every blanking interval of the frame, and leaves the analog
-/// state ready for the next frame.
+/// state ready for the next frame. With a [`ResetGate`] each sample first passes the
+/// floating diffusion of the module documentation's "Reset gate".
 ///
 /// `rail` is the supply rail of every readout line from
 /// [`power::track`](crate::power::track), which sets the reference and the pedestal,
@@ -915,6 +1269,7 @@ pub fn process(
     let line_s = layout.line_period_s();
     let hblank_s = f64::from(layout.hblank_px()) * layout.pixel_period_s();
     let line_len = layout.line_len() as usize;
+    let hblank_px = u64::from(layout.hblank_px());
     let lines = out
         .volts
         .chunks_exact_mut(line_len)
@@ -925,19 +1280,14 @@ pub fn process(
         let line_supply = supply[line as usize];
         front.line(line, start_s, electrons, volts, line_supply);
         front.blank(hblank_s, start_s + line_s, line + 1, line_supply[1]);
+        front.skip_resets(hblank_px);
     }
     let frame_lines = layout.rows() + layout.vblank_lines();
-    // VD ends the frame on the processor's clock. The timing generator's own frame of
-    // `frame_lines` lines ends before it when the generator runs fast and after it when
-    // slow; the vertical blanking stretches or shrinks by the difference, which is
-    // exactly zero on one clock.
     let frame_s = params.frame_period_s;
-    let vblank_s = (f64::from(layout.vblank_lines()) * line_s
-        + (frame_s - f64::from(frame_lines) * line_s))
-        .max(0.0);
     // The rail is not tracked through vertical blanking; it is taken where the last line left it.
     let end_v = supply.last().map_or(rail.nominal_v(), |line| line[1]);
-    front.blank(vblank_s, frame_s, frame_lines, end_v);
+    front.blank(vblank_s(params, layout), frame_s, frame_lines, end_v);
+    front.skip_resets(vblank_periods(params, layout));
     if let Some((osc, _, start)) = front.inject {
         state.inject = osc.phase(start, frame_s, frame_lines);
     }
@@ -950,5 +1300,13 @@ pub fn process(
     state.last_v = front.power.last_v;
     state.locked = front.power.locked;
     state.restart_v = front.power.restart_v;
+    if let Some(diffusion) = &front.diffusion {
+        state.fd_charge_e = diffusion.charge_e;
+        state.reset_missed = diffusion.resets.missed;
+    } else {
+        // A sound reset gate leaves the frame's last packet on the diffusion.
+        state.fd_charge_e = stream.samples().last().map_or(0.0, |&e| f64::from(e));
+        state.reset_missed = false;
+    }
     out.index = index;
 }

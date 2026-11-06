@@ -235,6 +235,7 @@ impl Camera {
         positive("afe.slew_v_per_us", afe.slew_v_per_us)?;
         non_negative("afe.noise_1f_corner_hz", afe.noise_1f_corner_hz)?;
         at_least("afe.oversample", afe.oversample, 1)?;
+        positive("afe.fd_swing_v", afe.fd_swing_v)?;
 
         let adc = &self.adc;
         within(

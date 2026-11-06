@@ -44,6 +44,8 @@
 //! [[bend.memory.faults]]
 //! pin = 3                     # SDRAM address pin a3
 //! kind = "high"               # or "low", "bridge" (with `with = <pin>`)
+//! [bend.reset]
+//! drop_hz = 2000.0            # missed reset-gate pulses per second of readout
 //! ```
 //!
 //! The structs hold the file's values as written; each stage resolves the sections it
@@ -54,6 +56,7 @@ mod memory;
 pub(crate) mod model;
 mod optics;
 mod rail;
+mod reset;
 mod sensor_bend;
 
 use std::fmt::{self, Display, Formatter};
@@ -72,6 +75,8 @@ pub use memory::{AddressFault, FaultKind, MemoryBend};
 pub use optics::OpticsBend;
 #[doc(inline)]
 pub use rail::RailBend;
+#[doc(inline)]
+pub use reset::ResetBend;
 #[doc(inline)]
 pub use sensor_bend::SensorBend;
 
@@ -273,6 +278,9 @@ pub struct Bend {
     /// Faulted address pins on the frame-buffer SDRAM, `[bend.memory]`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub memory: Option<MemoryBend>,
+    /// Missed and weak pulses on the CCD's reset gate, `[bend.reset]`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub reset: Option<ResetBend>,
 }
 
 /// The `[bend.bus]` section: the DIP-switch, capacitor and gate circuit on the data bus.
