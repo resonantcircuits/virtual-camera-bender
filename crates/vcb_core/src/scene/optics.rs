@@ -4,8 +4,6 @@
 //! The model and its formulas are documented in the [`scene`](super) module header.
 
 use std::f64::consts::PI;
-use std::fmt::{self, Debug, Formatter};
-use std::sync::{Mutex, PoisonError};
 
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::slice::ParallelSliceMut;
@@ -51,7 +49,6 @@ pub struct Optics {
     foliage_nir: f32,
     nir_scale: f32,
     nir_response: [f32; 3],
-    scratch: Scratch,
 }
 
 impl Optics {
@@ -65,7 +62,6 @@ impl Optics {
             foliage_nir: bend.foliage_nir as f32,
             nir_scale: bend.nir_scale as f32,
             nir_response: camera.sensor.nir_response.map(|k| k as f32),
-            scratch: Scratch::default(),
         })
     }
 
@@ -128,30 +124,12 @@ impl Optics {
         (uncovered > 0.0).then(|| self.nir_response.map(|k| k * uncovered))
     }
 
-    /// Computes the defocused NIR image of `scene`, then calls `add` with both.
+    /// Writes the defocused NIR image of `scene` into `nir`.
     ///
-    /// `scene` is linear sRGB before the lens and `vignette` the falloff applied to
-    /// it; the image lives in the working planes, allocated on the first frame.
-    pub(super) fn with_defocused_nir(
-        &self,
-        scene: &mut Scene,
-        vignette: &Vignette,
-        add: impl FnOnce(&mut Scene, &Plane<f32>),
-    ) {
-        let mut scratch = self
-            .scratch
-            .0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let Planes { planes, kernel } = &mut *scratch;
-        self.defocused_nir(scene, vignette, planes, kernel);
-        add(scene, &planes[0]);
-    }
-
-    /// Writes the defocused NIR image of the linear sRGB `scene` into `nir`.
-    ///
-    /// `nir` and `tmp` are fitted to the scene; `kernel` holds the defocus kernel.
-    fn defocused_nir(
+    /// `scene` is linear sRGB before the lens and `vignette` the falloff applied to it.
+    /// `nir` and `tmp`, the working planes of [`State`](super::State), are fitted to
+    /// the scene on the first frame; `kernel` receives the defocus kernel.
+    pub(super) fn defocused_nir(
         &self,
         scene: &Scene,
         vignette: &Vignette,
@@ -200,50 +178,6 @@ fn greenness(r: f32, g: f32, b: f32) -> f32 {
     }
     let t = ((g - r.max(LEAF_BLUE_WEIGHT * b)) / (g * LEAF_EXCESS)).clamp(0.0, 1.0);
     t * t * 2.0f32.mul_add(-t, 3.0)
-}
-
-/// The working planes of the NIR image and the defocus kernel.
-#[derive(Debug)]
-struct Planes {
-    /// The estimate, then the defocused image; and the horizontal blur in between.
-    planes: [Plane<f32>; 2],
-    kernel: Vec<f32>,
-}
-
-/// Working buffers of the NIR image, allocated on the first frame and reused.
-///
-/// They carry nothing from one frame to the next, so a clone starts empty and any two
-/// compare equal. The lock lets [`prepare`](super::prepare) take the parameters by
-/// shared reference.
-struct Scratch(Mutex<Planes>);
-
-impl Default for Scratch {
-    fn default() -> Self {
-        Self(Mutex::new(Planes {
-            planes: [Plane::new(0, 0), Plane::new(0, 0)],
-            kernel: Vec::new(),
-        }))
-    }
-}
-
-impl Clone for Scratch {
-    /// Returns empty buffers: the working planes hold no parameter.
-    fn clone(&self) -> Self {
-        Self::default()
-    }
-}
-
-impl PartialEq for Scratch {
-    /// Returns true: the working planes hold no parameter.
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-impl Debug for Scratch {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str("Scratch")
-    }
 }
 
 /// Reallocates `plane` if it is not `width` by `height`.

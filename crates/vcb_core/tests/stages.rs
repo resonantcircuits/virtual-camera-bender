@@ -266,7 +266,12 @@ fn downscaling_averages_the_light_over_each_photosite() {
     let camera = camera();
     let params = scene_params(&camera, 16, 12);
     let mut out = Scene::new(16, 12);
-    scene::prepare(&params, &checker(64, 48), &mut out);
+    scene::prepare(
+        &params,
+        &mut scene::State::default(),
+        &checker(64, 48),
+        &mut out,
+    );
     let green = out.plane(Channel::Green).data();
     assert!(green.iter().all(|&v| (v - 0.5).abs() < 1e-5));
 }
@@ -281,7 +286,7 @@ fn grey_reaches_the_sensor_divided_by_the_white_balance_gains() {
             plane.fill(0.3);
         }
         let mut out = Scene::new(16, 12);
-        scene::prepare(&params, &input, &mut out);
+        scene::prepare(&params, &mut scene::State::default(), &input, &mut out);
         for (channel, gain) in Channel::ALL.into_iter().zip(params.wb_gains) {
             let expected = 0.3 / gain;
             assert!(
@@ -302,7 +307,7 @@ fn out_of_gamut_colours_collect_no_negative_charge() {
     let mut red = Scene::new(8, 6);
     red.plane_mut(Channel::Red).fill(1.0);
     let mut out = Scene::new(8, 6);
-    scene::prepare(&params, &red, &mut out);
+    scene::prepare(&params, &mut scene::State::default(), &red, &mut out);
     for plane in out.planes() {
         assert!(plane.data().iter().all(|&v| v >= 0.0));
     }
@@ -322,7 +327,7 @@ fn portrait_scenes_turn_clockwise_onto_the_sensor() {
         plane.set(0, 0, 1.0);
     }
     let mut out = Scene::new(t.sensor_width, t.sensor_height);
-    scene::prepare(&params, &input, &mut out);
+    scene::prepare(&params, &mut scene::State::default(), &input, &mut out);
     let green = out.plane(Channel::Green);
     assert_eq!((green.width(), green.height()), (6, 4));
     assert!(

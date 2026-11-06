@@ -245,13 +245,14 @@ fn the_photosites_collect_the_nir_through_their_dyes_on_top_of_the_visible() {
     let mut clean = Scene::new(WIDTH, HEIGHT);
     scene::prepare(
         &scene_params(&camera, &preset, WIDTH, HEIGHT),
+        &mut scene::State::default(),
         &input,
         &mut clean,
     );
     let params = scene_params(&camera, &with_optics(preset, pulled(1.0)), WIDTH, HEIGHT);
     let nir = params.optics.as_ref().unwrap().nir(linear(GREY));
     let mut bent = Scene::new(WIDTH, HEIGHT);
-    scene::prepare(&params, &input, &mut bent);
+    scene::prepare(&params, &mut scene::State::default(), &input, &mut bent);
     for (channel, response) in Channel::ALL.into_iter().zip(camera.sensor.nir_response) {
         let expected = response as f32 * nir;
         for (with, without) in bent
@@ -423,7 +424,12 @@ fn the_defocus_spreads_a_point_of_nir_as_a_gaussian() {
     }
     let prepare = |camera: &Camera, preset: &Preset| {
         let mut out = Scene::new(WIDTH, HEIGHT);
-        scene::prepare(&scene_params(camera, preset, WIDTH, HEIGHT), &dot, &mut out);
+        scene::prepare(
+            &scene_params(camera, preset, WIDTH, HEIGHT),
+            &mut scene::State::default(),
+            &dot,
+            &mut out,
+        );
         out
     };
     let clean = prepare(&camera, &preset);
@@ -497,10 +503,20 @@ fn the_nir_image_keeps_its_size_relative_to_the_frame() {
     // The red charge the NIR adds, at a sensor of `w` by `h`.
     let nir = |w: u32, h: u32| {
         let mut clean = Scene::new(w, h);
-        scene::prepare(&scene_params(&camera, &preset, w, h), &input, &mut clean);
+        scene::prepare(
+            &scene_params(&camera, &preset, w, h),
+            &mut scene::State::default(),
+            &input,
+            &mut clean,
+        );
         let mut bent = Scene::new(w, h);
         let half = with_optics(preset.clone(), pulled(0.5));
-        scene::prepare(&scene_params(&camera, &half, w, h), &input, &mut bent);
+        scene::prepare(
+            &scene_params(&camera, &half, w, h),
+            &mut scene::State::default(),
+            &input,
+            &mut bent,
+        );
         let (with, without) = (bent.plane(Channel::Red), clean.plane(Channel::Red));
         let added: Vec<f64> = with
             .data()
@@ -529,6 +545,33 @@ fn the_nir_image_keeps_its_size_relative_to_the_frame() {
         worst < 0.02 * peak,
         "the half-size NIR image departs by {worst} from the full one averaged (peak {peak})"
     );
+}
+
+#[test]
+fn the_working_planes_carry_nothing_from_frame_to_frame() {
+    let camera = camera();
+    let input = landscape(WIDTH, HEIGHT);
+    let removed = with_optics(still(), pulled(1.0));
+    let mut defocus = camera.clone();
+    defocus.lens.nir_defocus_frac *= 3.0;
+    // Each frame: the camera, the preset and the sensor size.
+    let frames = [
+        (&camera, &removed, 2 * WIDTH, 2 * HEIGHT),
+        (&camera, &removed, WIDTH, HEIGHT),
+        (&camera, &still(), WIDTH, HEIGHT),
+        (&defocus, &with_optics(still(), pulled(0.5)), WIDTH, HEIGHT),
+        (&camera, &removed, WIDTH / 2, HEIGHT / 2),
+        (&camera, &removed, WIDTH, HEIGHT),
+    ];
+    let mut kept = scene::State::default();
+    for (i, &(camera, preset, width, height)) in frames.iter().enumerate() {
+        let params = scene_params(camera, preset, width, height);
+        let mut reused = Scene::new(width, height);
+        scene::prepare(&params, &mut kept, &input, &mut reused);
+        let mut fresh = Scene::new(width, height);
+        scene::prepare(&params, &mut scene::State::default(), &input, &mut fresh);
+        assert_eq!(reused, fresh, "frame {i} at {width} x {height}");
+    }
 }
 
 #[test]

@@ -108,6 +108,7 @@ struct Chain {
     bus: Option<bus::Params>,
     isp: isp::Params,
     codec: codec::Params,
+    scene_state: scene::State,
     sensor_state: sensor::State,
     readout_state: readout::State,
     afe_state: afe::State,
@@ -158,6 +159,7 @@ impl Chain {
             bus: bus::Params::resolve(c, p, t).unwrap_or_else(|e| unresolved("bus", &e)),
             isp,
             codec: codec::Params::resolve(c, p, t).unwrap_or_else(|e| unresolved("codec", &e)),
+            scene_state: scene::State::default(),
             sensor_state: sensor::State::default(),
             readout_state: readout::State::default(),
             afe_state: afe::State::default(),
@@ -180,7 +182,12 @@ impl Chain {
 
     /// Runs every stage once, in the simulator's order.
     fn run(&mut self) {
-        scene::prepare(&self.scene, &self.input, &mut self.prepared);
+        scene::prepare(
+            &self.scene,
+            &mut self.scene_state,
+            &self.input,
+            &mut self.prepared,
+        );
         let charge = &mut self.charge;
         sensor::expose(
             &self.sensor,
@@ -227,7 +234,14 @@ impl Chain {
 #[divan::bench(args = PRESETS, sample_count = 20)]
 fn scene_prepare(bencher: Bencher, preset: &str) {
     let mut chain = Chain::new(preset);
-    bencher.bench_local(|| scene::prepare(&chain.scene, &chain.input, &mut chain.prepared));
+    bencher.bench_local(|| {
+        scene::prepare(
+            &chain.scene,
+            &mut chain.scene_state,
+            &chain.input,
+            &mut chain.prepared,
+        );
+    });
 }
 
 #[divan::bench(args = PRESETS, sample_count = 20)]

@@ -118,7 +118,7 @@
 //! shift within the visible; any wavelength dependence of the vignetting; the
 //! aperture's effect on the width of the filter's shadow. The bend has neither memory
 //! nor randomness: the filter's position is a knob, and the NIR image is rebuilt every
-//! frame in working planes kept with the parameters, allocated on the first frame.
+//! frame in the working planes of [`State`], allocated on the first frame.
 //!
 //! The output is a [`Scene`] at sensor resolution in linear light, reference white at
 //! 1.0 in the brightest channel; [`sensor::expose`](crate::sensor::expose) consumes it.
@@ -219,14 +219,37 @@ impl Params {
     }
 }
 
+/// Working memory of scene preparation, reused across frames.
+///
+/// Holds the planes of the near-infrared image and its defocus kernel, used only with
+/// [`Params::optics`]. They carry nothing from one frame to the next, so the stage
+/// has no memory: the default, the state after a reset, allocates nothing, and the
+/// planes are sized on the first frame with the filter pulled.
+#[derive(Debug, Clone)]
+pub struct State {
+    /// The NIR estimate, then the defocused image; and the horizontal blur in between.
+    nir: [Plane<f32>; 2],
+    kernel: Vec<f32>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            nir: [Plane::new(0, 0), Plane::new(0, 0)],
+            kernel: Vec::new(),
+        }
+    }
+}
+
 /// Maps `input` onto the sensor-sized scene `out`, in the sensor's colour primaries.
 ///
-/// The output size is the size of `out`; `input` may have any non-zero size.
+/// The output size is the size of `out`; `input` may have any non-zero size. `state`
+/// holds the working planes of the near-infrared image.
 ///
 /// # Panics
 ///
 /// Panics if `input` is empty.
-pub fn prepare(params: &Params, input: &Scene, out: &mut Scene) {
+pub fn prepare(params: &Params, state: &mut State, input: &Scene, out: &mut Scene) {
     assert!(
         input.width() > 0 && input.height() > 0,
         "cannot prepare an empty {} x {} scene",
@@ -249,9 +272,11 @@ pub fn prepare(params: &Params, input: &Scene, out: &mut Scene) {
     let vignette = Vignette::new(params.vignette_stops, out.width(), out.height());
     match &params.optics {
         None => to_sensor(params, &vignette, out, None),
-        Some(optics) => optics.with_defocused_nir(out, &vignette, |scene, nir| {
-            to_sensor(params, &vignette, scene, Some((optics, nir)));
-        }),
+        Some(optics) => {
+            let State { nir, kernel } = state;
+            optics.defocused_nir(out, &vignette, nir, kernel);
+            to_sensor(params, &vignette, out, Some((optics, &nir[0])));
+        }
     }
 }
 

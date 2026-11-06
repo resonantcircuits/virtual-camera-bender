@@ -717,7 +717,7 @@ fn highlight_reconstruction_expands_only_above_the_shoulder() {
         .collect();
     let input = Scene::from_srgb8(256, 2, &codes);
     let mut out = Scene::new(256, 2);
-    scene::prepare(&params, &input, &mut out);
+    scene::prepare(&params, &mut scene::State::default(), &input, &mut out);
     // Grey stays grey in the sensor's primaries up to the white-balance gain of green, 1.
     let before = input.plane(Channel::Green).row(0);
     let after = out.plane(Channel::Green).row(0);
@@ -764,7 +764,7 @@ fn a_partly_clipped_sky_keeps_the_colour_of_the_sky_beside_it() {
         .collect();
     let input = Scene::from_srgb8(width, height, &codes);
     let mut out = Scene::new(width, height);
-    scene::prepare(&params, &input, &mut out);
+    scene::prepare(&params, &mut scene::State::default(), &input, &mut out);
     let colour = |scene: &Scene, x: u32| {
         let rgb = Channel::ALL.map(|c| f64::from(scene.plane(c).get(x, height / 2)));
         let sum: f64 = rgb.iter().sum();
@@ -808,7 +808,12 @@ fn the_lens_darkens_the_corners_by_its_falloff_in_stops() {
     let t = timing(&camera, &preset, width, height);
     let params = scene::Params::resolve(&camera, &preset, &t).unwrap();
     let mut out = Scene::new(width, height);
-    scene::prepare(&params, &uniform(width, height, [118, 118, 118]), &mut out);
+    scene::prepare(
+        &params,
+        &mut scene::State::default(),
+        &uniform(width, height, [118, 118, 118]),
+        &mut out,
+    );
     let green = out.plane(Channel::Green);
     let centre = green.get(width / 2, height / 2);
     let corner = green.get(0, 0);
@@ -1010,7 +1015,12 @@ fn scene_metering_exposes_the_mean_luminance_at_the_target() {
             plane.fill(level);
         }
         let mut prepared = Scene::new(width, height);
-        scene::prepare(&scene_params, &input, &mut prepared);
+        scene::prepare(
+            &scene_params,
+            &mut scene::State::default(),
+            &input,
+            &mut prepared,
+        );
         let mut state = sensor::State::default();
         let mut charge = Charge::new(width, height);
         sensor::expose(&params, &mut state, &prepared, 0, &mut charge);
@@ -1036,7 +1046,12 @@ fn scene_metering_exposes_the_mean_luminance_at_the_target() {
         plane.fill(0.3);
     }
     let mut prepared = Scene::new(width, height);
-    scene::prepare(&scene_params, &input, &mut prepared);
+    scene::prepare(
+        &scene_params,
+        &mut scene::State::default(),
+        &input,
+        &mut prepared,
+    );
     let mut charge = Charge::new(width, height);
     let mut state = sensor::State::default();
     sensor::expose(&doubled, &mut state, &prepared, 0, &mut charge);
