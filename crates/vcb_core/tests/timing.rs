@@ -193,7 +193,7 @@ fn movie_mode_reads_one_row_pair_in_every_line_skip_pairs() {
     let layout = Layout::from_timing(&t, Direction::TopDown);
     let map = layout.row_map();
     assert_eq!(map.len(), t.rows_read as usize);
-    for pair in map.chunks_exact(2) {
+    for pair in map.as_chunks::<2>().0 {
         assert_eq!(pair[0] % 2, 0, "pairs start on a red/green row");
         assert_eq!(pair[1], pair[0] + 1, "pairs are adjacent rows");
     }

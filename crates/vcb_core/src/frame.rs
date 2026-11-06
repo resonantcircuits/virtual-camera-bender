@@ -102,7 +102,7 @@ pub(crate) fn rotate_ccw(src: &Frame, dst: &mut Frame) {
     let dst_w = dst.width as usize;
     for (y, row) in dst.rgb.chunks_exact_mut(dst_w * 3).enumerate() {
         let sx = src_w - 1 - y;
-        for (x, pixel) in row.chunks_exact_mut(3).enumerate() {
+        for (x, pixel) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let i = (x * src_w + sx) * 3;
             pixel.copy_from_slice(&src.rgb[i..i + 3]);
         }

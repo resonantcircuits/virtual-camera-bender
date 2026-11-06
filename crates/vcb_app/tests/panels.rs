@@ -12,7 +12,9 @@ use vcb_app::panels::{PanelId, Panels, Scale, sensor};
 use vcb_app::presets;
 use vcb_core::afe::{GainMod, Inject, Wave};
 use vcb_core::isp::{AeMode, WbMode};
-use vcb_core::preset::{ClockBend, IspOverride, Mode, Resolution};
+use vcb_core::preset::{
+    ClockBend, IspOverride, MemoryBend, Mode, RailBend, ReclockBend, Resolution,
+};
 use vcb_core::{Camera, Preset, Timing};
 
 fn root() -> &'static Path {
@@ -413,7 +415,9 @@ fn the_strip_follows_the_signal_and_marks_the_bends() {
             "AFE",
             "ADC",
             "Bus",
+            "Clock",
             "Processor",
+            "Memory",
             "JPEG"
         ]
     );
@@ -422,6 +426,8 @@ fn the_strip_follows_the_signal_and_marks_the_bends() {
         PanelId::Bus,
         "the ADC leads to the bus on its lines"
     );
+    assert_eq!(Stage::Clock.panel(), PanelId::Clock);
+    assert_eq!(Stage::Memory.panel(), PanelId::Memory);
     assert_eq!(Stage::Jpeg.panel(), PanelId::Jpeg);
 
     let clean = Preset::new("a520");
@@ -434,6 +440,28 @@ fn the_strip_follows_the_signal_and_marks_the_bends() {
     assert_eq!(
         marked,
         [Stage::Readout, Stage::Afe, Stage::Bus, Stage::Processor]
+    );
+
+    let bent_by = |bend: fn(&mut Preset)| {
+        let mut preset = Preset::new("a520");
+        bend(&mut preset);
+        Stage::ALL
+            .into_iter()
+            .filter(|stage| stage.is_bent(&preset))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        bent_by(|p| p.bend.clock = Some(ReclockBend::new(26.4))),
+        [Stage::Clock]
+    );
+    assert_eq!(
+        bent_by(|p| p.bend.memory = Some(MemoryBend::default())),
+        [Stage::Memory]
+    );
+    assert_eq!(
+        bent_by(|p| p.bend.rail = Some(RailBend::default())),
+        [Stage::Afe, Stage::Bus, Stage::Processor],
+        "the rail lights the stages it feeds"
     );
 }
 

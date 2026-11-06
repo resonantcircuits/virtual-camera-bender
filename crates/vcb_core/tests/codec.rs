@@ -257,7 +257,12 @@ fn flat_frames_of_any_size_stay_flat_at_normal_quality() {
         let output = encode(&p, &input);
         let first = output.pixel(0, 0);
         assert!(
-            output.rgb().chunks_exact(3).all(|pixel| pixel == first),
+            output
+                .rgb()
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .all(|&pixel| pixel == first),
             "{width}x{height}"
         );
         assert!(

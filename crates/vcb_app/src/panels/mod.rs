@@ -1,10 +1,12 @@
 //! The inspector's panels, one per stage of the signal chain, and their shared widgets.
 //!
-//! The panels follow the signal: [`scene`], [`sensor`], [`readout`], [`clocks`],
-//! [`afe`], [`bus`] and [`isp`] (the processor and its JPEG encoder), with the
-//! [`strip`] above them as a map. Each panel edits the preset and reports an
-//! [`Edit`]: whether a value changed, whether a control is being dragged, and whether
-//! a drag just ended. The app turns those into preview and full renders.
+//! The panels follow the signal: [`scene`], optics, [`sensor`], [`readout`],
+//! [`clocks`], [`afe`], [`bus`], the master clock, [`isp`] (the processor and its JPEG
+//! encoder), the frame memory, and the power rail last, with the [`strip`] above them
+//! as a map. Each panel edits the preset and reports an [`Edit`]: whether a value
+//! changed, whether a control is being dragged, and whether a drag just ended. The
+//! app turns those into preview and full renders. The optics, master clock, memory
+//! and power panels are [`placeholder`]s that show only their title.
 //!
 //! Panels of bends ([`clocks`], [`afe`], [`bus`]) hold their switch positions and
 //! values even while the bend is switched off, which the preset cannot store, and
@@ -86,20 +88,28 @@ impl BitOrAssign for Edit {
 pub enum PanelId {
     /// Scene input.
     Scene,
+    /// The IR-cut filter bend, `[bend.optics]`.
+    Optics,
     /// Sensor.
     Sensor,
     /// Readout mode and resolution.
     Readout,
-    /// The clock bend.
+    /// The CCD transfer clock bend, `[bend.clocks]`.
     Clocks,
     /// The analog front end bend.
     Afe,
     /// The bus bend.
     Bus,
+    /// The master-clock reclock bend, `[bend.clock]`.
+    Clock,
     /// The processor overrides.
     Processor,
     /// The JPEG encoder, at the end of the processor panel.
     Jpeg,
+    /// The frame-buffer SDRAM bend, `[bend.memory]`.
+    Memory,
+    /// The supply-rail bend, `[bend.rail]`, at the end of the inspector.
+    Power,
 }
 
 /// The panels that hold state the preset cannot: the three bends.
@@ -387,6 +397,16 @@ pub fn hint_row(ui: &mut Ui, text: &str) {
     hint(ui, text);
     ui.label("");
     ui.end_row();
+}
+
+/// The hint of a panel whose controls are not built yet.
+pub const PLACEHOLDER_HINT: &str = "Controls arrive with stage 13";
+
+/// A panel that shows only its title and [`PLACEHOLDER_HINT`]; it never edits.
+pub fn placeholder(ui: &mut Ui, text: &str) -> Edit {
+    header(ui, text, None);
+    hint(ui, PLACEHOLDER_HINT);
+    Edit::default()
 }
 
 /// A panel title with an optional power switch on the right; returns the switch's response.

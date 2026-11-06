@@ -6,6 +6,7 @@ use vcb_core::adc::{self, Codes};
 use vcb_core::afe::{self, Analog};
 use vcb_core::bus::{self, Function, PotNode, Target};
 use vcb_core::noise;
+use vcb_core::power::Rail;
 use vcb_core::preset::{BusBend, Resolution};
 use vcb_core::readout::{self, Direction, Layout, Stream};
 use vcb_core::sensor::{self, Charge};
@@ -38,6 +39,11 @@ fn preset(sources: &[u8], target: Target, function: Function) -> Preset {
         common_bus: false,
     });
     preset
+}
+
+/// The camera's nominal supply rail on every line of `codes`.
+fn nominal(codes: &Codes) -> Rail {
+    Rail::new(codes.layout(), camera().power.rail_v)
 }
 
 fn bus_of(preset: &mut Preset) -> &mut BusBend {
@@ -143,7 +149,13 @@ fn a_grounded_common_bus_reads_zero_whatever_the_adc_says() {
     let params = params(&camera, &preset, &t);
     let before = random_codes(&t, "grounded");
     let mut after = before.clone();
-    bus::bend(Some(&params), &mut bus::State::default(), 0, &mut after);
+    bus::bend(
+        Some(&params),
+        &mut bus::State::default(),
+        &nominal(&after),
+        0,
+        &mut after,
+    );
     let sources = word(&[11, 9, 7, 5, 3]);
     for (&b, &a) in before.words().iter().zip(after.words()) {
         assert_eq!(a & sources, 0, "{b:#06x} latched as {a:#06x}");
@@ -354,7 +366,13 @@ fn without_a_bend_the_codes_pass_unchanged() {
     );
     let before = random_codes(&t, "none");
     let mut after = before.clone();
-    bus::bend(None, &mut bus::State::default(), 0, &mut after);
+    bus::bend(
+        None,
+        &mut bus::State::default(),
+        &nominal(&after),
+        0,
+        &mut after,
+    );
     assert_eq!(after, before);
 }
 
@@ -369,7 +387,13 @@ fn a_bend_changes_only_the_lines_it_touches() {
             let params = params(&camera, &preset, &t);
             let before = random_codes(&t, "touch");
             let mut after = before.clone();
-            bus::bend(Some(&params), &mut bus::State::default(), 0, &mut after);
+            bus::bend(
+                Some(&params),
+                &mut bus::State::default(),
+                &nominal(&after),
+                0,
+                &mut after,
+            );
             let touched = mask(&preset);
             let mut changed = 0u16;
             for (&b, &a) in before.words().iter().zip(after.words()) {
@@ -413,12 +437,18 @@ fn identical_codes_and_state_give_identical_words() {
         let params = params(&camera, &preset, &t);
         let codes = random_codes(&t, "determinism");
         let mut state = bus::State::default();
-        bus::bend(Some(&params), &mut state, 0, &mut codes.clone());
+        bus::bend(
+            Some(&params),
+            &mut state,
+            &nominal(&codes),
+            0,
+            &mut codes.clone(),
+        );
 
         let (mut first, mut second) = (codes.clone(), codes.clone());
         let (mut a, mut b) = (state.clone(), state.clone());
-        bus::bend(Some(&params), &mut a, 1, &mut first);
-        bus::bend(Some(&params), &mut b, 1, &mut second);
+        bus::bend(Some(&params), &mut a, &nominal(&first), 1, &mut first);
+        bus::bend(Some(&params), &mut b, &nominal(&second), 1, &mut second);
         assert_eq!(first, second, "{function:?}");
         assert_eq!(a, b, "{function:?}");
     }
@@ -433,7 +463,7 @@ fn a_frame_rendered_twice_from_reset_is_identical() {
     let codes = random_codes(&t, "reset");
     let render = |state: &mut bus::State, index| {
         let mut out = codes.clone();
-        bus::bend(Some(&params), state, index, &mut out);
+        bus::bend(Some(&params), state, &nominal(&out), index, &mut out);
         out
     };
     let mut state = bus::State::default();
@@ -457,7 +487,13 @@ fn the_driver_spread_belongs_to_the_camera_unit_not_the_preset_seed() {
         let t = timing(camera, &preset, 64, 48);
         let params = params(camera, &preset, &t);
         let mut codes = random_codes(&t, "unit");
-        bus::bend(Some(&params), &mut bus::State::default(), 0, &mut codes);
+        bus::bend(
+            Some(&params),
+            &mut bus::State::default(),
+            &nominal(&codes),
+            0,
+            &mut codes,
+        );
         let mut probes = Vec::new();
         let contest = [word(&[9]), word(&[8]), word(&[7])];
         bus::trace(&params, &mut bus::State::default(), &contest, &mut probes);
@@ -499,14 +535,27 @@ fn a_frame_differs_after_its_predecessor_only_through_the_capacitor() {
         let codes = random_codes(&t, "memory");
 
         let mut state = bus::State::default();
-        bus::bend(Some(&params), &mut state, 0, &mut codes.clone());
+        bus::bend(
+            Some(&params),
+            &mut state,
+            &nominal(&codes),
+            0,
+            &mut codes.clone(),
+        );
         let carried = state.cap_v() - bus::State::default().cap_v();
         let mut after_first = codes.clone();
-        bus::bend(Some(&params), &mut state, 1, &mut after_first);
+        bus::bend(
+            Some(&params),
+            &mut state,
+            &nominal(&after_first),
+            1,
+            &mut after_first,
+        );
         let mut after_reset = codes.clone();
         bus::bend(
             Some(&params),
             &mut bus::State::default(),
+            &nominal(&after_reset),
             1,
             &mut after_reset,
         );
@@ -555,7 +604,14 @@ fn ramp_codes(camera: &Camera, preset: &Preset, width: u32, height: u32) -> (Tim
     );
     let afe = afe::Params::resolve(camera, preset, &t).unwrap();
     let mut analog = Analog::new(readout.layout.clone());
-    afe::process(&afe, &mut afe::State::default(), &stream, 0, &mut analog);
+    afe::process(
+        &afe,
+        &mut afe::State::default(),
+        &stream,
+        &Rail::new(&readout.layout, camera.power.rail_v),
+        0,
+        &mut analog,
+    );
     let mut codes = Codes::new(readout.layout.clone());
     adc::convert(
         &adc::Params::resolve(camera, preset, &t).unwrap(),
@@ -587,6 +643,7 @@ fn bypass_flips_the_target_mostly_right_after_source_edges() {
     bus::bend(
         Some(&params(&camera, &preset, &t)),
         &mut bus::State::default(),
+        &nominal(&after),
         0,
         &mut after,
     );
@@ -634,6 +691,7 @@ fn invert_drives_the_complement_of_the_high_passed_source_mix() {
     bus::bend(
         Some(&params(&camera, &preset, &t)),
         &mut bus::State::default(),
+        &nominal(&after),
         0,
         &mut after,
     );
@@ -693,6 +751,7 @@ fn divide_holds_runs_longer_than_the_source_edge_spacing() {
     bus::bend(
         Some(&params(&camera, &preset, &t)),
         &mut bus::State::default(),
+        &nominal(&after),
         0,
         &mut after,
     );
@@ -787,6 +846,7 @@ fn with_the_pot_on_f_no_clamp_diode_conducts_on_a_gradient() {
         bus::bend(
             Some(&params(&camera, &preset, &t)),
             &mut state,
+            &nominal(&codes),
             0,
             &mut codes,
         );

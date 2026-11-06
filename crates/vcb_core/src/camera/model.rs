@@ -1,6 +1,8 @@
 //! The camera model: every hardware section of a camera file.
 
-use crate::camera::{Adc, Afe, Clocking, Info, Isp, Jpeg, Lens, Logic, Movie, Sensor, Still};
+use crate::camera::{
+    Adc, Afe, Clocking, Info, Isp, Jpeg, Lens, Logic, Memory, Movie, Power, Sensor, Still,
+};
 use crate::preset::Mode;
 use crate::validate::{at_least, finite, fraction, non_negative, positive, within};
 use crate::{Error, colour};
@@ -16,6 +18,14 @@ const MIN_SMEAR_DB: f64 = -200.0;
 /// Compact-camera lenses lose about 0.5 to 1.5 stops at the corner wide open; beyond
 /// 8 stops the corners hold under 0.4 % of the centre's light and the value is a typo.
 const MAX_VIGNETTE_STOPS: f64 = 8.0;
+
+/// Largest accepted defocus or edge blur of the lens as a fraction of the frame.
+///
+/// A blur radius of half the frame or more has no edge left to blur and is a typo.
+const MAX_LENS_BLUR_FRAC: f64 = 0.5;
+
+/// Largest supported width of one SDRAM address field (column, row or bank) in bits.
+const MAX_ADDRESS_FIELD_BITS: u8 = 16;
 
 /// Allowed gap between the AFE pedestal and the nominal black code.
 ///
@@ -60,8 +70,12 @@ pub struct Camera {
     pub adc: Adc,
     /// The `[logic]` section.
     pub logic: Logic,
+    /// The `[power]` section.
+    pub power: Power,
     /// The `[isp]` section.
     pub isp: Isp,
+    /// The `[memory]` section.
+    pub memory: Memory,
     /// The `[jpeg]` section.
     pub jpeg: Jpeg,
 }
@@ -106,7 +120,9 @@ impl Camera {
         self.validate_sensor()?;
         self.validate_modes()?;
         self.validate_analog()?;
-        self.validate_logic_and_isp()
+        self.validate_logic_and_isp()?;
+        self.validate_power()?;
+        self.validate_memory()
     }
 
     fn validate_sensor(&self) -> Result<(), Error> {
@@ -133,12 +149,27 @@ impl Camera {
         within("sensor.smear_db", s.smear_db, MIN_SMEAR_DB, 0.0)?;
         fraction("sensor.cte", s.cte)?;
         non_negative("sensor.hot_pixels_per_mpix", s.hot_pixels_per_mpix)?;
+        for (channel, response) in ["r", "g", "b"].iter().zip(s.nir_response) {
+            non_negative(&format!("sensor.nir_response ({channel})"), response)?;
+        }
+        let lens = &self.lens;
         within(
             "lens.vignette_stops",
-            self.lens.vignette_stops,
+            lens.vignette_stops,
             0.0,
             MAX_VIGNETTE_STOPS,
-        )
+        )?;
+        for (field, frac) in [
+            ("lens.nir_defocus_frac", lens.nir_defocus_frac),
+            ("lens.filter_edge_blur_frac", lens.filter_edge_blur_frac),
+        ] {
+            if !(frac.is_finite() && (0.0..MAX_LENS_BLUR_FRAC).contains(&frac)) {
+                return Err(Error::config(format!(
+                    "{field} must lie in [0, {MAX_LENS_BLUR_FRAC}), got {frac}"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn validate_modes(&self) -> Result<(), Error> {
@@ -293,6 +324,52 @@ impl Camera {
                     "jpeg.tables.{name} contains a zero quantiser step"
                 )));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_power(&self) -> Result<(), Error> {
+        let power = &self.power;
+        positive("power.rail_v", power.rail_v)?;
+        positive("power.source_ohm", power.source_ohm)?;
+        positive("power.decoupling_uf", power.decoupling_uf)?;
+        positive("power.quiescent_ma", power.quiescent_ma)?;
+        at_least("power.afe_restart_lines", power.afe_restart_lines, 1)?;
+        for (field, threshold_v) in [
+            ("power.afe_uvlo_v", power.afe_uvlo_v),
+            ("power.logic_min_v", power.logic_min_v),
+            ("power.dsp_brownout_v", power.dsp_brownout_v),
+        ] {
+            positive(field, threshold_v)?;
+            if threshold_v >= power.rail_v {
+                return Err(Error::config(format!(
+                    "{field} {threshold_v} V must lie below power.rail_v {} V",
+                    power.rail_v
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_memory(&self) -> Result<(), Error> {
+        let memory = &self.memory;
+        for (field, bits) in [
+            ("memory.column_bits", memory.column_bits),
+            ("memory.row_bits", memory.row_bits),
+            ("memory.bank_bits", memory.bank_bits),
+        ] {
+            if !(1..=MAX_ADDRESS_FIELD_BITS).contains(&bits) {
+                return Err(Error::config(format!(
+                    "{field} must lie in 1 to {MAX_ADDRESS_FIELD_BITS}, got {bits}"
+                )));
+            }
+        }
+        let words = 1u64 << memory.address_bits();
+        if memory.raw_base >= words {
+            return Err(Error::config(format!(
+                "memory.raw_base {} lies beyond the SDRAM's {words} words",
+                memory.raw_base
+            )));
         }
         Ok(())
     }

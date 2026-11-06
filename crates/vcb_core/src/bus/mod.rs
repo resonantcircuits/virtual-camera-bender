@@ -138,6 +138,7 @@ use std::str::FromStr;
 use crate::adc::Codes;
 use crate::camera::Adc;
 use crate::noise::{self, Pcg32};
+use crate::power::Rail;
 use crate::preset::BusBend;
 use crate::validate::{non_negative, positive, within};
 use crate::{Camera, Error, Preset, Timing};
@@ -583,6 +584,14 @@ pub struct State {
     flip_flop: FlipFlop,
     /// The image processor's input-noise stream.
     noise: Pcg32,
+    /// Mean current the bend drew from the supply rail on each readout line of the last frame, in milliamperes.
+    ///
+    /// The current the bus drivers push into the potentiometer, the gate inputs and
+    /// the clamp diodes, one entry per readout line in readout order, which the
+    /// [`power`](crate::power) stage reads as a load on the rail one frame later.
+    /// Empty until the bend has run; the bend does not yet record it, so it stays
+    /// empty until the supply-sag model of stage 12 of `docs/PLAN.md` fills it.
+    pub line_current_ma: Vec<f32>,
 }
 
 /// Analog state of the network: the capacitors' charge and the protection diodes.
@@ -604,6 +613,7 @@ impl Default for State {
             inverter: Inverter::default(),
             flip_flop: FlipFlop::default(),
             noise: Pcg32::new(0, 0),
+            line_current_ma: Vec::new(),
         }
     }
 }
@@ -631,10 +641,22 @@ impl State {
 /// there. Only the lines the bend touches can change. The processor's input noise for
 /// frame `index` comes from a stream seeded by the stage seed and `index`.
 ///
+/// `rail` is the supply rail of every readout line from
+/// [`power::track`](crate::power::track), which powers the drivers, the 74HC logic
+/// and the processor's inputs. The supply-sag model of stage 12 of `docs/PLAN.md`
+/// consumes it; until then it is not read and the supply is ideal.
+///
 /// # Panics
 ///
 /// Panics if the codes' pixel period is not the one `params` was resolved for.
-pub fn bend(params: Option<&Params>, state: &mut State, index: u64, codes: &mut Codes) {
+pub fn bend(
+    params: Option<&Params>,
+    state: &mut State,
+    rail: &Rail,
+    index: u64,
+    codes: &mut Codes,
+) {
+    let _ = rail;
     let Some(params) = params else {
         return;
     };
@@ -703,6 +725,7 @@ fn dispatch(params: &Params, state: &mut State, work: Work<'_>) {
             inverter,
             flip_flop,
             noise,
+            ..
         } = state;
         match params.function {
             Function::Bypass => Run::<_, M>::new(params, &mut Wire, noise, coupling).work(work),

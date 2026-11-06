@@ -5,6 +5,7 @@
 use vcb_core::adc::Codes;
 use vcb_core::codec::Quality;
 use vcb_core::isp::{self, AeMode, Demosaic, Raw, Tone};
+use vcb_core::power::Rail;
 use vcb_core::preset::{Mode, Resolution, SensorOverride};
 use vcb_core::readout::{Direction, Layout};
 use vcb_core::scene::{self, Channel};
@@ -141,7 +142,7 @@ fn psnr(a: &[u8], b: &[u8]) -> f64 {
 /// BT.601 luma and chroma planes of interleaved RGB bytes.
 fn ycc(rgb: &[u8]) -> [Vec<f64>; 3] {
     let mut planes = [Vec::new(), Vec::new(), Vec::new()];
-    for p in rgb.chunks_exact(3) {
+    for p in rgb.as_chunks::<3>().0 {
         let [r, g, b] = [p[0], p[1], p[2]].map(f64::from);
         planes[0].push(0.299 * r + 0.587 * g + 0.114 * b);
         planes[1].push(-0.168_736 * r - 0.331_264 * g + 0.5 * b);
@@ -914,7 +915,7 @@ fn demosaic_keeps_flat_fields_flat_and_malvar_cuts_edge_colour() {
         );
         let first = frame.pixel(0, 0);
         assert!(
-            frame.rgb().chunks_exact(3).all(|p| p == first),
+            frame.rgb().as_chunks::<3>().0.iter().all(|&p| p == first),
             "{method:?} flat field is not flat"
         );
         assert!(
@@ -935,7 +936,9 @@ fn demosaic_keeps_flat_fields_flat_and_malvar_cuts_edge_colour() {
                 let frame = develop(&camera, method, &raw);
                 frame
                     .rgb()
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|p| {
                         let [r, g, b] = [p[0], p[1], p[2]].map(f64::from);
                         (r - g).powi(2) + (b - g).powi(2)
@@ -971,7 +974,8 @@ fn black_clamp_follows_each_line_with_a_loop_of_a_few_lines() {
         words[ob..].fill(500 << shift);
     }
     let mut raw = Raw::new(layout.cols(), layout.rows());
-    isp::clamp_black(&params, &codes, &mut raw);
+    let rail = Rail::new(&layout, camera.power.rail_v);
+    isp::clamp_black(&params, &codes, &rail, &mut raw);
     let levels = raw.black_levels();
     assert!(levels[..50].iter().all(|&b| (b - 30.0).abs() < 1e-6));
     assert!(

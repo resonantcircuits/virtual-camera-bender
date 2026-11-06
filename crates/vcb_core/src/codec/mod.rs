@@ -353,7 +353,7 @@ fn merge(
         .enumerate()
         .for_each(|(y, (bytes, luma_row))| {
             let (r0, r1, wv) = taps(y, sy, chroma_h as usize, up);
-            for (x, pixel) in bytes.chunks_exact_mut(3).enumerate() {
+            for (x, pixel) in bytes.as_chunks_mut::<3>().0.iter_mut().enumerate() {
                 let (c0, c1, wh) = taps(x, sx, chroma_w as usize, up);
                 let sample = |plane: &[f32]| {
                     let at = |r: usize, c: usize| plane[r * chroma_stride + c];

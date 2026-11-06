@@ -76,8 +76,9 @@ impl Preset {
     ///
     /// The camera's own values are checked by [`Camera::validate`](crate::Camera::validate).
     ///
-    /// Checks that depend on the camera, such as bus pins against the ADC width, happen
-    /// when the simulator resolves the preset.
+    /// Checks that depend on the camera, such as bus pins against the ADC width or
+    /// memory fault pins against the SDRAM's address width, happen when the simulator
+    /// resolves the preset.
     ///
     /// # Errors
     ///
@@ -132,6 +133,18 @@ impl Preset {
             }
             non_negative("bend.afe.cds_lag_px", afe.cds_lag_px)?;
             within("bend.afe.cds_mix", afe.cds_mix, 0.0, 1.0)?;
+        }
+        if let Some(optics) = &self.bend.optics {
+            optics.validate()?;
+        }
+        if let Some(rail) = &self.bend.rail {
+            rail.validate()?;
+        }
+        if let Some(clock) = &self.bend.clock {
+            clock.validate()?;
+        }
+        if let Some(memory) = &self.bend.memory {
+            memory.validate()?;
         }
         if let Some(isp) = &self.isp {
             validate_isp(isp)?;

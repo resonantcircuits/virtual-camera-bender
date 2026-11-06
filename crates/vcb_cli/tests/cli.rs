@@ -129,6 +129,25 @@ fn presets_lists_every_preset_file() {
     assert!(stdout.contains("bends=bus"), "{stdout}");
 }
 
+#[test]
+fn presets_names_the_optics_rail_clock_and_memory_bends() {
+    let dir = scratch("presets-milestone3");
+    std::fs::create_dir_all(&dir).unwrap();
+    let preset = "camera = \"a520\"\n\
+                  [bend.optics]\n\
+                  [bend.rail]\n\
+                  [bend.clock]\nosc_mhz = 27.0\n\
+                  [bend.memory]\n";
+    std::fs::write(dir.join("a520-every-new-bend.toml"), preset).unwrap();
+    let run = vcb(&["presets", "--dir", path_arg(&dir)]);
+    assert!(run.status.success(), "stderr: {}", text(&run.stderr));
+    let stdout = text(&run.stdout);
+    assert!(
+        stdout.contains("bends=optics,rail,clock,memory"),
+        "{stdout}"
+    );
+}
+
 /// The ffmpeg the binary would use, if it runs.
 fn ffmpeg() -> Option<PathBuf> {
     let program = std::env::var_os("VCB_FFMPEG")

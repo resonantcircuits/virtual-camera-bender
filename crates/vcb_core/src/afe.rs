@@ -63,6 +63,7 @@ use std::f64::consts::TAU;
 use std::fmt::{self, Debug, Formatter};
 
 use crate::noise::{self, Pcg32};
+use crate::power::Rail;
 use crate::readout::{Layout, Stream};
 use crate::{Camera, Error, Preset, Timing};
 
@@ -649,10 +650,22 @@ impl<'a> Front<'a> {
 /// stored sample and every blanking interval of the frame, and leaves the analog
 /// state ready for the next frame.
 ///
+/// `rail` is the supply rail of every readout line from
+/// [`power::track`](crate::power::track). The supply-sag model of stage 12 of
+/// `docs/PLAN.md` consumes it; until then it is not read and the supply is ideal.
+///
 /// # Panics
 ///
 /// Panics if `out` does not have the layout of `stream`.
-pub fn process(params: &Params, state: &mut State, stream: &Stream, index: u64, out: &mut Analog) {
+pub fn process(
+    params: &Params,
+    state: &mut State,
+    stream: &Stream,
+    rail: &Rail,
+    index: u64,
+    out: &mut Analog,
+) {
+    let _ = rail;
     let layout = stream.layout();
     assert!(
         out.layout == *layout,

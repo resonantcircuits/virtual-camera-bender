@@ -55,7 +55,9 @@ impl Scene {
         let mut scene = Self::new(width, height);
         let [r, g, b] = scene.planes_mut();
         for (((pixel, r), g), b) in rgb
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .zip(r.data_mut())
             .zip(g.data_mut())
             .zip(b.data_mut())

@@ -88,12 +88,26 @@ pub struct Timing {
     pub vblank_lines: u32,
     /// One row pair is read out of every `line_skip` row pairs.
     pub line_skip: u32,
-    /// Horizontal pixel clock in hertz.
+    /// Horizontal pixel clock of the timing generator and AFE in hertz.
     pub pixel_clock_hz: f64,
-    /// Duration of one pixel period in seconds.
+    /// Duration of one pixel period of the timing generator and AFE in seconds.
+    ///
+    /// The sensor, readout, AFE, ADC and bus stages run on it.
     pub pixel_period_s: f64,
     /// Duration of one pixel period of the camera's own clock in seconds.
     pub native_pixel_period_s: f64,
+    /// Duration of the processor's capture period, one pixel period of its own clock, in seconds.
+    ///
+    /// The processor keeps its own crystal and latches the bus once per capture
+    /// period, while the timing generator and the AFE run on the sensor-side
+    /// `pixel_period_s`. Equal to `pixel_period_s` while no `[bend.clock]` reclocks
+    /// the timing generator; reserved for that bend, which derives the two apart.
+    pub dsp_pixel_period_s: f64,
+    /// Frequency of the sensor-side clock over the camera's nominal pixel clock.
+    ///
+    /// 1 while no `[bend.clock]` replaces the timing generator's oscillator; reserved
+    /// for that bend, which derives it from `osc_mhz`.
+    pub clock_ratio: f64,
     /// Duration of one line, including optical black and blanking, in seconds.
     pub line_period_s: f64,
     /// Duration of one frame, including vertical blanking, in seconds.
@@ -232,6 +246,8 @@ impl Timing {
             pixel_clock_hz: 1.0 / pixel_period_s,
             pixel_period_s,
             native_pixel_period_s,
+            dsp_pixel_period_s: pixel_period_s,
+            clock_ratio: 1.0,
             line_period_s,
             frame_period_s,
             oversample: camera.afe.oversample.max(1),

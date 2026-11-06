@@ -66,6 +66,7 @@ use rayon::slice::{ParallelSlice, ParallelSliceMut};
 
 use crate::adc::Codes;
 use crate::plane::Plane;
+use crate::power::Rail;
 use crate::preset::Mode;
 use crate::resample::{self, Rect, Turn};
 use crate::sensor::{self, Cfa};
@@ -476,10 +477,16 @@ impl Default for State {
 /// subtracted from its active samples, which are written into `out` with rows in
 /// image order; [`Raw::black_levels`] records the levels.
 ///
+/// `rail` is the supply rail of every readout line from
+/// [`power::track`](crate::power::track), which powers the processor. The
+/// supply-sag model of stage 12 of `docs/PLAN.md` consumes it for the processor's
+/// brownout; until then it is not read.
+///
 /// # Panics
 ///
 /// Panics if `out` is not `cols` by `rows` of the code layout.
-pub fn clamp_black(params: &Params, codes: &Codes, out: &mut Raw) {
+pub fn clamp_black(params: &Params, codes: &Codes, rail: &Rail, out: &mut Raw) {
+    let _ = rail;
     let layout = codes.layout();
     assert!(
         out.plane.width() == layout.cols() && out.plane.height() == layout.rows(),
@@ -797,7 +804,7 @@ fn encode_rgb(image: &Scene, tone: &Tone, lut: &[f32], out: &mut Frame) {
         .for_each(|(y, bytes)| {
             let y = y as u32;
             let rows = [red.row(y), green.row(y), blue.row(y)];
-            for (x, pixel) in bytes.chunks_exact_mut(3).enumerate() {
+            for (x, pixel) in bytes.as_chunks_mut::<3>().0.iter_mut().enumerate() {
                 for (byte, row) in pixel.iter_mut().zip(rows) {
                     *byte = to_byte(tone.lookup(lut, row[x]));
                 }
@@ -836,7 +843,7 @@ fn from_ycc([y, cb, cr]: [&mut Plane<f32>; 3], out: &mut Frame) {
         .zip(cb.data().par_chunks(width))
         .zip(cr.data().par_chunks(width))
         .for_each(|(((bytes, ys), cbs), crs)| {
-            for (i, pixel) in bytes.chunks_exact_mut(3).enumerate() {
+            for (i, pixel) in bytes.as_chunks_mut::<3>().0.iter_mut().enumerate() {
                 let rgb = ycc::to_rgb([ys[i], cbs[i], crs[i]]);
                 for (byte, value) in pixel.iter_mut().zip(rgb) {
                     *byte = to_byte(value);

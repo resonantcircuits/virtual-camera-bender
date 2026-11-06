@@ -673,7 +673,7 @@ impl Exact {
                 let (row, col) = (i / m, i % m);
                 let forward = scale[row] * euler[i] / scale[col];
                 let backward = scale[col] * euler[col * m + row] / scale[row];
-                0.5 * (forward + backward)
+                f64::midpoint(forward, backward)
             })
             .collect();
         let (eigenvalues, vectors) = jacobi(symmetric, m);

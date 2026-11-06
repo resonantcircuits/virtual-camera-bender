@@ -20,6 +20,7 @@ use divan::Bencher;
 use vcb_core::adc::{self, Codes};
 use vcb_core::afe::{self, Analog};
 use vcb_core::isp::{self, Raw};
+use vcb_core::power::Rail;
 use vcb_core::preset::{Mode, Resolution};
 use vcb_core::readout::{self, Stream};
 use vcb_core::sensor::{self, Charge};
@@ -116,6 +117,8 @@ struct Chain {
     prepared: Scene,
     charge: Charge,
     stream: Stream,
+    /// The camera's nominal supply rail on every line.
+    rail: Rail,
     analog: Analog,
     /// The ADC's words, before the bend.
     codes: Codes,
@@ -164,6 +167,7 @@ impl Chain {
             prepared: Scene::new(width, height),
             charge: Charge::new(width, height),
             stream: Stream::new(layout.clone()),
+            rail: Rail::new(&layout, camera.power.rail_v),
             analog: Analog::new(layout.clone()),
             codes: Codes::new(layout.clone()),
             bent: Codes::new(layout),
@@ -197,13 +201,20 @@ impl Chain {
             &self.afe,
             &mut self.afe_state,
             &self.stream,
+            &self.rail,
             0,
             &mut self.analog,
         );
         adc::convert(&self.adc, &self.analog, &mut self.codes);
         self.bent.words_mut().copy_from_slice(self.codes.words());
-        bus::bend(self.bus.as_ref(), &mut self.bus_state, 0, &mut self.bent);
-        isp::clamp_black(&self.isp, &self.bent, &mut self.raw);
+        bus::bend(
+            self.bus.as_ref(),
+            &mut self.bus_state,
+            &self.rail,
+            0,
+            &mut self.bent,
+        );
+        isp::clamp_black(&self.isp, &self.bent, &self.rail, &mut self.raw);
         isp::develop(
             &self.isp,
             &mut self.isp_state,
@@ -252,10 +263,11 @@ fn afe_process(bencher: Bencher, preset: &str) {
         afe,
         afe_state,
         stream,
+        rail,
         analog,
         ..
     } = &mut chain;
-    bencher.bench_local(|| afe::process(afe, afe_state, stream, 0, analog));
+    bencher.bench_local(|| afe::process(afe, afe_state, stream, rail, 0, analog));
 }
 
 #[divan::bench(args = PRESETS, sample_count = 20)]
@@ -270,18 +282,19 @@ fn bus_bend(bencher: Bencher, preset: &str) {
     let Chain {
         bus,
         bus_state,
+        rail,
         codes,
         ..
     } = &mut chain;
     bencher
         .with_inputs(|| codes.clone())
-        .bench_local_refs(|codes| bus::bend(bus.as_ref(), bus_state, 0, codes));
+        .bench_local_refs(|codes| bus::bend(bus.as_ref(), bus_state, rail, 0, codes));
 }
 
 #[divan::bench(args = PRESETS, sample_count = 20)]
 fn isp_clamp_black(bencher: Bencher, preset: &str) {
     let mut chain = Chain::new(preset);
-    bencher.bench_local(|| isp::clamp_black(&chain.isp, &chain.bent, &mut chain.raw));
+    bencher.bench_local(|| isp::clamp_black(&chain.isp, &chain.bent, &chain.rail, &mut chain.raw));
 }
 
 #[divan::bench(args = PRESETS, sample_count = 20)]

@@ -6,6 +6,7 @@ use std::f64::consts::TAU;
 
 use vcb_core::adc::{self, Codes};
 use vcb_core::afe::{self, Analog, GainMod, Inject, Wave};
+use vcb_core::power::Rail;
 use vcb_core::preset::{AfeBend, ClockBend, Resolution};
 use vcb_core::readout::{self, Layout, Stream};
 use vcb_core::sensor::Charge;
@@ -43,13 +44,17 @@ struct Chain {
     readout: readout::Params,
     afe: afe::Params,
     adc: adc::Params,
+    /// The camera's nominal supply rail on every line.
+    rail: Rail,
 }
 
 impl Chain {
     fn new(camera: &Camera, preset: &Preset, width: u32, height: u32) -> Self {
         let timing = Timing::derive(camera, preset, width, height).unwrap();
+        let readout = readout::Params::resolve(camera, preset, &timing).unwrap();
         Self {
-            readout: readout::Params::resolve(camera, preset, &timing).unwrap(),
+            rail: Rail::new(&readout.layout, camera.power.rail_v),
+            readout,
             afe: afe::Params::resolve(camera, preset, &timing).unwrap(),
             adc: adc::Params::resolve(camera, preset, &timing).unwrap(),
             timing,
@@ -86,7 +91,7 @@ impl Chain {
 
     fn analog(&self, state: &mut afe::State, stream: &Stream, index: u64) -> Analog {
         let mut analog = Analog::new(self.layout().clone());
-        afe::process(&self.afe, state, stream, index, &mut analog);
+        afe::process(&self.afe, state, stream, &self.rail, index, &mut analog);
         analog
     }
 

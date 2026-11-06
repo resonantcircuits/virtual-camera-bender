@@ -8,7 +8,9 @@ use crate::isp::{self, Raw};
 use crate::preset::Resolution;
 use crate::readout::{self, Stream};
 use crate::sensor::{self, Charge};
-use crate::{Camera, Error, Frame, Preset, Scene, Timing, bus, codec, frame, scene};
+use crate::{
+    Camera, Error, Frame, Preset, Scene, Timing, bus, capture, codec, frame, memory, power, scene,
+};
 
 /// The required inputs of a [`Simulator`]: the camera and the preset.
 #[derive(Debug, Clone, PartialEq)]
@@ -66,7 +68,7 @@ impl SimulatorBuilder {
         };
         let timing = Timing::derive(&camera, &preset, scene_size.0, scene_size.1)?;
         let params = Stages::resolve(&camera, &preset, &timing)?;
-        let buffers = Buffers::new(&params, &timing);
+        let buffers = Buffers::new(&camera, &params, &timing);
         trace_timing("sim.build.done", &camera, &timing);
         Ok(Simulator {
             camera,
@@ -107,17 +109,24 @@ fn trace_timing(name: &'static str, camera: &Camera, timing: &Timing) {
     );
 }
 
-/// Returns whether two timings read out the same geometry on the same clock.
+/// Returns whether two timings read out the same geometry on the same processor clock.
 ///
-/// Everything but the resolution mode must agree: sensor size, rows read, columns,
-/// optical black, blanking, line skip, clocks, oversampling, orientation and output
-/// size. Then every buffer keeps its size and every layout its pixel period.
+/// Everything but the resolution mode and the sensor-side clock must agree: sensor
+/// size, rows read, columns, optical black, blanking, line skip, the processor's
+/// capture period, the native pixel period, the frame period, oversampling,
+/// orientation and output size. Then every buffer keeps its size. The sensor-side
+/// pixel period, pixel clock and line period and the clock ratio may differ: they
+/// follow the oscillator of `[bend.clock]`, a knob on the running camera.
 fn same_geometry(old: &Timing, new: &Timing) -> bool {
-    let renamed = Timing {
+    let aligned = Timing {
         resolution: old.resolution,
+        pixel_clock_hz: old.pixel_clock_hz,
+        pixel_period_s: old.pixel_period_s,
+        line_period_s: old.line_period_s,
+        clock_ratio: old.clock_ratio,
         ..new.clone()
     };
-    renamed == *old
+    aligned == *old
 }
 
 /// The resolved parameters of every stage.
@@ -126,10 +135,13 @@ struct Stages {
     scene: scene::Params,
     sensor: sensor::Params,
     readout: readout::Params,
+    power: Option<power::Params>,
     afe: afe::Params,
     adc: adc::Params,
     bus: Option<bus::Params>,
+    capture: Option<capture::Params>,
     isp: isp::Params,
+    memory: Option<memory::Params>,
     codec: codec::Params,
 }
 
@@ -139,10 +151,13 @@ impl Stages {
             scene: scene::Params::resolve(camera, preset, timing)?,
             sensor: sensor::Params::resolve(camera, preset, timing)?,
             readout: readout::Params::resolve(camera, preset, timing)?,
+            power: power::Params::resolve(camera, preset, timing)?,
             afe: afe::Params::resolve(camera, preset, timing)?,
             adc: adc::Params::resolve(camera, preset, timing)?,
             bus: bus::Params::resolve(camera, preset, timing)?,
+            capture: capture::Params::resolve(camera, preset, timing)?,
             isp: isp::Params::resolve(camera, preset, timing)?,
+            memory: memory::Params::resolve(camera, preset, timing)?,
             codec: codec::Params::resolve(camera, preset, timing)?,
         })
     }
@@ -153,9 +168,12 @@ impl Stages {
 struct States {
     sensor: sensor::State,
     readout: readout::State,
+    power: power::State,
     afe: afe::State,
     bus: bus::State,
+    capture: capture::State,
     isp: isp::State,
+    memory: memory::State,
     codec: codec::State,
 }
 
@@ -165,6 +183,8 @@ struct Buffers {
     scene: Scene,
     charge: Charge,
     stream: Stream,
+    /// The supply rail of every readout line.
+    rail: power::Rail,
     analog: Analog,
     codes: Codes,
     raw: Raw,
@@ -174,12 +194,13 @@ struct Buffers {
 }
 
 impl Buffers {
-    fn new(params: &Stages, timing: &Timing) -> Self {
+    fn new(camera: &Camera, params: &Stages, timing: &Timing) -> Self {
         let layout = &params.readout.layout;
         Self {
             scene: Scene::new(timing.sensor_width, timing.sensor_height),
             charge: Charge::new(timing.sensor_width, timing.sensor_height),
             stream: Stream::new(layout.clone()),
+            rail: power::Rail::new(layout, camera.power.rail_v),
             analog: Analog::new(layout.clone()),
             codes: Codes::new(layout.clone()),
             raw: Raw::new(layout.cols(), layout.rows()),
@@ -393,10 +414,37 @@ impl Simulator {
             index,
             &mut b.stream,
         );
-        afe::process(&params.afe, &mut state.afe, &b.stream, index, &mut b.analog);
+        power::track(
+            params.power.as_ref(),
+            &mut state.power,
+            &state.bus,
+            index,
+            &mut b.rail,
+        );
+        afe::process(
+            &params.afe,
+            &mut state.afe,
+            &b.stream,
+            &b.rail,
+            index,
+            &mut b.analog,
+        );
         adc::convert(&params.adc, &b.analog, &mut b.codes);
-        bus::bend(params.bus.as_ref(), &mut state.bus, index, &mut b.codes);
-        isp::clamp_black(&params.isp, &b.codes, &mut b.raw);
+        bus::bend(
+            params.bus.as_ref(),
+            &mut state.bus,
+            &b.rail,
+            index,
+            &mut b.codes,
+        );
+        capture::reframe(
+            params.capture.as_ref(),
+            &mut state.capture,
+            index,
+            &mut b.codes,
+        );
+        isp::clamp_black(&params.isp, &b.codes, &b.rail, &mut b.raw);
+        memory::bend(params.memory.as_ref(), &mut state.memory, index, &mut b.raw);
         isp::develop(&params.isp, &mut state.isp, &b.raw, &mut b.frame);
         isp::meter(
             &params.isp,
@@ -446,6 +494,11 @@ impl Simulator {
     ///   old one's phase.
     /// - Running clock faults run on, and the exposure and white-balance servos keep
     ///   their values; a servo that the preset turns off forgets its value at once.
+    /// - The supply rail, the processor's capture and the frame-buffer SDRAM keep their
+    ///   state whatever `[bend.optics]`, `[bend.rail]`, `[bend.clock]` and
+    ///   `[bend.memory]` become, a new oscillator frequency included; removing
+    ///   `[bend.rail]` returns the rail to the nominal voltage, and removing
+    ///   `[bend.memory]` forgets the SDRAM's content.
     ///
     /// Everything else, the exposure time of the preset's `[sensor]` section included,
     /// takes effect with the next frame. Otherwise parameters, buffers and state are
@@ -493,12 +546,18 @@ impl Simulator {
             }
             let servo_reset = isp::stops_servo(&self.params.isp, &params.isp);
             self.state.isp.forget_stopped_servos(&params.isp);
+            if self.params.power.is_some() && params.power.is_none() {
+                self.buffers.rail.reset();
+            }
+            if self.params.memory.is_some() && params.memory.is_none() {
+                self.state.memory = memory::State::default();
+            }
             Reconfigured::Kept {
                 bus_reset,
                 servo_reset,
             }
         } else {
-            self.buffers = Buffers::new(&params, &timing);
+            self.buffers = Buffers::new(&self.camera, &params, &timing);
             self.state = States::default();
             trace_timing("sim.reconfigure.done", &self.camera, &timing);
             Reconfigured::Rebuilt
@@ -544,8 +603,11 @@ impl Simulator {
     }
 
     /// Returns every stage to its power-on state.
+    ///
+    /// The supply rail returns to the nominal voltage with it.
     pub fn reset(&mut self) {
         self.state = States::default();
+        self.buffers.rail.reset();
     }
 
     /// Returns the bus bend's state, for tests.
@@ -567,5 +629,33 @@ impl Simulator {
     #[must_use]
     pub fn afe_state(&self) -> &afe::State {
         &self.state.afe
+    }
+
+    /// Returns the supply rail's state, for tests.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn power_state(&self) -> &power::State {
+        &self.state.power
+    }
+
+    /// Returns the supply rail of every readout line of the last frame, for tests.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn rail(&self) -> &power::Rail {
+        &self.buffers.rail
+    }
+
+    /// Returns the processor capture's state, for tests.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn capture_state(&self) -> &capture::State {
+        &self.state.capture
+    }
+
+    /// Returns the frame-buffer SDRAM's state, for tests.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn memory_state(&self) -> &memory::State {
+        &self.state.memory
     }
 }

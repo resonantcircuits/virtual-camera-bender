@@ -75,6 +75,13 @@ pub struct Sensor {
     pub cte: f64,
     /// Density of hot photosites per megapixel.
     pub hot_pixels_per_mpix: f64,
+    /// Charge of the red, green and blue sites from unit near infrared, relative to reference white.
+    ///
+    /// Each channel's response to scene NIR radiance of 1, as a fraction of its
+    /// response to reference white: the colour dyes pass most of the light beyond
+    /// 750 nm, which the IR-cut filter normally blocks. Dimensionless, each at least
+    /// 0; used only when `[bend.optics]` slides the filter away.
+    pub nir_response: [f64; 3],
     /// Layout of the colour filter array.
     pub cfa: Cfa,
     /// Seed of this unit's fixed pattern: its PRNU, DSNU, hot photosites and bus drivers.
@@ -101,6 +108,16 @@ pub struct Lens {
     ///
     /// The falloff follows the cos^4 law of natural vignetting; 0 is a perfectly even lens.
     pub vignette_stops: f64,
+    /// Blur radius of the near-infrared image as a fraction of the frame width, in `[0, 0.5)`.
+    ///
+    /// The lens is corrected for visible light, so near infrared focuses behind the
+    /// sensor and its image is soft; 0 is a sharp NIR image.
+    pub nir_defocus_frac: f64,
+    /// Width of the IR-cut filter's shadow edge as a fraction of the frame height, in `[0, 0.5)`.
+    ///
+    /// A filter partly slid off the sensor sits out of focus in front of it, so the
+    /// boundary between filtered and unfiltered light is blurred over this width.
+    pub filter_edge_blur_frac: f64,
 }
 
 /// The `[still]` section: full-sensor readout behind the mechanical shutter.
@@ -240,6 +257,62 @@ pub struct Logic {
     pub clamp_r_ohm: f64,
     /// Input leakage of a gate input as a resistance to half the supply, in megohms.
     pub input_leak_mohm: f64,
+}
+
+/// The `[power]` section: the 3.3 V supply rail of the AFE, the bus and the processor.
+///
+/// One rail feeds the AFE's digital and analog supplies, the bend's 74HC logic and
+/// the processor's input stage: a source of `rail_v` behind `source_ohm`, decoupled
+/// by `decoupling_uf` and loaded by `quiescent_ma`. The thresholds describe what
+/// fails as it sags; see [`power`](crate::power).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+pub struct Power {
+    /// Nominal voltage of the rail in volts.
+    pub rail_v: f64,
+    /// Output impedance of the regulator and battery in ohms.
+    pub source_ohm: f64,
+    /// Decoupling capacitance on the rail in microfarads.
+    pub decoupling_uf: f64,
+    /// Current the camera draws from the rail on its own, in milliamperes.
+    pub quiescent_ma: f64,
+    /// Rail voltage below which the AFE stops converting (its undervoltage lockout), in volts.
+    pub afe_uvlo_v: f64,
+    /// Lowest rail voltage at which the bend's 74HC logic still switches, in volts.
+    pub logic_min_v: f64,
+    /// Rail voltage below which the processor stops capturing for the frame, in volts.
+    pub dsp_brownout_v: f64,
+    /// Lines the AFE needs after the rail recovers before it converts again.
+    pub afe_restart_lines: u32,
+}
+
+/// The `[memory]` section: the processor's frame-buffer SDRAM.
+///
+/// The SDRAM takes a multiplexed address: the row address, then the column address,
+/// on the same pins, with the bank on its own pins. The linear word address is
+/// `(bank, row, column)` from the most to the least significant bit; one raw sample
+/// occupies one word. See [`memory`](crate::memory).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+pub struct Memory {
+    /// Bits of the column address, 1 to 16.
+    pub column_bits: u8,
+    /// Bits of the row address, 1 to 16.
+    pub row_bits: u8,
+    /// Bits of the bank address, 1 to 16.
+    pub bank_bits: u8,
+    /// Word address of the raw frame buffer's first sample; below the SDRAM's size.
+    pub raw_base: u64,
+}
+
+impl Memory {
+    /// Returns the bits of a linear word address: column, row and bank bits together.
+    #[must_use]
+    pub fn address_bits(&self) -> u32 {
+        u32::from(self.column_bits) + u32::from(self.row_bits) + u32::from(self.bank_bits)
+    }
 }
 
 /// The `[isp]` section: the image processor's colour and detail pipeline.

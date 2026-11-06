@@ -1,10 +1,12 @@
 //! The signal-path strip: the camera's stages in signal order, above the panels.
 //!
-//! Scene → Sensor → Readout → AFE → ADC → Bus → Processor → JPEG. A stage with a bend
-//! patched in (the clocks on the readout, the AFE bend, the bus bend) or with
-//! processor overrides is lit in the accent colour. Clicking a stage asks the
-//! inspector to scroll to its panel; the ADC has no controls of its own and leads to
-//! the bus bend on its output lines.
+//! Scene → Sensor → Readout → AFE → ADC → Bus → Clock → Processor → Memory → JPEG. A
+//! stage with a bend patched in (the clocks on the readout, the AFE bend, the bus
+//! bend, the master-clock reclock, the memory's address faults) or with processor
+//! overrides is lit in the accent colour. The supply rail has no stage of its own:
+//! it feeds the AFE, the bus and the processor, so a rail bend lights those three.
+//! Clicking a stage asks the inspector to scroll to its panel; the ADC has no
+//! controls of its own and leads to the bus bend on its output lines.
 
 use eframe::egui::{self, Button, RichText, Ui};
 use vcb_core::Preset;
@@ -27,22 +29,28 @@ pub enum Stage {
     Adc,
     /// The data bus between converter and processor.
     Bus,
+    /// The processor's capture of the bus on its own clock.
+    Clock,
     /// The image processor.
     Processor,
+    /// The frame-buffer SDRAM between the black clamp and development.
+    Memory,
     /// The JPEG encoder.
     Jpeg,
 }
 
 impl Stage {
     /// Every stage, in signal order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Scene,
         Self::Sensor,
         Self::Readout,
         Self::Afe,
         Self::Adc,
         Self::Bus,
+        Self::Clock,
         Self::Processor,
+        Self::Memory,
         Self::Jpeg,
     ];
 
@@ -56,7 +64,9 @@ impl Stage {
             Self::Afe => "AFE",
             Self::Adc => "ADC",
             Self::Bus => "Bus",
+            Self::Clock => "Clock",
             Self::Processor => "Processor",
+            Self::Memory => "Memory",
             Self::Jpeg => "JPEG",
         }
     }
@@ -70,19 +80,27 @@ impl Stage {
             Self::Readout => PanelId::Readout,
             Self::Afe => PanelId::Afe,
             Self::Adc | Self::Bus => PanelId::Bus,
+            Self::Clock => PanelId::Clock,
             Self::Processor => PanelId::Processor,
+            Self::Memory => PanelId::Memory,
             Self::Jpeg => PanelId::Jpeg,
         }
     }
 
     /// Whether `preset` bends or overrides the stage.
+    ///
+    /// A rail bend (`[bend.rail]`) bends the AFE, the bus and the processor, which the
+    /// rail feeds.
     #[must_use]
     pub fn is_bent(self, preset: &Preset) -> bool {
+        let rail = preset.bend.rail.is_some();
         match self {
             Self::Readout => preset.bend.clocks.is_some(),
-            Self::Afe => preset.bend.afe.is_some(),
-            Self::Bus => preset.bend.bus.is_some(),
-            Self::Processor => preset.isp.is_some(),
+            Self::Afe => preset.bend.afe.is_some() || rail,
+            Self::Bus => preset.bend.bus.is_some() || rail,
+            Self::Clock => preset.bend.clock.is_some(),
+            Self::Processor => preset.isp.is_some() || rail,
+            Self::Memory => preset.bend.memory.is_some(),
             Self::Scene | Self::Sensor | Self::Adc | Self::Jpeg => false,
         }
     }

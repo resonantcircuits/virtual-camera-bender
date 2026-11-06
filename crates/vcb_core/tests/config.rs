@@ -8,10 +8,12 @@ use vcb_core::afe::{GainMod, Inject, Wave};
 use vcb_core::bus::{Function, PotNode, Target};
 use vcb_core::codec::Quality;
 use vcb_core::isp::WbMode;
+use vcb_core::memory;
 use vcb_core::preset::{
-    AfeBend, BusBend, ClockBend, IspOverride, Mode, Orientation, Resolution, SensorOverride,
+    AddressFault, AfeBend, BusBend, ClockBend, FaultKind, IspOverride, MemoryBend, Mode,
+    OpticsBend, Orientation, RailBend, ReclockBend, Resolution, SensorOverride,
 };
-use vcb_core::{Camera, Preset};
+use vcb_core::{Camera, Preset, Simulator, Timing};
 
 fn root() -> PathBuf {
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
@@ -372,4 +374,430 @@ fn scene_section_parses_and_rejects_unphysical_highlights() {
     let mut late = preset;
     late.scene.shoulder_start = 1.0;
     assert!(late.validate().unwrap_err().is_config());
+}
+
+/// A solid fault of `kind` on `pin`.
+fn solid(pin: u8, kind: FaultKind) -> AddressFault {
+    AddressFault {
+        pin,
+        kind,
+        with: None,
+        on_frac: None,
+        switch_hz: None,
+    }
+}
+
+/// A preset with the optics, rail, clock and memory sections away from their defaults.
+fn milestone3_preset() -> Preset {
+    let mut preset = Preset::new("a520");
+    preset.bend.optics = Some(OpticsBend {
+        ir_cut_pulled_frac: 0.4,
+        nir_weights: [0.6, 0.3, 0.02],
+        foliage_nir: 5.0,
+        nir_scale: 1.5,
+    });
+    preset.bend.rail = Some(RailBend {
+        load_ma: 150.0,
+        spike_ma: 400.0,
+        spike_hz: 3.0,
+        spike_ms: 1.5,
+        ripple_mv: 40.0,
+        ripple_hz: 120.0,
+        source_ohm: Some(2.0),
+    });
+    preset.bend.clock = Some(ReclockBend {
+        osc_mhz: 26.4,
+        drift_ppm: 300.0,
+        drift_hz: 0.25,
+        ppm_per_v: -800.0,
+        hd_lock_px: 12.0,
+    });
+    preset.bend.memory = Some(MemoryBend {
+        faults: vec![
+            solid(3, FaultKind::High),
+            AddressFault {
+                pin: 5,
+                kind: FaultKind::Bridge,
+                with: Some(6),
+                on_frac: Some(0.3),
+                switch_hz: Some(4.0),
+            },
+            AddressFault {
+                on_frac: Some(1.0),
+                switch_hz: Some(0.0),
+                ..solid(0, FaultKind::Low)
+            },
+        ],
+    });
+    preset
+}
+
+/// Copies one section from the second preset into the first.
+type CopySection = (&'static str, fn(&mut Preset, &Preset));
+
+#[test]
+fn milestone3_sections_round_trip_through_toml() {
+    let preset = milestone3_preset();
+    preset.validate().unwrap();
+    let text = toml::to_string(&preset).unwrap();
+    for header in [
+        "[bend.optics]",
+        "[bend.rail]",
+        "[bend.clock]",
+        "[[bend.memory.faults]]",
+        "kind = \"bridge\"",
+    ] {
+        assert!(text.contains(header), "missing {header} in\n{text}");
+    }
+    let back: Preset = toml::from_str(&text).unwrap();
+    assert_eq!(back, preset);
+
+    // Each section on its own; the absent sections stay absent.
+    let sections: [CopySection; 4] = [
+        ("optics", |p, from| p.bend.optics = from.bend.optics),
+        ("rail", |p, from| p.bend.rail = from.bend.rail),
+        ("clock", |p, from| p.bend.clock = from.bend.clock),
+        ("memory", |p, from| {
+            p.bend.memory.clone_from(&from.bend.memory);
+        }),
+    ];
+    for (name, set) in sections {
+        let mut alone = Preset::new("a520");
+        set(&mut alone, &preset);
+        let text = toml::to_string(&alone).unwrap();
+        for (other, _) in sections {
+            let written = text.contains(&format!("bend.{other}"));
+            assert_eq!(written, other == name, "{name} alone:\n{text}");
+        }
+        let back: Preset = toml::from_str(&text).unwrap();
+        assert_eq!(back, alone, "{name} alone");
+    }
+    let plain = toml::to_string(&Preset::new("a520")).unwrap();
+    for (name, _) in sections {
+        assert!(!plain.contains(&format!("bend.{name}")), "{plain}");
+    }
+}
+
+#[test]
+fn milestone3_sections_parse_with_their_defaults() {
+    let text = r#"
+        camera = "a520"
+        [bend.optics]
+        [bend.rail]
+        [bend.clock]
+        osc_mhz = 27.0
+        [bend.memory]
+    "#;
+    let preset: Preset = toml::from_str(text).unwrap();
+    preset.validate().unwrap();
+    assert_eq!(preset.bend.optics, Some(OpticsBend::default()));
+    assert_eq!(preset.bend.rail, Some(RailBend::default()));
+    assert_eq!(preset.bend.clock, Some(ReclockBend::new(27.0)));
+    assert_eq!(preset.bend.memory, Some(MemoryBend::default()));
+    let optics = OpticsBend::default();
+    assert!(
+        (optics.ir_cut_pulled_frac - 1.0).abs() < f64::EPSILON,
+        "the default filter is fully removed"
+    );
+    let rail = RailBend::default();
+    assert!(rail.load_ma.abs() + rail.spike_ma.abs() + rail.ripple_mv.abs() < f64::EPSILON);
+    assert!(
+        rail.source_ohm.is_none(),
+        "the camera's source impedance stays"
+    );
+
+    let faults = r#"
+        camera = "a520"
+        [[bend.memory.faults]]
+        pin = 4
+        kind = "low"
+        [[bend.memory.faults]]
+        pin = 7
+        kind = "bridge"
+        with = 9
+    "#;
+    let preset: Preset = toml::from_str(faults).unwrap();
+    preset.validate().unwrap();
+    let memory = preset.bend.memory.unwrap();
+    assert_eq!(memory.faults[0], solid(4, FaultKind::Low));
+    assert_eq!(memory.faults[1].kind, FaultKind::Bridge);
+    assert_eq!(memory.faults[1].with, Some(9));
+}
+
+#[test]
+fn milestone3_sections_reject_missing_and_unknown_keys() {
+    let cases = [
+        ("[bend.clock]\ndrift_ppm = 10.0", "osc_mhz"),
+        ("[bend.optics]\nir_cut = 1.0", "ir_cut"),
+        ("[bend.rail]\nload_a = 1.0", "load_a"),
+        ("[bend.clock]\nosc_mhz = 27.0\nosc_hz = 1.0", "osc_hz"),
+        ("[bend.memory]\nfault = []", "fault"),
+        ("[[bend.memory.faults]]\npin = 1\nkind = \"stuck\"", "stuck"),
+        ("[[bend.memory.faults]]\nkind = \"low\"", "pin"),
+        (
+            "[[bend.memory.faults]]\npin = 1\nkind = \"low\"\nwidth = 2",
+            "width",
+        ),
+    ];
+    for (section, needle) in cases {
+        let text = format!("camera = \"a520\"\n{section}");
+        let error = toml::from_str::<Preset>(&text).unwrap_err();
+        assert!(error.to_string().contains(needle), "{section}: {error}");
+    }
+}
+
+/// Breaks one value of a preset.
+type BreakPreset = fn(&mut Preset);
+
+fn optics_of(preset: &mut Preset) -> &mut OpticsBend {
+    preset.bend.optics.as_mut().unwrap()
+}
+
+fn rail_of(preset: &mut Preset) -> &mut RailBend {
+    preset.bend.rail.as_mut().unwrap()
+}
+
+fn clock_of(preset: &mut Preset) -> &mut ReclockBend {
+    preset.bend.clock.as_mut().unwrap()
+}
+
+fn faults_of(preset: &mut Preset) -> &mut Vec<AddressFault> {
+    &mut preset.bend.memory.as_mut().unwrap().faults
+}
+
+#[test]
+fn milestone3_validation_names_the_offending_field() {
+    let cases: [(BreakPreset, &str); 30] = [
+        (
+            |p| optics_of(p).ir_cut_pulled_frac = 1.5,
+            "bend.optics.ir_cut_pulled_frac",
+        ),
+        (
+            |p| optics_of(p).ir_cut_pulled_frac = -0.1,
+            "bend.optics.ir_cut_pulled_frac",
+        ),
+        (
+            |p| optics_of(p).nir_weights[1] = -0.1,
+            "bend.optics.nir_weights",
+        ),
+        (
+            |p| optics_of(p).nir_weights[2] = f64::NAN,
+            "bend.optics.nir_weights",
+        ),
+        (
+            |p| optics_of(p).foliage_nir = -1.0,
+            "bend.optics.foliage_nir",
+        ),
+        (
+            |p| optics_of(p).nir_scale = f64::INFINITY,
+            "bend.optics.nir_scale",
+        ),
+        (|p| rail_of(p).load_ma = -1.0, "bend.rail.load_ma"),
+        (|p| rail_of(p).spike_ma = f64::NAN, "bend.rail.spike_ma"),
+        (|p| rail_of(p).spike_hz = -0.5, "bend.rail.spike_hz"),
+        (|p| rail_of(p).spike_ms = 0.0, "bend.rail.spike_ms"),
+        (|p| rail_of(p).ripple_mv = -3.0, "bend.rail.ripple_mv"),
+        (|p| rail_of(p).ripple_hz = 0.0, "bend.rail.ripple_hz"),
+        (
+            |p| rail_of(p).source_ohm = Some(0.0),
+            "bend.rail.source_ohm",
+        ),
+        (|p| clock_of(p).osc_mhz = 0.0, "bend.clock.osc_mhz"),
+        (|p| clock_of(p).osc_mhz = f64::NAN, "bend.clock.osc_mhz"),
+        (|p| clock_of(p).drift_ppm = -1.0, "bend.clock.drift_ppm"),
+        (|p| clock_of(p).drift_hz = 0.0, "bend.clock.drift_hz"),
+        (
+            |p| clock_of(p).ppm_per_v = f64::INFINITY,
+            "bend.clock.ppm_per_v",
+        ),
+        (|p| clock_of(p).hd_lock_px = -2.0, "bend.clock.hd_lock_px"),
+        // A bridge names its partner, another pin; a stuck pin has none.
+        (
+            |p| faults_of(p)[1].with = None,
+            "bend.memory.faults[1].with",
+        ),
+        (
+            |p| faults_of(p)[1].with = Some(5),
+            "bend.memory.faults[1].with",
+        ),
+        (
+            |p| faults_of(p)[0].with = Some(9),
+            "bend.memory.faults[0].with",
+        ),
+        // A marginal contact sets both of its values, each in range.
+        (
+            |p| faults_of(p)[1].on_frac = Some(0.0),
+            "bend.memory.faults[1].on_frac",
+        ),
+        (
+            |p| faults_of(p)[1].on_frac = Some(1.5),
+            "bend.memory.faults[1].on_frac",
+        ),
+        (
+            |p| faults_of(p)[1].switch_hz = Some(-1.0),
+            "bend.memory.faults[1].switch_hz",
+        ),
+        (
+            |p| faults_of(p)[1].switch_hz = None,
+            "bend.memory.faults[1].on_frac",
+        ),
+        (
+            |p| faults_of(p)[1].on_frac = None,
+            "bend.memory.faults[1].switch_hz",
+        ),
+        // Each pin carries one fault, as `pin` or as a bridge's `with`.
+        (
+            |p| faults_of(p).push(solid(3, FaultKind::Low)),
+            "bend.memory.faults[3].pin",
+        ),
+        (
+            |p| faults_of(p).push(solid(6, FaultKind::High)),
+            "bend.memory.faults[3].pin",
+        ),
+        (
+            |p| faults_of(p)[1].with = Some(3),
+            "bend.memory.faults[1].with",
+        ),
+    ];
+    for (case, (breaks, field)) in cases.iter().enumerate() {
+        let mut preset = milestone3_preset();
+        breaks(&mut preset);
+        let error = preset.validate().unwrap_err();
+        assert!(error.is_config(), "case {case}: {error}");
+        assert!(
+            error.to_string().contains(field),
+            "case {case}: \"{error}\" does not name {field}"
+        );
+    }
+}
+
+#[test]
+fn memory_fault_pins_must_exist_on_the_camera_sdram() {
+    let camera = camera();
+    let bits = u8::try_from(camera.memory.address_bits()).unwrap();
+    let timing = Timing::derive(&camera, &Preset::new("a520"), 64, 48).unwrap();
+    let with_faults = |faults: Vec<AddressFault>| {
+        let mut preset = Preset::new("a520");
+        preset.bend.memory = Some(MemoryBend { faults });
+        preset
+    };
+
+    let highest = with_faults(vec![solid(bits - 1, FaultKind::High)]);
+    highest.validate().unwrap();
+    let params = memory::Params::resolve(&camera, &highest, &timing)
+        .unwrap()
+        .expect("the preset has a memory bend");
+    assert_eq!(params.address_bits, u32::from(bits));
+    assert!(
+        memory::Params::resolve(&camera, &Preset::new("a520"), &timing)
+            .unwrap()
+            .is_none()
+    );
+
+    let beyond = with_faults(vec![solid(bits, FaultKind::Low)]);
+    beyond.validate().unwrap();
+    let error = memory::Params::resolve(&camera, &beyond, &timing).unwrap_err();
+    assert!(error.is_config(), "{error}");
+    assert!(
+        error.to_string().contains("bend.memory.faults[0].pin"),
+        "{error}"
+    );
+    let error = Simulator::builder((camera.clone(), beyond))
+        .build()
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("bend.memory.faults[0].pin"),
+        "{error}"
+    );
+
+    let bridge = with_faults(vec![AddressFault {
+        with: Some(bits + 2),
+        ..solid(1, FaultKind::Bridge)
+    }]);
+    let error = memory::Params::resolve(&camera, &bridge, &timing).unwrap_err();
+    assert!(
+        error.to_string().contains("bend.memory.faults[0].with"),
+        "{error}"
+    );
+}
+
+/// Breaks one value of a camera.
+type BreakCamera = fn(&mut Camera);
+
+#[test]
+fn camera_power_memory_and_nir_values_are_validated() {
+    let cases: [(BreakCamera, &str); 19] = [
+        (|c| c.power.rail_v = 0.0, "power.rail_v"),
+        (|c| c.power.source_ohm = -0.5, "power.source_ohm"),
+        (|c| c.power.decoupling_uf = f64::NAN, "power.decoupling_uf"),
+        (|c| c.power.quiescent_ma = 0.0, "power.quiescent_ma"),
+        (|c| c.power.afe_restart_lines = 0, "power.afe_restart_lines"),
+        (|c| c.power.afe_uvlo_v = c.power.rail_v, "power.afe_uvlo_v"),
+        (|c| c.power.logic_min_v = 4.0, "power.logic_min_v"),
+        (|c| c.power.dsp_brownout_v = -1.0, "power.dsp_brownout_v"),
+        (|c| c.memory.column_bits = 0, "memory.column_bits"),
+        (|c| c.memory.row_bits = 17, "memory.row_bits"),
+        (|c| c.memory.bank_bits = 0, "memory.bank_bits"),
+        (
+            |c| c.memory.raw_base = 1 << c.memory.address_bits(),
+            "memory.raw_base",
+        ),
+        (|c| c.sensor.nir_response[0] = -0.1, "sensor.nir_response"),
+        (
+            |c| c.sensor.nir_response[2] = f64::INFINITY,
+            "sensor.nir_response",
+        ),
+        (|c| c.lens.nir_defocus_frac = 0.5, "lens.nir_defocus_frac"),
+        (|c| c.lens.nir_defocus_frac = -0.01, "lens.nir_defocus_frac"),
+        (
+            |c| c.lens.filter_edge_blur_frac = f64::NAN,
+            "lens.filter_edge_blur_frac",
+        ),
+        (
+            |c| c.lens.filter_edge_blur_frac = 0.75,
+            "lens.filter_edge_blur_frac",
+        ),
+        (|c| c.lens.vignette_stops = -1.0, "lens.vignette_stops"),
+    ];
+    for (case, (breaks, field)) in cases.iter().enumerate() {
+        let mut camera = camera();
+        breaks(&mut camera);
+        let error = camera.validate().unwrap_err();
+        assert!(error.is_config(), "case {case}: {error}");
+        assert!(
+            error.to_string().contains(field),
+            "case {case}: \"{error}\" does not name {field}"
+        );
+    }
+
+    // The SDRAM's last word may hold the raw buffer's start.
+    let mut camera = camera();
+    camera.memory.raw_base = (1 << camera.memory.address_bits()) - 1;
+    camera.validate().unwrap();
+}
+
+#[test]
+fn the_power_and_memory_sections_and_the_nir_keys_are_required() {
+    let text = std::fs::read_to_string(root().join("cameras/a520.toml")).unwrap();
+    let file: toml::Table = toml::from_str(&text).unwrap();
+    for section in ["power", "memory"] {
+        let mut without = file.clone();
+        without.remove(section);
+        let error = toml::from_str::<Camera>(&toml::to_string(&without).unwrap()).unwrap_err();
+        assert!(error.to_string().contains(section), "{section}: {error}");
+    }
+    for (section, key) in [
+        ("sensor", "nir_response"),
+        ("lens", "nir_defocus_frac"),
+        ("lens", "filter_edge_blur_frac"),
+    ] {
+        let mut without = file.clone();
+        without
+            .get_mut(section)
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .remove(key);
+        let error = toml::from_str::<Camera>(&toml::to_string(&without).unwrap()).unwrap_err();
+        assert!(error.to_string().contains(key), "{key}: {error}");
+    }
 }

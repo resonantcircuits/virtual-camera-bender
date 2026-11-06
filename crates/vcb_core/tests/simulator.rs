@@ -86,7 +86,7 @@ fn gradient(width: u32, height: u32) -> Vec<u8> {
             rgb.extend([
                 (fx * 255.0).round() as u8,
                 (fy * 255.0).round() as u8,
-                ((1.0 - 0.5 * (fx + fy)) * 255.0).round() as u8,
+                ((1.0 - f64::midpoint(fx, fy)) * 255.0).round() as u8,
             ]);
         }
     }
@@ -147,7 +147,12 @@ fn flat_grey_scene_develops_to_a_flat_frame() {
     let frame = sim.frame(&scene, 0);
     let first = frame.pixel(0, 0);
     assert!(
-        frame.rgb().chunks_exact(3).all(|pixel| pixel == first),
+        frame
+            .rgb()
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .all(|&pixel| pixel == first),
         "frame is not flat"
     );
     assert!(

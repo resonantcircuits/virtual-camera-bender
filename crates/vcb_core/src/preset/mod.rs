@@ -31,12 +31,26 @@
 //! h_glitch_hz = 1.0
 //! [bend.afe]
 //! inject = { wave = "square", freq_hz = 1200.0, amplitude_v = 0.15 }
+//! [bend.optics]
+//! ir_cut_pulled_frac = 1.0    # the IR-cut filter is off the sensor
+//! [bend.rail]
+//! load_ma = 150.0             # an added load on the 3.3 V rail
+//! [bend.clock]
+//! osc_mhz = 26.4              # the timing generator's replacement oscillator
+//! [bend.memory]
+//! [[bend.memory.faults]]
+//! pin = 3                     # SDRAM address pin a3
+//! kind = "high"               # or "low", "bridge" (with `with = <pin>`)
 //! ```
 //!
 //! The structs hold the file's values as written; each stage resolves the sections it
 //! consumes into its own `Params`.
 
+mod clock;
+mod memory;
 pub(crate) mod model;
+mod optics;
+mod rail;
 
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
@@ -45,6 +59,15 @@ use crate::Error;
 use crate::afe::{GainMod, Inject};
 use crate::bus::{Function, PotNode, Target};
 use crate::isp::{AeMode, WbMode};
+
+#[doc(inline)]
+pub use clock::ReclockBend;
+#[doc(inline)]
+pub use memory::{AddressFault, FaultKind, MemoryBend};
+#[doc(inline)]
+pub use optics::OpticsBend;
+#[doc(inline)]
+pub use rail::RailBend;
 
 /// Which readout the sensor performs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -229,6 +252,18 @@ pub struct Bend {
     /// Modifications of the analog front end.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub afe: Option<AfeBend>,
+    /// The IR-cut filter slid off the sensor, `[bend.optics]`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub optics: Option<OpticsBend>,
+    /// Extra loads and disturbances on the supply rail, `[bend.rail]`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rail: Option<RailBend>,
+    /// The timing generator reclocked from a replacement oscillator, `[bend.clock]`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub clock: Option<ReclockBend>,
+    /// Faulted address pins on the frame-buffer SDRAM, `[bend.memory]`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub memory: Option<MemoryBend>,
 }
 
 /// The `[bend.bus]` section: the DIP-switch, capacitor and gate circuit on the data bus.

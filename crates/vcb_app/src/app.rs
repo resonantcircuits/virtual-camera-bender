@@ -1346,6 +1346,9 @@ impl App {
                 edit |= section(ui, target, PanelId::Scene, |ui| {
                     panels::scene::show(ui, &mut self.preset.scene)
                 });
+                edit |= section(ui, target, PanelId::Optics, |ui| {
+                    panels::placeholder(ui, "Optics")
+                });
                 edit |= section(ui, target, PanelId::Sensor, |ui| {
                     panels::sensor::show(ui, &mut self.preset, &base)
                 });
@@ -1359,10 +1362,19 @@ impl App {
                     self.panels.afe.show(ui, timing.as_ref())
                 });
                 edit |= section(ui, target, PanelId::Bus, |ui| self.panels.bus.show(ui));
-                if target == Some(PanelId::Processor) {
+                edit |= section(ui, target, PanelId::Clock, |ui| {
+                    panels::placeholder(ui, "Clock")
+                });
+                edit |= section(ui, target, PanelId::Processor, |ui| {
+                    panels::isp::show(ui, &mut self.preset, &base, width, target)
+                });
+                edit |= section(ui, target, PanelId::Memory, |ui| {
+                    panels::placeholder(ui, "Memory")
+                });
+                if target == Some(PanelId::Power) {
                     ui.scroll_to_cursor(Some(Align::TOP));
                 }
-                edit |= panels::isp::show(ui, &mut self.preset, &base, width, target);
+                edit |= panels::placeholder(ui, "Power");
                 ui.add_space(theme::GRID * 2.0);
             });
         edit

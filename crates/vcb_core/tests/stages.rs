@@ -6,6 +6,7 @@ use vcb_core::adc::{self, Codes};
 use vcb_core::afe::{self, Analog};
 use vcb_core::isp::{self, Raw};
 use vcb_core::plane::Plane;
+use vcb_core::power::Rail;
 use vcb_core::preset::Resolution;
 use vcb_core::readout::{self, Direction, Layout, Stream};
 use vcb_core::scene::{self, Channel};
@@ -191,6 +192,7 @@ fn analog_pedestal_lands_on_the_nominal_black_code() {
         &afe_params,
         &mut afe::State::default(),
         &stream,
+        &Rail::new(&layout, camera.power.rail_v),
         0,
         &mut analog,
     );
@@ -228,7 +230,8 @@ fn black_clamp_reads_the_bus_as_the_processor_does() {
         }
     }
     let mut raw = Raw::new(layout.cols(), layout.rows());
-    isp::clamp_black(&params, &codes, &mut raw);
+    let rail = Rail::new(&layout, camera.power.rail_v);
+    isp::clamp_black(&params, &codes, &rail, &mut raw);
     assert!((raw.black_level() - 32.0).abs() < 1e-4);
     // Bottom-up readout: the first line read is the last image row.
     let last = layout.rows() - 1;
@@ -326,5 +329,5 @@ fn portrait_scenes_turn_clockwise_onto_the_sensor() {
         (green.get(5, 0) - 1.0).abs() < 1e-5,
         "top-left did not turn to top-right"
     );
-    assert!(green.data().iter().filter(|&&v| v > 0.0).count() == 1);
+    assert_eq!(green.data().iter().filter(|&&v| v > 0.0).count(), 1);
 }

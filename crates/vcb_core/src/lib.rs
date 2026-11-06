@@ -9,10 +9,14 @@
 //! | crop, resample, scene to sensor | [`scene`] | [`Scene`] at sensor size |
 //! | exposure into the colour filter array | [`sensor`] | [`sensor::Charge`] |
 //! | vertical and horizontal transfer | [`readout`] | [`readout::Stream`] |
+//! | supply rail of the AFE, logic and processor | [`power`] | [`power::Rail`] |
 //! | analog front end | [`afe`] | [`afe::Analog`] |
 //! | quantisation | [`adc`] | [`adc::Codes`] |
 //! | bend circuit on the data bus | [`bus`] | [`adc::Codes`] (in place) |
-//! | image processing | [`isp`] | [`isp::Raw`], then [`Frame`] |
+//! | the processor's capture of the bus | [`capture`] | [`adc::Codes`] (in place) |
+//! | black clamp | [`isp`] | [`isp::Raw`] |
+//! | frame-buffer SDRAM | [`memory`] | [`isp::Raw`] (in place) |
+//! | development | [`isp`] | [`Frame`] |
 //! | JPEG simulation | [`codec`] | [`Frame`] (in place) |
 //!
 //! A [`Camera`] describes the hardware, a [`Preset`] picks a readout mode and declares
@@ -47,14 +51,17 @@ pub mod adc;
 pub mod afe;
 pub mod bus;
 pub mod camera;
+pub mod capture;
 pub mod codec;
 mod colour;
 mod error;
 mod frame;
 pub mod isp;
+pub mod memory;
 pub mod noise;
 pub mod plane;
 pub mod post;
+pub mod power;
 pub mod preset;
 pub mod readout;
 mod resample;

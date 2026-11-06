@@ -67,7 +67,7 @@ fn frame_period_s(camera: &Camera, preset: &Preset) -> f64 {
 /// Returns the mean of every channel of a frame, in 8-bit codes.
 fn means(frame: &Frame) -> [f64; 3] {
     let mut sums = [0.0; 3];
-    for pixel in frame.rgb().chunks_exact(3) {
+    for pixel in frame.rgb().as_chunks::<3>().0 {
         for (sum, &value) in sums.iter_mut().zip(pixel) {
             *sum += f64::from(value);
         }
