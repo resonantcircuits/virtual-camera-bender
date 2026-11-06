@@ -54,7 +54,7 @@ const MIN_HBLANK_PX: u32 = 8;
 ///
 /// | Consumer | Clock | Quantity |
 /// |---|---|---|
-/// | Sensor: interline smear's transfer time | sensor | `line_period_s` |
+/// | Sensor: interline smear's transfer time, capped at the processor's frame period | sensor | `line_period_s`, `frame_period_s` |
 /// | Readout: clock-fault rates per line, the stream's period | sensor | `line_period_s`, `pixel_period_s` |
 /// | AFE: sub-steps, blanking intervals, an oscillator's advance per sample | sensor | `pixel_period_s` |
 /// | ADC and bus bend: one word per period, circuit sub-steps | sensor | `pixel_period_s` |

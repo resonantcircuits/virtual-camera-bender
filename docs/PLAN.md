@@ -578,3 +578,22 @@ on the samples and a clip.
 ### Stage 15: user testing round
 
 The user plays; findings become fixes; tag `v0.3.0`.
+
+### Status (2026-11-06, evening)
+
+Stage 11 and stages 12a to 12e are complete and merged on `rust-rewrite` (f489dbb plus
+this status): the four bends with their physics, tests and contact sheets, and the
+cross-stage connections (the rail drives the reclock oscillator through `ppm_per_v`, a
+processor brownout leaves stale SDRAM rows, sub-line constants scale on the processor
+clock so a slow sensor clock settles more per pixel, the processor's black clamp
+corrects within `[isp] clamp_range`, smear is capped at VD). Values settled during the
+stage: `foliage_nir` defaults to 0 and the NIR estimator is labelled an assumption
+(user decision), `nir_response` `[1.0, 0.55, 0.5]`, `filter_edge_blur_frac` 0.06,
+`dsp_brownout_v` 2.4 (at 2.9 the processor dropped the frame before the AFE could
+lock out), `clamp_range` 128 (64 would change the DIV golden), memory pins limited to
+`a0` to `a11`. Known limits for stage 14 to work with: large reclock detunes are
+violent, readable loose-sync presets need detunes near 0.05 % or drift; every reclock
+feels the rail through the default `ppm_per_v`; the HPF bend darkens held words, so a
+chromatic-sieve preset wants the rail bend without it; the bend's own pot current only
+loads the rail from the next frame on. Next: stage 13 (panels) and stage 14 (presets,
+goldens, docs, benches for the new stages).

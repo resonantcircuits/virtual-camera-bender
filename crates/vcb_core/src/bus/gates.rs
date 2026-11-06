@@ -42,9 +42,11 @@ pub(crate) struct Chips {
 impl Chips {
     /// Converts the camera's logic section to sub-steps of `dt_s` seconds.
     ///
-    /// `scale` is `pixel_period_s / native_pixel_period_s`. Every duration of the logic
-    /// section is multiplied by it, so a delay spans the same number of pixel periods
-    /// at match-input resolution as at the camera's own pixel clock.
+    /// `scale` is `Timing::resolution_scale`, the processor's capture period over the
+    /// native pixel period. Every duration of the logic section is multiplied by it, so
+    /// a delay spans the same number of processor periods at match-input resolution as
+    /// at the camera's own pixel clock; a bent sensor clock changes how many sensor
+    /// periods it spans.
     pub(crate) fn new(logic: &Logic, scale: f64, dt_s: f64) -> Self {
         let steps = |seconds: f64| (seconds * scale / dt_s - STEP_TOLERANCE).ceil().max(0.0);
         let delay = |ns: f64| (steps(ns * 1e-9) - 1.0).max(1.0) as u32;
