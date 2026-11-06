@@ -169,6 +169,7 @@ impl Stages {
 /// The persistent state of every stage, as at power-on when default.
 #[derive(Debug, Clone, Default)]
 struct States {
+    scene: scene::State,
     sensor: sensor::State,
     readout: readout::State,
     power: power::State,
@@ -423,7 +424,7 @@ impl Simulator {
             buffers: b,
             ..
         } = self;
-        scene::prepare(&params.scene, scene, &mut b.scene);
+        scene::prepare(&params.scene, &mut state.scene, scene, &mut b.scene);
         params.sensor.exposure_scale = state.isp.servo_exposure();
         sensor::expose(
             &params.sensor,

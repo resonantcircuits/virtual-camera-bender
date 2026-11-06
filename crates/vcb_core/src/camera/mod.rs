@@ -75,12 +75,16 @@ pub struct Sensor {
     pub cte: f64,
     /// Density of hot photosites per megapixel.
     pub hot_pixels_per_mpix: f64,
-    /// Charge of the red, green and blue sites from unit near infrared, relative to reference white.
+    /// Charge of the red, green and blue sites from unit near infrared, in scene units.
     ///
-    /// Each channel's response to scene NIR radiance of 1, as a fraction of its
-    /// response to reference white: the colour dyes pass most of the light beyond
-    /// 750 nm, which the IR-cut filter normally blocks. Dimensionless, each at least
-    /// 0; used only when `[bend.optics]` slides the filter away.
+    /// Each channel's charge from an estimated NIR radiance of 1 (reference white's,
+    /// see `[bend.optics]`), relative to the charge reference white gives the green
+    /// channel. These are the units of the prepared scene, where reference white
+    /// gives 1 in green, the channel the white balance leaves alone; the response is
+    /// added as is, not scaled by each channel's own response to white. The colour
+    /// dyes pass most of the light beyond 750 nm, which the IR-cut filter normally
+    /// blocks. Dimensionless, each at least 0; used only when `[bend.optics]` slides
+    /// the filter away.
     pub nir_response: [f64; 3],
     /// Layout of the colour filter array.
     pub cfa: Cfa,
