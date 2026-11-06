@@ -17,13 +17,16 @@
 //!    compensates a changed exposure time within its two stops, as the camera's
 //!    aperture would; with a fixed exposure the time alone sets the brightness.
 //! 2. Photo-response non-uniformity: a fixed gain `1 + prnu * N(0, 1)` per photosite.
-//! 3. Dark signal: `dark_e_per_s * k * exposure_s`, times 50 to 500 (log-uniform) at
-//!    the `hot_pixels_per_mpix` hot photosites, plus the output amplifier's glow, plus
-//!    a fixed offset `dsnu_e * k * N(0, 1)`; `k` is the Arrhenius factor of the
-//!    sensor's temperature and the glow falls off from the readout's first corner
-//!    (below).
-//!    PRNU, DSNU and hot photosites hash the photosite coordinates with the camera's
-//!    `unit_seed`, so they are the same in every frame and every preset.
+//! 3. Dark signal: the mean dark charge `dark_e_per_s * k * exposure_s`, `k` the
+//!    Arrhenius factor of the sensor's temperature (below), spread over the photosites
+//!    as `max(0, 1 + dark_nonuniformity * N(0, 1))` of it, or times 50 to 500
+//!    (log-uniform) at the `hot_pixels_per_mpix` hot photosites, the spread's tail;
+//!    plus the output amplifier's glow, which falls off from the readout's first
+//!    corner (below); plus a fixed offset `dsnu_e * N(0, 1)`, the readout chain's
+//!    offset non-uniformity, which neither the temperature nor the exposure moves.
+//!    PRNU, the dark spread, DSNU and hot photosites hash the photosite coordinates
+//!    with the camera's `unit_seed`, so they are the same in every frame and every
+//!    preset.
 //! 4. Shot noise: Gaussian with variance equal to the electron count, drawn per
 //!    photosite and frame from the preset seed and the frame index. The Gaussian
 //!    stands in for the Poisson distribution; it is accurate above a few tens of
@@ -51,13 +54,16 @@
 //! - **Dark current.** Thermal generation in silicon follows the Arrhenius rule; near
 //!   room temperature a CCD's dark current doubles every `dark_doubling_c` degrees
 //!   (C: 6 to 8 °C). The factor `k = 2^((T - T_ref) / dark_doubling_c)` multiplies
-//!   `dark_e_per_s`, and with it every hot photosite, whose multiple of the mean stays
-//!   its own, and the dark signal's non-uniformity `dsnu_e`, the spread of the same
-//!   current, so the fixed pattern of a dark frame grows with the heat. The masked
-//!   optical-black photosites share the temperature
+//!   `dark_e_per_s`, and with it the dark current's spread over the photosites and
+//!   every hot photosite, whose multiple of the mean stays its own. The spread is a
+//!   fixed relative one (`dark_nonuniformity`, PROVISIONAL: tens of per cent for CCDs),
+//!   so the fixed pattern of a dark frame grows in proportion to its dark charge,
+//!   `k * exposure_s`: a hot long exposure turns grainy where a short one at the same
+//!   heat stays nearly clean. The masked optical-black photosites share the temperature
 //!   ([`readout::Params::dark_e`](crate::readout::Params::dark_e)), so the image
-//!   processor's black clamp removes the mean dark: what shows is its shot noise as
-//!   grain, the hot photosites as crosses after the demosaic, the glow and clipping.
+//!   processor's black clamp removes the mean dark: what shows is its spread and shot
+//!   noise as grain, the hot photosites as crosses after the demosaic, the glow and
+//!   clipping.
 //! - **Read noise.** The output amplifier's noise rises `read_noise_per_c` per degree,
 //!   `1 + read_noise_per_c * (T - T_ref)`, at least 0 (PROVISIONAL). The analog front
 //!   end adds the read noise, so this stage reports the factor,
@@ -149,6 +155,9 @@ const SALT_PRNU: u32 = noise::salt("sensor.prnu");
 
 /// Salt of the dark-signal non-uniformity.
 const SALT_DSNU: u32 = noise::salt("sensor.dsnu");
+
+/// Salt of the dark current's relative spread over the photosites.
+const SALT_DARK_SPREAD: u32 = noise::salt("sensor.dark.spread");
 
 /// Salt that selects the hot photosites.
 const SALT_HOT: u32 = noise::salt("sensor.hot");
@@ -325,10 +334,15 @@ pub struct Params {
     pub dark_e_per_s: f32,
     /// Photo-response non-uniformity, relative gain spread (one standard deviation).
     pub prnu: f32,
-    /// Dark-signal non-uniformity at the sensor's temperature in electrons (one standard deviation).
+    /// Dark-signal non-uniformity in electrons (one standard deviation).
     ///
-    /// The camera's `dsnu_e` times the Arrhenius factor `k`.
+    /// The readout chain's fixed offset pattern; neither temperature nor exposure moves it.
     pub dsnu_e: f32,
+    /// Relative spread of the dark current over the photosites, one standard deviation.
+    ///
+    /// Each photosite collects `max(0, 1 + dark_nonuniformity * N(0, 1))` of the mean
+    /// dark charge, so the pattern grows with it; the hot photosites are its tail.
+    pub dark_nonuniformity: f32,
     /// Overexposure, in multiples of the full well, the overflow drain absorbs before spill.
     ///
     /// The camera's, at the nominal substrate bias; the bias scales it by `drain_ratio`.
@@ -392,7 +406,7 @@ pub struct Params {
     pub exposure_scale: Option<f32>,
     /// Seed of the sensor's temporal noise.
     pub seed: u64,
-    /// Seed of this unit's fixed pattern: PRNU, DSNU and hot photosites.
+    /// Seed of this unit's fixed pattern: PRNU, the dark current's spread, DSNU and hot photosites.
     pub unit_seed: u64,
 }
 
@@ -474,7 +488,8 @@ impl Params {
             nominal_exposure_s: sensor.nominal_exposure_s as f32,
             dark_e_per_s: (sensor.dark_e_per_s * dark_ratio) as f32,
             prnu: sensor.prnu as f32,
-            dsnu_e: (sensor.dsnu_e * dark_ratio) as f32,
+            dsnu_e: sensor.dsnu_e as f32,
+            dark_nonuniformity: sensor.dark_nonuniformity as f32,
             antibloom_ratio: sensor.antibloom_ratio as f32,
             smear_db: sensor.smear_db as f32,
             hot_pixels_per_mpix: sensor.hot_pixels_per_mpix as f32,
@@ -703,6 +718,7 @@ fn integrate(
     let unit = noise::stage_seed(params.unit_seed, SALT_UNIT);
     let frame_seed = params.seed ^ index;
     let dark_mean = params.dark_e_per_s * params.exposure_s;
+    let spread_dark = dark_mean > 0.0 && params.dark_nonuniformity > 0.0;
     let hot_fraction = params.hot_pixels_per_mpix * 1e-6;
     let (width, height) = (scene.width(), scene.height());
     let glow = Glow::new(params, width, height);
@@ -728,6 +744,11 @@ fn integrate(
                 if hot_fraction > 0.0 && noise::unit(x, y, SALT_HOT, unit) < hot_fraction {
                     let decades = HOT_DECADES * noise::unit(x, y, SALT_HOT_RATE, unit);
                     dark *= HOT_MIN_RATIO * 10f32.powf(decades);
+                } else if spread_dark {
+                    dark *= params
+                        .dark_nonuniformity
+                        .mul_add(noise::gauss(x, y, SALT_DARK_SPREAD, unit), 1.0)
+                        .max(0.0);
                 }
                 if let Some((glow, dy2)) = glow_row {
                     dark += glow.at(x, dy2);

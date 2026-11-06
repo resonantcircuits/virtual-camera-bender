@@ -65,8 +65,15 @@ pub struct Sensor {
     pub prnu: f64,
     /// Dark-signal non-uniformity in electrons, one standard deviation.
     ///
-    /// At `reference_temp_c`; as the spread of the dark current it scales with it.
+    /// The readout chain's fixed offset pattern, the same at every temperature and
+    /// exposure; the dark current's own spread is `dark_nonuniformity`.
     pub dsnu_e: f64,
+    /// Relative spread of the dark current over the photosites, one standard deviation, in `[0, 1]`.
+    ///
+    /// Each photosite collects `max(0, 1 + dark_nonuniformity * N(0, 1))` of the mean
+    /// dark charge, so the pattern grows with the dark charge, with the temperature and
+    /// the exposure; the hot photosites are the spread's tail, on top of it.
+    pub dark_nonuniformity: f64,
     /// Conversion gain of the output amplifier in microvolts per electron.
     pub conv_gain_uv_per_e: f64,
     /// Overexposure, in multiples of the full well, that the overflow drain absorbs before charge spills.
@@ -126,7 +133,7 @@ pub struct Sensor {
     pub nir_response: [f64; 3],
     /// Layout of the colour filter array.
     pub cfa: Cfa,
-    /// Seed of this unit's fixed pattern: its PRNU, DSNU, hot photosites and bus drivers.
+    /// Seed of this unit's fixed pattern: PRNU, dark spread, DSNU, hot photosites, bus drivers.
     ///
     /// Two cameras of the same model differ only in this seed, which also draws the
     /// spread of the ADC's data-line driver resistance; the preset's seed, which drives

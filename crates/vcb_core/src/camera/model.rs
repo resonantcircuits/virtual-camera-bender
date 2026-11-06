@@ -175,6 +175,7 @@ impl Camera {
             1.0,
         )?;
         positive("sensor.drain_loss_v", s.drain_loss_v)?;
+        within("sensor.dark_nonuniformity", s.dark_nonuniformity, 0.0, 1.0)?;
         for (channel, response) in ["r", "g", "b"].iter().zip(s.nir_response) {
             non_negative(&format!("sensor.nir_response ({channel})"), response)?;
         }

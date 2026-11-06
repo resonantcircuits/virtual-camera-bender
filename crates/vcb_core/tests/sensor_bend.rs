@@ -271,10 +271,10 @@ fn hot_photosites_keep_their_multiples_and_their_count() {
 #[test]
 fn the_amplifier_glows_from_the_readout_s_first_corner() {
     let mut camera = camera();
-    // No hot photosite in the corners measured, and no fixed pattern, which at this
-    // heat would vary more between the corners than the glow.
+    // No hot photosite in the corners measured, and no spread of the dark current,
+    // which at this heat would vary more between two small patches than the glow.
     camera.sensor.hot_pixels_per_mpix = 0.0;
-    camera.sensor.dsnu_e = 0.0;
+    camera.sensor.dark_nonuniformity = 0.0;
     let glow_e_per_s = camera.sensor.amp_glow_e_per_s;
     assert!(glow_e_per_s > 0.0, "the camera's amplifier does not glow");
     let (width, height) = (1024, 768);
@@ -600,49 +600,88 @@ fn a_hot_sensor_reads_out_noisier_by_the_read_noise_scale() {
     );
 }
 
+/// The fixed pattern and the mean of two exposures of a black scene, in electrons.
+///
+/// The pattern is what the two frames share: the root of their covariance across the
+/// photosites, the shot noise of each frame being its own.
+fn dark_pattern(params: &sensor::Params, black: &Scene) -> (f64, f64) {
+    let (a, b) = (expose(params, black, 0), expose(params, black, 1));
+    let (a, b) = (a.plane().data(), b.plane().data());
+    let count = a.len() as f64;
+    let mean_a = a.iter().map(|&e| f64::from(e)).sum::<f64>() / count;
+    let mean_b = b.iter().map(|&e| f64::from(e)).sum::<f64>() / count;
+    let covariance = a
+        .iter()
+        .zip(b)
+        .map(|(&x, &y)| (f64::from(x) - mean_a) * (f64::from(y) - mean_b))
+        .sum::<f64>()
+        / count;
+    (covariance.sqrt(), mean_a)
+}
+
 #[test]
-fn the_dark_frame_s_fixed_pattern_grows_with_the_heat() {
+fn the_dark_frame_s_fixed_pattern_grows_in_proportion_to_its_dark_charge() {
     let mut camera = camera();
     camera.sensor.amp_glow_e_per_s = 0.0;
     camera.sensor.hot_pixels_per_mpix = 0.0;
-    // A pronounced pattern, measured well above the temporal noise.
-    camera.sensor.dsnu_e = 10.0;
+    // The readout chain's offset pattern is tested apart; here the dark current's own
+    // spread is the whole pattern.
+    camera.sensor.dsnu_e = 0.0;
     let (width, height) = (256, 192);
-    // Two hundred electrons of dark charge at the reference, far above the clip at zero.
-    let exposure_s = 200.0 / camera.sensor.dark_e_per_s;
     let black = Scene::new(width, height);
-    // The fixed pattern is what two frames share: the root of their covariance across
-    // the photosites, the shot noise of each frame being its own.
-    let pattern_e = |temperature_c: f64| {
+    let at = |camera: &Camera, temperature_c: f64, exposure_s: f64| {
         let preset = bent(
             exposed(bare(Mode::Still), exposure_s),
             Some(temperature_c),
             None,
         );
-        let params = sensor_params(&camera, &preset, width, height);
-        let (a, b) = (expose(&params, &black, 0), expose(&params, &black, 1));
-        let (a, b) = (a.plane().data(), b.plane().data());
-        let count = a.len() as f64;
-        let mean_a = a.iter().map(|&e| f64::from(e)).sum::<f64>() / count;
-        let mean_b = b.iter().map(|&e| f64::from(e)).sum::<f64>() / count;
-        let covariance = a
-            .iter()
-            .zip(b)
-            .map(|(&x, &y)| (f64::from(x) - mean_a) * (f64::from(y) - mean_b))
-            .sum::<f64>()
-            / count;
-        covariance.sqrt()
+        sensor_params(camera, &preset, width, height)
     };
     let reference_c = camera.sensor.reference_temp_c;
-    let two_doublings_c = reference_c + 2.0 * camera.sensor.dark_doubling_c;
-    let (room, hot) = (pattern_e(reference_c), pattern_e(two_doublings_c));
+    // Two hundred electrons of dark charge, then twice as long, then two doublings hotter.
+    let base_s = 200.0 / camera.sensor.dark_e_per_s;
+    let (room, room_mean) = dark_pattern(&at(&camera, reference_c, base_s), &black);
+    let (longer, longer_mean) = dark_pattern(&at(&camera, reference_c, 2.0 * base_s), &black);
+    let hotter_c = reference_c + 2.0 * camera.sensor.dark_doubling_c;
+    let (hotter, hotter_mean) = dark_pattern(&at(&camera, hotter_c, base_s), &black);
+    assert!(room > 0.05 * room_mean, "no dark pattern: {room:.2} e");
+    // The pattern is a fixed fraction of the dark charge, whatever brought the charge.
+    for (pattern_e, mean_e, what) in [
+        (longer, longer_mean, "twice the exposure"),
+        (hotter, hotter_mean, "two doublings hotter"),
+    ] {
+        assert!(
+            (pattern_e / mean_e / (room / room_mean) - 1.0).abs() < 0.03,
+            "{what}: a pattern of {pattern_e:.1} e on {mean_e:.0} e, against {room:.1} e on \
+             {room_mean:.0} e"
+        );
+    }
     assert!(
-        (room / camera.sensor.dsnu_e - 1.0).abs() < 0.05,
-        "the pattern spreads {room:.2} e at the reference temperature"
+        (longer / room - 2.0).abs() < 0.06,
+        "{room:.1} e to {longer:.1} e"
     );
     assert!(
-        (hot / room - 4.0).abs() < 0.08,
-        "two doublings spread the pattern from {room:.2} e to {hot:.2} e"
+        (hotter / room - 4.0).abs() < 0.12,
+        "{room:.1} e to {hotter:.1} e"
+    );
+    // At the camera's own exposure even a hot sensor collects too little dark charge
+    // for a pattern worth an electron.
+    let (short, _) = dark_pattern(&at(&camera, 70.0, camera.still.exposure_s), &black);
+    assert!(
+        short < 1.0,
+        "a 70 C frame at the camera's exposure: {short:.2} e"
+    );
+
+    // Without dark current, the readout chain's offset pattern ignores the heat.
+    let mut offsets = self::camera();
+    offsets.sensor.dark_e_per_s = 0.0;
+    offsets.sensor.amp_glow_e_per_s = 0.0;
+    let charge = |temperature_c: f64| expose(&at(&offsets, temperature_c, base_s), &black, 0);
+    assert!(offsets.sensor.dsnu_e > 0.0);
+    assert_eq!(
+        charge(reference_c),
+        charge(hotter_c),
+        "the heat moved the offset pattern"
     );
 }
 
@@ -675,9 +714,7 @@ fn a_hot_sensor_on_a_turned_bias_replays_from_reset() {
 
 #[test]
 fn heating_the_running_camera_keeps_its_state_and_shows_in_the_next_frame() {
-    let mut camera = camera();
-    // The fixed pattern, as hot as the glow, would light every corner alike.
-    camera.sensor.dsnu_e = 0.0;
+    let camera = camera();
     let black = Scene::new(WIDTH, HEIGHT);
     // One movie frame period, which both readouts integrate in full.
     let exposure_s = 1.0 / camera.movie.fps;
@@ -694,14 +731,24 @@ fn heating_the_running_camera_keeps_its_state_and_shows_in_the_next_frame() {
         let hot = bent(cool.clone(), Some(temperature_c), None);
         assert_eq!(heated.set_preset(hot.clone()).unwrap(), KEPT, "{mode}");
         assert_eq!(heated.preset(), &hot);
-        // The glow lights the corner the readout samples first, the top left here: the
-        // mean code of the frame's top-left sixteenth.
-        let corner = |frame: &Frame| {
+        // The mean code of a sixteenth of the frame at its top left, the corner the
+        // readout samples first, or at its bottom right.
+        let sixteenth = |frame: &Frame, first: bool| {
             let (columns, rows) = ((frame.width() / 4) as usize, (frame.height() / 4) as usize);
+            let (x0, y0) = if first {
+                (0, 0)
+            } else {
+                (
+                    frame.width() as usize - columns,
+                    frame.height() as usize - rows,
+                )
+            };
             let rgb = frame.rgb();
             let stride = frame.width() as usize * 3;
-            (0..rows)
-                .flat_map(|y| (0..columns * 3).map(move |i| f64::from(rgb[y * stride + i])))
+            (y0..y0 + rows)
+                .flat_map(|y| {
+                    (x0 * 3..(x0 + columns) * 3).map(move |i| f64::from(rgb[y * stride + i]))
+                })
                 .sum::<f64>()
                 / (columns * rows * 3) as f64
         };
@@ -711,10 +758,17 @@ fn heating_the_running_camera_keeps_its_state_and_shows_in_the_next_frame() {
             warm, cool_frame,
             "{mode}: the heat did not reach the next frame"
         );
-        let (warm, still_cool) = (corner(&warm), corner(&cool_frame));
+        // The heat makes the whole frame grainier; the glow lights the first corner.
+        let (glowing, opposite) = (sixteenth(&warm, true), sixteenth(&warm, false));
+        let still_cool = sixteenth(&cool_frame, true);
         assert!(
-            warm > still_cool + 20.0,
-            "{mode}: the heated corner reads {warm:.1}, the cool one {still_cool:.1}"
+            glowing > still_cool + 20.0,
+            "{mode}: the heated corner reads {glowing:.1}, the cool one {still_cool:.1}"
+        );
+        assert!(
+            glowing > opposite + 15.0,
+            "{mode}: the heated frame reads {glowing:.1} at its first corner, {opposite:.1} \
+             at the opposite one"
         );
         // Turning the heat back off is a knob too.
         assert_eq!(heated.set_preset(cool).unwrap(), KEPT, "{mode}");
@@ -775,7 +829,7 @@ fn out_of_range_temperatures_and_biases_are_rejected() {
         );
     }
 
-    let checks: [Break; 8] = [
+    let checks: [Break; 9] = [
         ("reference_temp_c", |c| c.sensor.reference_temp_c = 200.0),
         ("dark_doubling_c", |c| c.sensor.dark_doubling_c = 0.0),
         ("read_noise_per_c", |c| c.sensor.read_noise_per_c = -0.01),
@@ -788,6 +842,7 @@ fn out_of_range_temperatures_and_biases_are_rejected() {
             c.sensor.full_well_frac_per_v = 1.5;
         }),
         ("drain_loss_v", |c| c.sensor.drain_loss_v = 0.0),
+        ("dark_nonuniformity", |c| c.sensor.dark_nonuniformity = 1.5),
     ];
     for (field, break_it) in checks {
         let mut broken = camera.clone();
