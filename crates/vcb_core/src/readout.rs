@@ -74,7 +74,7 @@ use std::fmt::{self, Debug, Formatter};
 
 use crate::noise;
 use crate::preset::Mode;
-use crate::sensor::Charge;
+use crate::sensor::{self, Charge};
 use crate::{Camera, Error, Preset, Timing};
 
 /// Salt of the readout's noise sources.
@@ -357,6 +357,9 @@ pub struct Params {
     /// Geometry and timing of the produced stream.
     pub layout: Layout,
     /// Dark charge of an optical-black photosite: dark current times exposure, in electrons.
+    ///
+    /// The masked photosites share the array's temperature, so the dark current is the
+    /// sensor's at the `[bend.sensor]` temperature (see [`sensor`]).
     pub dark_e: f32,
     /// Charge transfer efficiency of one vertical transfer.
     pub cte: f64,
@@ -383,7 +386,9 @@ impl Params {
     ///
     /// The preset's `[bend.clocks] cte` replaces the sensor's own when set. Movie mode
     /// integrates dark current over one frame at the nominal frame rate, still mode
-    /// over the still exposure.
+    /// over the set exposure, the preset's `[sensor] exposure_s` or else the still
+    /// exposure, as the image's photosites do; the dark current is the sensor's at the
+    /// preset's `[bend.sensor] temperature_c`.
     ///
     /// # Errors
     ///
@@ -391,14 +396,18 @@ impl Params {
     pub fn resolve(camera: &Camera, preset: &Preset, timing: &Timing) -> Result<Self, Error> {
         let direction = camera.clocking(timing.mode).direction;
         let exposure_s = match timing.mode {
-            Mode::Still => camera.still.exposure_s,
+            Mode::Still => preset
+                .sensor
+                .and_then(|o| o.exposure_s)
+                .unwrap_or(camera.still.exposure_s),
             Mode::Movie => 1.0 / camera.movie.fps,
         };
         let clocks = preset.bend.clocks.clone().unwrap_or_default();
         let native_rows = camera.sensor.native_height / (2 * timing.line_skip.max(1)) * 2;
         Ok(Self {
             layout: Layout::from_timing(timing, direction),
-            dark_e: (camera.sensor.dark_e_per_s * exposure_s) as f32,
+            dark_e: (camera.sensor.dark_e_per_s * sensor::dark_factor(camera, preset) * exposure_s)
+                as f32,
             cte: clocks.cte.unwrap_or(camera.sensor.cte),
             sensor_height: timing.sensor_height,
             native_height: camera.sensor.native_height,

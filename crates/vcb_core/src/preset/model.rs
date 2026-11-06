@@ -137,6 +137,9 @@ impl Preset {
         if let Some(optics) = &self.bend.optics {
             optics.validate()?;
         }
+        if let Some(sensor) = &self.bend.sensor {
+            sensor.validate()?;
+        }
         if let Some(rail) = &self.bend.rail {
             rail.validate()?;
         }

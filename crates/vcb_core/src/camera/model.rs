@@ -4,6 +4,9 @@ use crate::camera::{
     Adc, Afe, Clocking, Info, Isp, Jpeg, Lens, Logic, Memory, Movie, Power, Sensor, Still,
 };
 use crate::preset::Mode;
+use crate::sensor::{
+    MAX_DARK_DOUBLING_C, MAX_SUBSTRATE_V, MAX_TEMPERATURE_C, MIN_DARK_DOUBLING_C, MIN_TEMPERATURE_C,
+};
 use crate::validate::{at_least, finite, fraction, non_negative, positive, within};
 use crate::{Error, colour};
 
@@ -149,6 +152,28 @@ impl Camera {
         within("sensor.smear_db", s.smear_db, MIN_SMEAR_DB, 0.0)?;
         fraction("sensor.cte", s.cte)?;
         non_negative("sensor.hot_pixels_per_mpix", s.hot_pixels_per_mpix)?;
+        within(
+            "sensor.reference_temp_c",
+            s.reference_temp_c,
+            MIN_TEMPERATURE_C,
+            MAX_TEMPERATURE_C,
+        )?;
+        within(
+            "sensor.dark_doubling_c",
+            s.dark_doubling_c,
+            MIN_DARK_DOUBLING_C,
+            MAX_DARK_DOUBLING_C,
+        )?;
+        non_negative("sensor.read_noise_per_c", s.read_noise_per_c)?;
+        non_negative("sensor.amp_glow_e_per_s", s.amp_glow_e_per_s)?;
+        positive("sensor.amp_glow_radius_frac", s.amp_glow_radius_frac)?;
+        within("sensor.substrate_v", s.substrate_v, 0.0, MAX_SUBSTRATE_V)?;
+        within(
+            "sensor.full_well_frac_per_v",
+            s.full_well_frac_per_v,
+            0.0,
+            1.0,
+        )?;
         for (channel, response) in ["r", "g", "b"].iter().zip(s.nir_response) {
             non_negative(&format!("sensor.nir_response ({channel})"), response)?;
         }

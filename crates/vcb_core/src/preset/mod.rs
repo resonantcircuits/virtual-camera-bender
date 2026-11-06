@@ -18,6 +18,9 @@
 //! shoulder_start = 0.8
 //! [sensor]
 //! exposure_s = 0.004          # replaces the camera's exposure of the readout mode
+//! [bend.sensor]
+//! temperature_c = 70.0        # a heat gun on the CCD
+//! substrate_v = 13.5          # the substrate bias turned up
 //! [bend.bus]
 //! source_pins = [9, 8, 7]
 //! target = "pin:10"           # or "gnd"
@@ -51,6 +54,7 @@ mod memory;
 pub(crate) mod model;
 mod optics;
 mod rail;
+mod sensor_bend;
 
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
@@ -68,6 +72,8 @@ pub use memory::{AddressFault, FaultKind, MemoryBend};
 pub use optics::OpticsBend;
 #[doc(inline)]
 pub use rail::RailBend;
+#[doc(inline)]
+pub use sensor_bend::SensorBend;
 
 /// Which readout the sensor performs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -255,6 +261,9 @@ pub struct Bend {
     /// The IR-cut filter slid off the sensor, `[bend.optics]`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub optics: Option<OpticsBend>,
+    /// The sensor's temperature and substrate bias, `[bend.sensor]`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub sensor: Option<SensorBend>,
     /// Extra loads and disturbances on the supply rail, `[bend.rail]`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub rail: Option<RailBend>,

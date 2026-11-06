@@ -6,6 +6,7 @@
 
 use vcb_core::preset::{
     AddressFault, FaultKind, MemoryBend, Mode, OpticsBend, RailBend, ReclockBend, Resolution,
+    SensorBend,
 };
 use vcb_core::{Camera, Frame, Preset, Reconfigured, Scene, Simulator, Timing, memory};
 
@@ -72,8 +73,8 @@ type Section = (&'static str, fn(&mut Preset));
 
 /// Each section at values that leave the camera as it is: the IR-cut filter in place,
 /// no load added to the rail, the oscillator at the camera's own 27 MHz, no address
-/// fault.
-const INERT: [Section; 4] = [
+/// fault, the sensor at the camera's own temperature and substrate bias.
+const INERT: [Section; 5] = [
     ("optics", |p| {
         p.bend.optics = Some(OpticsBend {
             ir_cut_pulled_frac: 0.0,
@@ -83,6 +84,7 @@ const INERT: [Section; 4] = [
     ("rail", |p| p.bend.rail = Some(RailBend::default())),
     ("clock", |p| p.bend.clock = Some(ReclockBend::new(27.0))),
     ("memory", |p| p.bend.memory = Some(MemoryBend::default())),
+    ("sensor", |p| p.bend.sensor = Some(SensorBend::default())),
 ];
 
 /// Each section bent: the filter off, a loaded rail, a detuned oscillator, a stuck pin.
@@ -160,13 +162,13 @@ fn inert_optics_rail_clock_and_memory_sections_render_byte_identically() {
         assert_eq!(
             render(&mut sim, &scene),
             expected,
-            "{mode}: the four inert sections changed the frames"
+            "{mode}: the inert sections together changed the frames"
         );
         sim.reset();
         assert_eq!(
             render(&mut sim, &scene),
             expected,
-            "{mode}: the four inert sections changed the frames after a reset"
+            "{mode}: the inert sections together changed the frames after a reset"
         );
     }
 }

@@ -75,6 +75,36 @@ pub struct Sensor {
     pub cte: f64,
     /// Density of hot photosites per megapixel.
     pub hot_pixels_per_mpix: f64,
+    /// Temperature at which `dark_e_per_s` and `read_noise_e` hold, in degrees Celsius.
+    ///
+    /// The sensor runs at it unless `[bend.sensor] temperature_c` heats or cools it.
+    pub reference_temp_c: f64,
+    /// Temperature rise that doubles the dark current, in degrees Celsius, in `[3, 30]`.
+    ///
+    /// Thermal generation in silicon follows the Arrhenius rule; near room temperature
+    /// the dark current of a CCD doubles every 6 to 8 degrees.
+    pub dark_doubling_c: f64,
+    /// Relative rise of the read noise per degree above `reference_temp_c`, at least 0.
+    pub read_noise_per_c: f64,
+    /// Extra dark current at the output amplifier's corner, in electrons per second.
+    ///
+    /// The amplifier glows into the corner of the array nearest it, the first sample
+    /// the readout takes. The glow grows with the dark current's rise above the
+    /// reference temperature, `k - 1` for the Arrhenius factor `k`; this is its value
+    /// at `k = 2`, one `dark_doubling_c` above the reference. At least 0.
+    pub amp_glow_e_per_s: f64,
+    /// Distance over which the amplifier's glow falls by `1/e`, as a fraction of the width.
+    ///
+    /// Positive.
+    pub amp_glow_radius_frac: f64,
+    /// Nominal substrate bias (VSUB) in volts, at which `full_well_e` and `antibloom_ratio` hold.
+    ///
+    /// In `[0, 30]`. `[bend.sensor] substrate_v` moves the bias from here.
+    pub substrate_v: f64,
+    /// Fraction of the full well lost per volt of substrate bias above nominal, in `[0, 1]`.
+    ///
+    /// A lower bias deepens the well by the same rate.
+    pub full_well_frac_per_v: f64,
     /// Charge of the red, green and blue sites from unit near infrared, in scene units.
     ///
     /// Each channel's charge from an estimated NIR radiance of 1 (reference white's,
