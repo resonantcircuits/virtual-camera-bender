@@ -38,9 +38,9 @@ pub struct ResetBend {
     pub drop_hz: f64,
     /// Mean length of a missed-pulse run in native pixel periods, at least 1.
     ///
-    /// Lengths are geometric. A duration shorter than a line: it is scaled with the
-    /// resolution, so a run spans the same number of pixels at every sensor size, and
-    /// stays fixed in seconds under a reclocked timing generator.
+    /// Lengths are geometric. A duration in camera time, periods of the camera's own
+    /// clock at every resolution: a run covers the same fraction of a line at native
+    /// and at match-input resolution, so a preview is the native look downscaled.
     pub hold_px: f64,
     /// Fraction of the diffusion's charge a reset pulse clears, in `[0, 1]`; 1 is a full reset.
     pub reset_frac: f64,

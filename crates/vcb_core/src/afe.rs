@@ -86,9 +86,11 @@
 //! > `min(q, q_max) - min(q_reset, q_max)` electrons,
 //!
 //! where `q_max = fd_swing_v / conv_gain` is the output stage's swing in electrons
-//! (`[afe] fd_swing_v`: C, the AD9949's CDS input of 1.0 V p-p before saturation,
-//! `docs/research/a520-technical.md`, section 5; the CCD's own source-follower swing
-//! is unpublished, PROVISIONAL at the same value). Charge on the diffusion beyond the
+//! (`[afe] fd_swing_v`, PROVISIONAL: the CCD's source follower runs out before the
+//! AFE does, so the swing is its saturation signal of 460 mV,
+//! `docs/research/a520-technical.md`, section 3, plus a margin, 0.6 V on the A520;
+//! the AD9949's CDS input of 1.0 V p-p before saturation, section 5, C, bounds it
+//! from above). Charge on the diffusion beyond the
 //! swing no longer moves the output, so a packet that lands there is lost and reads
 //! the pedestal: black. Below it the difference is exactly the packet, so the CDS
 //! cancels a missed or weak reset until the charge left on the diffusion uses up the
@@ -101,8 +103,8 @@
 //! **Missed pulses** (`drop_hz`, `hold_px`, a flaky contact). A run of missed pulses
 //! starts with probability `drop_hz * pixel_period_s` in each pixel period while none
 //! runs, blanking included (a Poisson process in camera time), and lasts a geometric
-//! number of periods with a mean of `hold_px` native periods, scaled as described under
-//! "Time scaling". The runs come from a [`Pcg32`] seeded with the bend's own stage seed
+//! number of periods with a mean of `hold_px` periods of the camera's own clock (see
+//! "Time scaling"). The runs come from a [`Pcg32`] seeded with the bend's own stage seed
 //! (salt `"reset"`) and the frame index, in readout order, drawn as the lengths of the
 //! alternating stretches of sound and missed pulses: the exact equivalent of one trial
 //! per period. Whether a run is in progress at the end of a frame is part of the
@@ -168,11 +170,15 @@
 //! constant is given in native lines and converted to seconds with the native line
 //! period, so it spans the same fraction of the frame at every resolution.
 //!
-//! The mean length of a run of missed reset pulses is a duration shorter than a line,
-//! given in native pixel periods: [`ResetGate::hold_s`] is `hold_px *
-//! native_pixel_period_s * resolution_scale`, so a run spans the same number of pixels
-//! at every resolution and stays fixed in seconds under a reclocked timing generator.
-//! The rate of the runs, `drop_hz`, is physical and used as given.
+//! The runs of missed reset pulses keep their length in time, not in pixels:
+//! [`ResetGate::hold_s`] is `hold_px * native_pixel_period_s`, `hold_px` periods of
+//! the camera's own clock at every resolution and under a reclocked timing generator,
+//! and their rate `drop_hz` is physical. Since the line time is native at every size,
+//! a frame holds the same number of runs per line, covering the same fraction of each
+//! line, at native and at match-input resolution: a preview is the native look
+//! downscaled, and a run spans `hold_px * cols / native_width` pixels (at least one
+//! period). This is the choice the readout makes for its vertical faults, whose
+//! durations are native lines scaled to the virtual rows.
 
 use std::f64::consts::TAU;
 use std::fmt::{self, Debug, Formatter};
@@ -262,8 +268,9 @@ pub struct ResetGate {
     pub drop_hz: f64,
     /// Mean length of a run of missed pulses in seconds.
     ///
-    /// The preset's `hold_px` native pixel periods times [`Params::resolution_scale`],
-    /// so a run spans the same number of pixels at every resolution.
+    /// The preset's `hold_px` pixel periods of the camera's own clock, at every
+    /// resolution: a run covers the same fraction of a line at native and at
+    /// match-input resolution.
     pub hold_s: f64,
     /// Fraction of the diffusion's charge a reset pulse clears; 1 is a full reset.
     pub reset_frac: f64,
@@ -399,8 +406,8 @@ impl Params {
     ///
     /// The restart time constant is the camera's `afe_restart_lines` in native lines
     /// of the readout mode, converted to seconds with the camera's own pixel clock.
-    /// An inert `[bend.reset]` resolves to no [`ResetGate`]; a live one's run length is
-    /// scaled to the resolution.
+    /// An inert `[bend.reset]` resolves to no [`ResetGate`]; a live one's run length
+    /// becomes seconds on the camera's own clock.
     ///
     /// # Errors
     ///
@@ -417,7 +424,7 @@ impl Params {
             .filter(|bend| !bend.is_inert())
             .map(|bend| ResetGate {
                 drop_hz: bend.drop_hz,
-                hold_s: bend.hold_px * timing.native_pixel_period_s * timing.resolution_scale(),
+                hold_s: bend.hold_px * timing.native_pixel_period_s,
                 reset_frac: bend.reset_frac,
                 seed: noise::stage_seed(preset.seed, RESET_SALT),
             });

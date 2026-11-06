@@ -199,7 +199,7 @@ pub struct Afe {
     ///
     /// The floating diffusion's level that the CDS still follows: charge on the
     /// diffusion beyond `fd_swing_v / conv_gain` is lost to the output. With a sound
-    /// reset gate a packet never comes near it. See [`afe`](crate::afe).
+    /// reset gate a packet never reaches it. See [`afe`](crate::afe).
     pub fd_swing_v: f64,
 }
 

@@ -56,6 +56,15 @@ fn drops(drop_hz: f64, hold_px: f64) -> ResetBend {
     }
 }
 
+/// Native pixel periods that last `periods` pixel periods of the test sensor.
+///
+/// A run keeps its length in time, and the active line keeps its native duration at
+/// match-input resolution, so one period of the test sensor lasts `native_width /
+/// WIDTH` native ones.
+fn native_px(periods: f64) -> f64 {
+    periods * f64::from(camera().sensor.native_width) / f64::from(WIDTH)
+}
+
 fn weak(reset_frac: f64) -> ResetBend {
     ResetBend {
         reset_frac,
@@ -208,12 +217,14 @@ fn an_inert_section_renders_byte_identically_to_none() {
 
 #[test]
 fn a_missed_run_reads_black_once_the_diffusion_fills_the_swing() {
-    let chain = Chain::new(&with_reset(Some(drops(5000.0, 8.0))));
-    let bright_e = camera().sensor.full_well_e as f32;
+    let chain = Chain::new(&with_reset(Some(drops(5000.0, native_px(8.0)))));
+    // Bright packets of which three fit within the swing.
+    let bright_e = (0.3 * chain.swing_e) as f32;
     let bright = chain.field(bright_e);
     let read = chain.read(&mut afe::State::default(), &bright, 0);
     let sound = chain.sound().read(&mut afe::State::default(), &bright, 0);
     let packet_e = f64::from(bright_e);
+    let mut normal = 0;
     let (mut checked, mut black) = (0, 0);
     for run in chain.runs(&afe::State::default(), 0) {
         // Runs over bright packets only, the one before and the one after included.
@@ -227,6 +238,7 @@ fn a_missed_run_reads_black_once_the_diffusion_fills_the_swing() {
             let held_e = f64::from(missed) * packet_e;
             if held_e + packet_e <= chain.swing_e {
                 assert_same(read[i], sound[i], "a packet within the swing");
+                normal += 1;
             } else if held_e >= chain.swing_e {
                 assert_same(read[i], 0.0, "a packet beyond the swing");
                 black += 1;
@@ -241,7 +253,10 @@ fn a_missed_run_reads_black_once_the_diffusion_fills_the_swing() {
         assert_same(read[after], sound[after], "the packet after the run");
     }
     assert!(checked >= 10, "only {checked} runs over the bright field");
-    assert!(black > 0, "no missed run outlasted the swing");
+    assert!(
+        normal > 0 && black > 0,
+        "{normal} normal and {black} black packets in runs"
+    );
     // Outside the runs every packet reads as with a sound gate.
     let mut missed = vec![false; read.len()];
     for period in chain.runs(&afe::State::default(), 0).into_iter().flatten() {
@@ -256,7 +271,7 @@ fn a_missed_run_reads_black_once_the_diffusion_fills_the_swing() {
 
 #[test]
 fn a_dark_run_survives_missed_resets() {
-    let chain = Chain::new(&with_reset(Some(drops(5000.0, 8.0))));
+    let chain = Chain::new(&with_reset(Some(drops(5000.0, native_px(8.0)))));
     let runs = chain.runs(&afe::State::default(), 0);
     let longest = runs.iter().map(|run| run.end - run.start).max().unwrap();
     assert!(
@@ -306,16 +321,22 @@ fn a_weak_reset_walks_a_bright_run_into_black() {
 }
 
 #[test]
-fn a_weak_reset_below_the_swing_cancels_in_the_cds() {
-    let e = camera().sensor.full_well_e as f32;
-    // At half strength the diffusion settles at 2 e, within the swing.
-    let half = Chain::new(&with_reset(Some(weak(0.5))));
-    assert!(2.0 * f64::from(e) < half.swing_e);
-    let bright = half.field(e);
-    let read = half.read(&mut afe::State::default(), &bright, 0);
-    let sound = half.sound().read(&mut afe::State::default(), &bright, 0);
+fn a_weak_reset_within_the_swing_cancels_in_the_cds() {
+    let camera = camera();
+    let e = camera.sensor.full_well_e;
+    let swing_e = camera.afe.fd_swing_v / (camera.sensor.conv_gain_uv_per_e * 1e-6);
+    // Strong enough that full wells leave the diffusion at e / r, within the swing.
+    let r = (1.1 * e / swing_e).min(0.99);
+    assert!(
+        e / r < swing_e,
+        "full wells fill the swing at every strength"
+    );
+    let strong = Chain::new(&with_reset(Some(weak(r))));
+    let bright = strong.field(e as f32);
+    let read = strong.read(&mut afe::State::default(), &bright, 0);
+    let sound = strong.sound().read(&mut afe::State::default(), &bright, 0);
     for (&read, &sound) in read.iter().zip(&sound) {
-        assert_same(read, sound, "a bright packet at half strength");
+        assert_same(read, sound, "a full well at a strength within the swing");
     }
     // A dark field never comes near the swing even at a quarter.
     let quarter = Chain::new(&with_reset(Some(weak(0.25))));
@@ -333,7 +354,7 @@ fn a_late_reset_sample_sees_the_diffusion() {
     // whatever the diffusion did to it.
     let mut preset = with_reset(Some(ResetBend {
         drop_hz: 5000.0,
-        hold_px: 8.0,
+        hold_px: native_px(8.0),
         reset_frac: 0.5,
     }));
     preset.bend.afe = Some(AfeBend {
@@ -351,7 +372,7 @@ fn a_late_reset_sample_sees_the_diffusion() {
 
 #[test]
 fn a_missed_run_carries_the_charge_across_a_line() {
-    let chain = Chain::new(&with_reset(Some(drops(500.0, 8000.0))));
+    let chain = Chain::new(&with_reset(Some(drops(500.0, native_px(8000.0)))));
     let (line_px, line_len, ob) = (
         chain.line_px(),
         u64::from(chain.layout.line_len()),
@@ -360,7 +381,8 @@ fn a_missed_run_carries_the_charge_across_a_line() {
     // Runs are long enough to outlast a line's blanking, which at match-input
     // resolution is most of the line.
     assert!(8000 > 2 * (line_px - line_len));
-    let bright_e = camera().sensor.full_well_e;
+    // Bright packets of which two fit within the swing and three do not.
+    let bright_e = f64::from((0.4 * chain.swing_e) as f32);
     let bright = chain.field(bright_e as f32);
     let (mut carried, mut fresh) = (0, 0);
     for index in 0..8 {
@@ -418,7 +440,7 @@ fn a_missed_run_carries_the_charge_into_the_next_frame() {
     // seeds leave a run in progress at VD.
     let mut cases = [false, false];
     for seed in 0..64 {
-        let mut preset = with_reset(Some(drops(950.0, 2000.0)));
+        let mut preset = with_reset(Some(drops(950.0, native_px(2000.0))));
         preset.seed = seed;
         let (spans, continued, fresh) = frame_two(&Chain::new(&preset));
         if spans {
@@ -486,61 +508,91 @@ fn a_new_drop_rate_keeps_the_diffusion_charge() {
     assert!((sim.afe_state().fd_charge_e() - before.fd_charge_e()).abs() < f64::EPSILON);
 }
 
-/// Returns the mean length of the runs of frame 0 that start and end within it, and their count.
-fn run_lengths(chain: &Chain) -> (f64, usize) {
-    let runs = chain.runs(&afe::State::default(), 0);
-    let last = runs.last().map_or(0, |run| run.end);
-    let whole: Vec<u64> = runs
-        .iter()
-        .filter(|run| run.start > 0 && run.end < last)
-        .map(|run| run.end - run.start)
-        .collect();
-    (
-        whole.iter().sum::<u64>() as f64 / whole.len() as f64,
-        whole.len(),
-    )
+/// The runs of the first frames at one sensor size.
+struct Runs {
+    /// Runs per frame.
+    count: f64,
+    /// Mean length of the runs that start and end within their frame, in pixel periods.
+    mean_px: f64,
+    /// Share of the active samples inside a run.
+    covered: f64,
+}
+
+/// Frames whose runs each statistic gathers.
+const RUN_FRAMES: u64 = 4;
+
+fn run_statistics(preset: &Preset, width: u32, height: u32) -> Runs {
+    let camera = camera();
+    let timing = Timing::derive(&camera, preset, width, height).unwrap();
+    let readout = readout::Params::resolve(&camera, preset, &timing).unwrap();
+    let chain = Chain {
+        rail: Rail::new(&readout.layout, camera.power.rail_v),
+        swing_e: 0.0,
+        afe: afe::Params::resolve(&camera, preset, &timing).unwrap(),
+        layout: readout.layout,
+    };
+    let (mut count, mut lengths, mut whole, mut covered) = (0, 0, 0, 0);
+    for index in 0..RUN_FRAMES {
+        let runs = chain.runs(&afe::State::default(), index);
+        let last = runs.last().map_or(0, |run| run.end);
+        count += runs.len();
+        for run in &runs {
+            if run.start > 0 && run.end < last {
+                lengths += run.end - run.start;
+                whole += 1;
+            }
+            covered += run.clone().filter(|&period| chain.active(period)).count();
+        }
+    }
+    let active = RUN_FRAMES * u64::from(chain.layout.rows() * chain.layout.cols());
+    Runs {
+        count: count as f64 / RUN_FRAMES as f64,
+        mean_px: lengths as f64 / f64::from(whole),
+        covered: covered as f64 / active as f64,
+    }
 }
 
 #[test]
-fn a_run_spans_the_same_pixels_at_every_resolution() {
-    let (drop_hz, hold_px) = (100_000.0, 8.0);
+fn runs_cover_the_same_share_of_a_line_at_every_resolution() {
+    let (drop_hz, hold_px) = (300_000.0, 64.0);
     let camera = camera();
     let mut native = Preset::new("a520");
     native.bend.reset = Some(drops(drop_hz, hold_px));
     let mut small = native.clone();
     small.readout.resolution = Resolution::MatchInput;
-    for (preset, width, height) in [(&native, 2272, 1704), (&small, 640, 480)] {
-        let timing = Timing::derive(&camera, preset, width, height).unwrap();
-        let readout = readout::Params::resolve(&camera, preset, &timing).unwrap();
-        let afe = afe::Params::resolve(&camera, preset, &timing).unwrap();
-        let pixel_s = readout.layout.pixel_period_s();
-        let gate = afe.reset.clone().unwrap();
-        assert!(
-            (gate.hold_s / pixel_s / hold_px - 1.0).abs() < 1e-9,
-            "{width} wide: a run of {} s is {} periods",
-            gate.hold_s,
-            gate.hold_s / pixel_s
-        );
-        let chain = Chain {
-            rail: Rail::new(&readout.layout, camera.power.rail_v),
-            swing_e: 0.0,
-            layout: readout.layout,
-            afe,
-        };
-        let (mean_px, count) = run_lengths(&chain);
-        assert!(
-            (mean_px / hold_px - 1.0).abs() < 0.05,
-            "{width} wide: runs average {mean_px} pixels of {count}"
-        );
-        // Runs start at drop_hz while none runs: one per gap of 1 / p and run of hold_px periods.
-        let p = drop_hz * pixel_s;
-        let periods = timing.frame_period_s / pixel_s;
-        let expected = periods / (1.0 / p + hold_px);
-        assert!(
-            (count as f64 / expected - 1.0).abs() < 0.05,
-            "{width} wide: {count} runs in a frame, expected {expected}"
-        );
-    }
+    let (width, height) = (640, 480);
+    let full = run_statistics(
+        &native,
+        camera.sensor.native_width,
+        camera.sensor.native_height,
+    );
+    let preview = run_statistics(&small, width, height);
+    let near = |a: f64, b: f64| (a / b - 1.0).abs() < 0.05;
+    assert!(
+        near(full.mean_px, hold_px),
+        "native runs average {} periods",
+        full.mean_px
+    );
+    assert!(
+        near(preview.count, full.count),
+        "{} runs per frame at {width} wide, {} at native",
+        preview.count,
+        full.count
+    );
+    assert!(
+        near(preview.covered, full.covered),
+        "runs cover {} of the active area at {width} wide, {} at native",
+        preview.covered,
+        full.covered
+    );
+    // A run keeps its time, so its length in pixels scales with the width.
+    let ratio = f64::from(width) / f64::from(camera.sensor.native_width);
+    assert!(
+        near(preview.mean_px / full.mean_px, ratio),
+        "runs average {} pixels at {width} wide and {} at native",
+        preview.mean_px,
+        full.mean_px
+    );
 }
 
 #[test]
