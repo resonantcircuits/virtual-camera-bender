@@ -675,6 +675,8 @@ fn milestone3_validation_names_the_offending_field() {
 fn memory_fault_pins_must_exist_on_the_camera_sdram() {
     let camera = camera();
     let bits = u8::try_from(camera.memory.address_bits()).unwrap();
+    // The row and column addresses share pins a0 upward; the bank pins are not bendable.
+    let pins = camera.memory.column_bits.max(camera.memory.row_bits);
     let timing = Timing::derive(&camera, &Preset::new("a520"), 64, 48).unwrap();
     let with_faults = |faults: Vec<AddressFault>| {
         let mut preset = Preset::new("a520");
@@ -682,7 +684,7 @@ fn memory_fault_pins_must_exist_on_the_camera_sdram() {
         preset
     };
 
-    let highest = with_faults(vec![solid(bits - 1, FaultKind::High)]);
+    let highest = with_faults(vec![solid(pins - 1, FaultKind::High)]);
     highest.validate().unwrap();
     let params = memory::Params::resolve(&camera, &highest, &timing)
         .unwrap()
@@ -694,7 +696,7 @@ fn memory_fault_pins_must_exist_on_the_camera_sdram() {
             .is_none()
     );
 
-    let beyond = with_faults(vec![solid(bits, FaultKind::Low)]);
+    let beyond = with_faults(vec![solid(pins, FaultKind::Low)]);
     beyond.validate().unwrap();
     let error = memory::Params::resolve(&camera, &beyond, &timing).unwrap_err();
     assert!(error.is_config(), "{error}");

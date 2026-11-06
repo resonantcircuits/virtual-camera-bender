@@ -10,7 +10,9 @@ use crate::validate::{fraction, non_negative};
 /// The processor writes the clamped raw frame into its SDRAM in readout order and
 /// reads it back a frame period later. Each fault acts on one physical address pin
 /// (`a0` upward) of the multiplexed row and column address, so a stuck pin corrupts
-/// two bits of the linear address. See [`memory`](crate::memory).
+/// two bits of the linear address: a solid fault folds the frame onto itself in
+/// powers of two, a marginal one tears it into bands and lets stale frames through.
+/// See [`memory`](crate::memory).
 ///
 /// ```toml
 /// [bend.memory]
@@ -36,12 +38,15 @@ pub struct MemoryBend {
 ///
 /// `on_frac` and `switch_hz` are set together for a marginal contact, a random
 /// telegraph process in camera time that is faulted for `on_frac` of the time and
-/// switches about `switch_hz` times a second; without them the fault is solid.
+/// completes `switch_hz` on-off cycles a second on average: it stays faulted for
+/// `on_frac / switch_hz` seconds on average and clear for `(1 - on_frac) / switch_hz`.
+/// Without them, or with `on_frac = 1`, the fault is solid.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct AddressFault {
-    /// The address pin, `a0` upward; it must exist on the camera's SDRAM.
+    /// The address pin, `a0` upward; one of the pins that carry the multiplexed row and
+    /// column address, `a0` to `a(max(column_bits, row_bits) - 1)` of the camera.
     pub pin: u8,
     /// What the fault does to the pin.
     pub kind: FaultKind,
@@ -57,7 +62,7 @@ pub struct AddressFault {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub on_frac: Option<f64>,
-    /// Mean rate at which a marginal contact switches, per second, at least 0.
+    /// Mean on-off cycles per second of a marginal contact, at least 0; 0 never switches.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
