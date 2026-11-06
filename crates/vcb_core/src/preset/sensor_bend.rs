@@ -10,10 +10,11 @@ use crate::validate::within;
 /// temperature, and with it the dark current, which doubles every `[sensor]
 /// dark_doubling_c` degrees, the output amplifier's glow at the readout's first corner
 /// and the read noise. A pot on the substrate bias (VSUB) moves the vertical overflow
-/// drain's barrier: a raised bias shrinks the well and the drain, so highlights clip
-/// early and gross overexposure spills further along the columns; a lowered one deepens
-/// them, until in movie mode the electronic shutter, which pulses the substrate, no
-/// longer clears the photodiodes and the smear grows. See [`sensor`](crate::sensor).
+/// drain's barrier: a raised bias lowers it, so the well shrinks and highlights clip
+/// early while the drain takes the excess; a lowered bias raises it, so the well
+/// deepens, the drain stops taking the excess and highlights bloom along the columns,
+/// and in movie mode the electronic shutter, which pulses the substrate, no longer
+/// clears the photodiodes and the smear grows. See [`sensor`](crate::sensor).
 ///
 /// Every field is optional; `None` keeps the camera's value, so the default section is
 /// the unmodified camera and renders the same bytes as no section.

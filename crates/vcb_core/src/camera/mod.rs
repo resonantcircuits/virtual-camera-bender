@@ -64,6 +64,8 @@ pub struct Sensor {
     /// Photo-response non-uniformity: relative gain spread, one standard deviation.
     pub prnu: f64,
     /// Dark-signal non-uniformity in electrons, one standard deviation.
+    ///
+    /// At `reference_temp_c`; as the spread of the dark current it scales with it.
     pub dsnu_e: f64,
     /// Conversion gain of the output amplifier in microvolts per electron.
     pub conv_gain_uv_per_e: f64,
@@ -105,6 +107,12 @@ pub struct Sensor {
     ///
     /// A lower bias deepens the well by the same rate.
     pub full_well_frac_per_v: f64,
+    /// Drop of the substrate bias below nominal at which the overflow drain takes no more excess, in volts.
+    ///
+    /// A lower bias raises the drain's barrier, so its capacity, `antibloom_ratio` full
+    /// wells at the nominal bias and above, falls linearly to nothing this far below
+    /// nominal. Positive.
+    pub drain_loss_v: f64,
     /// Charge of the red, green and blue sites from unit near infrared, in scene units.
     ///
     /// Each channel's charge from an estimated NIR radiance of 1 (reference white's,

@@ -150,12 +150,16 @@ struct Stages {
 
 impl Stages {
     fn resolve(camera: &Camera, preset: &Preset, timing: &Timing) -> Result<Self, Error> {
+        let sensor = sensor::Params::resolve(camera, preset, timing)?;
+        let mut afe = afe::Params::resolve(camera, preset, timing)?;
+        // The output amplifier's read noise is the sensor's at its temperature.
+        afe.read_noise_e *= sensor.read_noise_scale();
         Ok(Self {
             scene: scene::Params::resolve(camera, preset, timing)?,
-            sensor: sensor::Params::resolve(camera, preset, timing)?,
+            sensor,
             readout: readout::Params::resolve(camera, preset, timing)?,
             power: power::Params::resolve(camera, preset, timing)?,
-            afe: afe::Params::resolve(camera, preset, timing)?,
+            afe,
             adc: adc::Params::resolve(camera, preset, timing)?,
             bus: bus::Params::resolve(camera, preset, timing)?,
             capture: capture::Params::resolve(camera, preset, timing)?,

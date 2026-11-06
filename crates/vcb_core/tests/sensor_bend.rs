@@ -271,8 +271,10 @@ fn hot_photosites_keep_their_multiples_and_their_count() {
 #[test]
 fn the_amplifier_glows_from_the_readout_s_first_corner() {
     let mut camera = camera();
-    // No hot photosite in the corners measured.
+    // No hot photosite in the corners measured, and no fixed pattern, which at this
+    // heat would vary more between the corners than the glow.
     camera.sensor.hot_pixels_per_mpix = 0.0;
+    camera.sensor.dsnu_e = 0.0;
     let glow_e_per_s = camera.sensor.amp_glow_e_per_s;
     assert!(glow_e_per_s > 0.0, "the camera's amplifier does not glow");
     let (width, height) = (1024, 768);
@@ -378,26 +380,34 @@ fn a_raised_substrate_bias_clips_a_grey_card_the_nominal_bias_holds() {
 }
 
 #[test]
-fn a_raised_bias_spills_a_bright_disc_further_along_its_column() {
+fn a_lowered_bias_blooms_a_bright_disc_along_its_column_and_a_raised_one_does_not() {
     let camera = camera();
     let (width, height) = (32, 256);
     let (cx, cy, radius) = (16u32, 64u32, 3u32);
-    let nominal = sensor_params(&camera, &bare(Mode::Still), width, height);
-    // Twice what the nominal well and drain absorb, so the disc spills at either bias.
-    let radiance = 2.0 * (1.0 + nominal.antibloom_ratio) * nominal.full_well_e / nominal.white_e();
-    let mut disc = Scene::new(width, height);
-    for plane in disc.planes_mut() {
-        for y in cy - radius..=cy + radius {
-            for x in cx - radius..=cx + radius {
-                if x.abs_diff(cx).pow(2) + y.abs_diff(cy).pow(2) <= radius * radius {
-                    plane.set(x, y, radiance);
+    let nominal_v = camera.sensor.substrate_v;
+    let at = |substrate_v: f64| {
+        let preset = bent(bare(Mode::Still), None, Some(substrate_v));
+        sensor_params(&camera, &preset, width, height)
+    };
+    let (nominal, low, raised) = (at(nominal_v), at(nominal_v - 2.0), at(nominal_v + 1.5));
+    // A disc collecting `wells` nominal full wells.
+    let disc = |wells: f32| {
+        let radiance = wells * nominal.full_well_e / nominal.white_e();
+        let mut scene = Scene::new(width, height);
+        for plane in scene.planes_mut() {
+            for y in cy - radius..=cy + radius {
+                for x in cx - radius..=cx + radius {
+                    if x.abs_diff(cx).pow(2) + y.abs_diff(cy).pow(2) <= radius * radius {
+                        plane.set(x, y, radiance);
+                    }
                 }
             }
         }
-    }
+        scene
+    };
     // Photosites below the disc filled to their well, along the disc's centre column.
-    let spill = |params: &sensor::Params| {
-        let charge = expose(params, &disc, 0);
+    let spill = |params: &sensor::Params, scene: &Scene| {
+        let charge = expose(params, scene, 0);
         assert!(
             (0..width)
                 .filter(|&x| x.abs_diff(cx) > radius)
@@ -408,24 +418,38 @@ fn a_raised_bias_spills_a_bright_disc_further_along_its_column() {
             .take_while(|&y| charge.plane().get(cx, y) >= 0.999 * params.well_e())
             .count()
     };
-    let raised = sensor_params(
-        &camera,
-        &bent(
-            bare(Mode::Still),
-            None,
-            Some(camera.sensor.substrate_v + 1.5),
-        ),
-        width,
-        height,
+
+    // Ten wells' worth: the drain takes the excess at the nominal bias and above it,
+    // and two volts below, with the barrier raised, the drain is gone.
+    let bright = disc(10.0);
+    let (at_nominal, at_low, at_raised) = (
+        spill(&nominal, &bright),
+        spill(&low, &bright),
+        spill(&raised, &bright),
     );
-    let (at_nominal, at_raised) = (spill(&nominal), spill(&raised));
+    assert_eq!(at_nominal, 0, "the nominal drain let the disc spill");
+    assert_eq!(at_raised, 0, "the raised bias let the disc spill");
     assert!(
-        at_nominal >= 1,
-        "the disc did not spill at the nominal bias"
+        at_low >= 10,
+        "two volts low the disc spilled only {at_low} photosites"
     );
+
+    // Twice what the nominal drain absorbs: it spills at every bias, the raised one no
+    // further, the lowered one down the whole column.
+    let gross = disc(2.0 * (1.0 + nominal.antibloom_ratio));
+    let (at_nominal, at_low, at_raised) = (
+        spill(&nominal, &gross),
+        spill(&low, &gross),
+        spill(&raised, &gross),
+    );
+    assert!(at_nominal >= 1, "the gross disc did not spill");
     assert!(
-        at_raised > 2 * at_nominal,
+        at_raised <= at_nominal,
         "the raised bias spilled {at_raised} photosites, the nominal {at_nominal}"
+    );
+    assert!(
+        at_low > 10 * at_nominal,
+        "two volts low spilled {at_low} photosites, the nominal {at_nominal}"
     );
 }
 
@@ -433,13 +457,15 @@ fn a_raised_bias_spills_a_bright_disc_further_along_its_column() {
 fn a_low_bias_weakens_the_movie_shutter_and_leaves_stills_alone() {
     let camera = camera();
     let (width, height) = (64, 96);
-    // A bright bar across the middle rows of the central columns.
+    // A bright bar across the middle rows of the central columns, twice reference
+    // white: it clips, but stays below the well two volts low, so nothing blooms and
+    // the rows above it hold only dark charge and smear.
     let (lit, far) = (16..48, 0..16);
     let mut bar = Scene::new(width, height);
     for plane in bar.planes_mut() {
         for y in 40..56 {
             for x in lit.clone() {
-                plane.set(x, y, 10.0);
+                plane.set(x, y, 2.0);
             }
         }
     }
@@ -521,6 +547,105 @@ fn the_read_noise_rises_with_temperature_from_the_camera_s_own() {
     assert!((0.0..1.0).contains(&coldest), "{coldest}");
 }
 
+#[cfg(feature = "test-util")]
+#[test]
+fn a_hot_sensor_reads_out_noisier_by_the_read_noise_scale() {
+    let mut camera = camera();
+    // Without dark charge the AFE's read noise is all that moves with the heat.
+    camera.sensor.dark_e_per_s = 0.0;
+    camera.sensor.dsnu_e = 0.0;
+    camera.sensor.hot_pixels_per_mpix = 0.0;
+    camera.sensor.amp_glow_e_per_s = 0.0;
+    let (width, height) = (256, 192);
+    let black = Scene::new(width, height);
+    let hot_c = camera.sensor.reference_temp_c + 100.0;
+    // The temporal noise of the ADC's words: half the variance of two frames' difference.
+    let noise = |temperature_c: Option<f64>| {
+        let preset = bent(clean(Mode::Still), temperature_c, None);
+        let mut sim = Simulator::builder((camera.clone(), preset))
+            .input_size(width, height)
+            .build()
+            .unwrap();
+        sim.frame(&black, 0);
+        let first: Vec<f64> = sim.codes().words().iter().map(|&w| f64::from(w)).collect();
+        sim.frame(&black, 1);
+        let differences: Vec<f64> = sim
+            .codes()
+            .words()
+            .iter()
+            .zip(&first)
+            .map(|(&w, &v)| f64::from(w) - v)
+            .collect();
+        let count = differences.len() as f64;
+        let mean = differences.iter().sum::<f64>() / count;
+        let variance = differences.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / count;
+        (variance / 2.0).sqrt()
+    };
+    let (cool, hot) = (noise(None), noise(Some(hot_c)));
+    let scale = sensor_params(
+        &camera,
+        &bent(bare(Mode::Still), Some(hot_c), None),
+        WIDTH,
+        HEIGHT,
+    )
+    .read_noise_scale();
+    assert!(
+        scale > 1.1,
+        "a hundred degrees raised the read noise by {scale}"
+    );
+    assert!(cool > 1.0, "the cool sensor reads {cool:.2} codes of noise");
+    assert!(
+        (hot / cool / scale - 1.0).abs() < 0.02,
+        "the hot sensor reads {hot:.3} codes of noise, the cool {cool:.3}, for a scale of {scale:.3}"
+    );
+}
+
+#[test]
+fn the_dark_frame_s_fixed_pattern_grows_with_the_heat() {
+    let mut camera = camera();
+    camera.sensor.amp_glow_e_per_s = 0.0;
+    camera.sensor.hot_pixels_per_mpix = 0.0;
+    // A pronounced pattern, measured well above the temporal noise.
+    camera.sensor.dsnu_e = 10.0;
+    let (width, height) = (256, 192);
+    // Two hundred electrons of dark charge at the reference, far above the clip at zero.
+    let exposure_s = 200.0 / camera.sensor.dark_e_per_s;
+    let black = Scene::new(width, height);
+    // The fixed pattern is what two frames share: the root of their covariance across
+    // the photosites, the shot noise of each frame being its own.
+    let pattern_e = |temperature_c: f64| {
+        let preset = bent(
+            exposed(bare(Mode::Still), exposure_s),
+            Some(temperature_c),
+            None,
+        );
+        let params = sensor_params(&camera, &preset, width, height);
+        let (a, b) = (expose(&params, &black, 0), expose(&params, &black, 1));
+        let (a, b) = (a.plane().data(), b.plane().data());
+        let count = a.len() as f64;
+        let mean_a = a.iter().map(|&e| f64::from(e)).sum::<f64>() / count;
+        let mean_b = b.iter().map(|&e| f64::from(e)).sum::<f64>() / count;
+        let covariance = a
+            .iter()
+            .zip(b)
+            .map(|(&x, &y)| (f64::from(x) - mean_a) * (f64::from(y) - mean_b))
+            .sum::<f64>()
+            / count;
+        covariance.sqrt()
+    };
+    let reference_c = camera.sensor.reference_temp_c;
+    let two_doublings_c = reference_c + 2.0 * camera.sensor.dark_doubling_c;
+    let (room, hot) = (pattern_e(reference_c), pattern_e(two_doublings_c));
+    assert!(
+        (room / camera.sensor.dsnu_e - 1.0).abs() < 0.05,
+        "the pattern spreads {room:.2} e at the reference temperature"
+    );
+    assert!(
+        (hot / room - 4.0).abs() < 0.08,
+        "two doublings spread the pattern from {room:.2} e to {hot:.2} e"
+    );
+}
+
 #[test]
 fn a_hot_sensor_on_a_turned_bias_replays_from_reset() {
     let camera = camera();
@@ -550,7 +675,9 @@ fn a_hot_sensor_on_a_turned_bias_replays_from_reset() {
 
 #[test]
 fn heating_the_running_camera_keeps_its_state_and_shows_in_the_next_frame() {
-    let camera = camera();
+    let mut camera = camera();
+    // The fixed pattern, as hot as the glow, would light every corner alike.
+    camera.sensor.dsnu_e = 0.0;
     let black = Scene::new(WIDTH, HEIGHT);
     // One movie frame period, which both readouts integrate in full.
     let exposure_s = 1.0 / camera.movie.fps;
@@ -648,7 +775,7 @@ fn out_of_range_temperatures_and_biases_are_rejected() {
         );
     }
 
-    let checks: [Break; 7] = [
+    let checks: [Break; 8] = [
         ("reference_temp_c", |c| c.sensor.reference_temp_c = 200.0),
         ("dark_doubling_c", |c| c.sensor.dark_doubling_c = 0.0),
         ("read_noise_per_c", |c| c.sensor.read_noise_per_c = -0.01),
@@ -660,6 +787,7 @@ fn out_of_range_temperatures_and_biases_are_rejected() {
         ("full_well_frac_per_v", |c| {
             c.sensor.full_well_frac_per_v = 1.5;
         }),
+        ("drain_loss_v", |c| c.sensor.drain_loss_v = 0.0),
     ];
     for (field, break_it) in checks {
         let mut broken = camera.clone();

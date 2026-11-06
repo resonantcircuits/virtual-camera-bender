@@ -19,8 +19,9 @@
 //! 2. Photo-response non-uniformity: a fixed gain `1 + prnu * N(0, 1)` per photosite.
 //! 3. Dark signal: `dark_e_per_s * k * exposure_s`, times 50 to 500 (log-uniform) at
 //!    the `hot_pixels_per_mpix` hot photosites, plus the output amplifier's glow, plus
-//!    a fixed offset `dsnu_e * N(0, 1)`; `k` is the Arrhenius factor of the sensor's
-//!    temperature and the glow falls off from the readout's first corner (below).
+//!    a fixed offset `dsnu_e * k * N(0, 1)`; `k` is the Arrhenius factor of the
+//!    sensor's temperature and the glow falls off from the readout's first corner
+//!    (below).
 //!    PRNU, DSNU and hot photosites hash the photosite coordinates with the camera's
 //!    `unit_seed`, so they are the same in every frame and every preset.
 //! 4. Shot noise: Gaussian with variance equal to the electron count, drawn per
@@ -33,7 +34,8 @@
 //!    well plus the drain spills into the column, half up and half down; spilled
 //!    charge fills the wells and drains it meets until it is absorbed or leaves the
 //!    array. The visible charge is then clipped at the well. Well and drain are the
-//!    camera's at the nominal substrate bias and move with it (below).
+//!    camera's at the nominal substrate bias and move with it, the well one way and
+//!    the drain the other (below).
 //! 6. Interline smear, when the readout uses the electronic shutter (movie mode):
 //!    light leaking into the vertical register adds the same charge to every
 //!    photosite of a column (below).
@@ -50,14 +52,17 @@
 //!   room temperature a CCD's dark current doubles every `dark_doubling_c` degrees
 //!   (C: 6 to 8 °C). The factor `k = 2^((T - T_ref) / dark_doubling_c)` multiplies
 //!   `dark_e_per_s`, and with it every hot photosite, whose multiple of the mean stays
-//!   its own. The masked optical-black photosites share the temperature
+//!   its own, and the dark signal's non-uniformity `dsnu_e`, the spread of the same
+//!   current, so the fixed pattern of a dark frame grows with the heat. The masked
+//!   optical-black photosites share the temperature
 //!   ([`readout::Params::dark_e`](crate::readout::Params::dark_e)), so the image
 //!   processor's black clamp removes the mean dark: what shows is its shot noise as
 //!   grain, the hot photosites as crosses after the demosaic, the glow and clipping.
 //! - **Read noise.** The output amplifier's noise rises `read_noise_per_c` per degree,
 //!   `1 + read_noise_per_c * (T - T_ref)`, at least 0 (PROVISIONAL). The analog front
-//!   end adds the read noise, so this stage only reports the factor on its
-//!   `read_noise_e`, [`Params::read_noise_scale`].
+//!   end adds the read noise, so this stage reports the factor,
+//!   [`Params::read_noise_scale`], and the simulator applies it to the AFE's
+//!   `read_noise_e`.
 //! - **Amplifier glow.** The output amplifier sits at the corner of the array that the
 //!   readout samples first: the first column of the first row read, row 0 for a
 //!   top-down readout and the last row for a bottom-up one, in the sensor's landscape
@@ -71,16 +76,19 @@
 //!   `k - 1` and is absent at or below the reference temperature. It carries the
 //!   shot noise of the dark charge it joins. Long exposures at temperature therefore
 //!   glow in that corner, after short ones have shown grain and hot crosses.
-//! - **Substrate bias.** The substrate voltage sets the barrier of the vertical
-//!   overflow drain under each photodiode: raising it lowers the barrier, so the well
-//!   holds less. The well is `full_well_e * w` with
-//!   `w = clamp(1 - full_well_frac_per_v * (V - V_nom), 0.05, 2)` (PROVISIONAL: the
-//!   well halves two volts above nominal).
-//!   The drain and the barrier move together, so the anti-blooming ratio scales by the
-//!   same `w` (PROVISIONAL): a raised bias clips early and spills further along the
-//!   column at gross overexposure, a lowered one deepens both. Reference white's charge
-//!   ([`Params::white_e`]) stays on the nominal well, so metering is unchanged and a
-//!   raised bias clips reference white once the well falls below it; the image
+//! - **Substrate bias.** On an interline CCD with a vertical overflow drain the
+//!   substrate voltage sets the barrier between each photodiode and the substrate
+//!   below it. Raising the bias lowers the barrier: the well holds less, and the excess
+//!   drains all the more readily, so a raised bias clips without blooming. Lowering it
+//!   raises the barrier: the well deepens, and before the excess reaches the drain it
+//!   spills into the column, so a lowered bias blooms. The well is `full_well_e * w`
+//!   with `w = clamp(1 - full_well_frac_per_v * (V - V_nom), 0.05, 2)` (PROVISIONAL:
+//!   the well halves two volts above nominal). The drain absorbs `antibloom_ratio * u`
+//!   nominal full wells beyond the well, with
+//!   `u = clamp(1 - (V_nom - V) / drain_loss_v, 0, 1)`: all of it at the nominal bias
+//!   and above, none `drain_loss_v` below it (PROVISIONAL: 2 V). Reference white's
+//!   charge ([`Params::white_e`]) stays on the nominal well, so metering is unchanged
+//!   and a raised bias clips reference white once the well falls below it; the image
 //!   processor, which assumes the nominal well, develops the clipped highlights
 //!   off-white. In movie mode the electronic shutter clears the photodiodes by pulsing
 //!   the substrate; a bias more than a volt below nominal weakens the pulse, the charge
@@ -317,11 +325,13 @@ pub struct Params {
     pub dark_e_per_s: f32,
     /// Photo-response non-uniformity, relative gain spread (one standard deviation).
     pub prnu: f32,
-    /// Dark-signal non-uniformity in electrons (one standard deviation).
+    /// Dark-signal non-uniformity at the sensor's temperature in electrons (one standard deviation).
+    ///
+    /// The camera's `dsnu_e` times the Arrhenius factor `k`.
     pub dsnu_e: f32,
     /// Overexposure, in multiples of the full well, the overflow drain absorbs before spill.
     ///
-    /// The camera's, at the nominal substrate bias; the bias scales it by `well_ratio`.
+    /// The camera's, at the nominal substrate bias; the bias scales it by `drain_ratio`.
     pub antibloom_ratio: f32,
     /// Interline smear relative to the signal in decibels, by the V/10 method.
     pub smear_db: f32,
@@ -336,11 +346,16 @@ pub struct Params {
     pub amp_glow_radius_frac: f32,
     /// Which sensor row the readout reads first; the amplifier sits at its first column.
     pub direction: Direction,
-    /// Well and overflow drain at the substrate bias relative to the nominal bias's.
+    /// Full well at the substrate bias relative to the nominal bias's.
     ///
-    /// The well holds `full_well_e * well_ratio` electrons and the drain absorbs
-    /// `antibloom_ratio * well_ratio` of those wells; 1 at the nominal bias.
+    /// The well holds `full_well_e * well_ratio` electrons: less above the nominal
+    /// bias, more below it; 1 at the nominal bias.
     pub well_ratio: f32,
+    /// Overflow drain's capacity at the substrate bias relative to the nominal bias's.
+    ///
+    /// The drain absorbs `antibloom_ratio * drain_ratio` nominal full wells beyond the
+    /// well: 1 at the nominal bias and above, falling to 0 at `drain_loss_v` below it.
+    pub drain_ratio: f32,
     /// Interline smear relative to the camera's, raised by a weak electronic shutter.
     ///
     /// `1 + (V_nom - 1 - V)` for a substrate bias `V` more than a volt below the nominal
@@ -414,6 +429,8 @@ impl Params {
         let substrate_v = bend.substrate_v.unwrap_or(sensor.substrate_v);
         let well_ratio = (1.0 - sensor.full_well_frac_per_v * (substrate_v - sensor.substrate_v))
             .clamp(MIN_WELL_RATIO, MAX_WELL_RATIO);
+        let drain_ratio =
+            (1.0 - (sensor.substrate_v - substrate_v) / sensor.drain_loss_v).clamp(0.0, 1.0);
         // Volts by which the bias lies further below nominal than the shutter tolerates.
         let shutter_drop_v = (sensor.substrate_v - SHUTTER_MARGIN_V - substrate_v).max(0.0);
         let smear_ratio = 1.0 + shutter_drop_v;
@@ -457,7 +474,7 @@ impl Params {
             nominal_exposure_s: sensor.nominal_exposure_s as f32,
             dark_e_per_s: (sensor.dark_e_per_s * dark_ratio) as f32,
             prnu: sensor.prnu as f32,
-            dsnu_e: sensor.dsnu_e as f32,
+            dsnu_e: (sensor.dsnu_e * dark_ratio) as f32,
             antibloom_ratio: sensor.antibloom_ratio as f32,
             smear_db: sensor.smear_db as f32,
             hot_pixels_per_mpix: sensor.hot_pixels_per_mpix as f32,
@@ -465,6 +482,7 @@ impl Params {
             amp_glow_radius_frac: sensor.amp_glow_radius_frac as f32,
             direction: camera.clocking(timing.mode).direction,
             well_ratio: well_ratio as f32,
+            drain_ratio: drain_ratio as f32,
             smear_ratio: smear_ratio as f32,
             temperature_c,
             reference_temp_c: sensor.reference_temp_c,
@@ -520,8 +538,8 @@ impl Params {
     /// `1 + read_noise_per_c * (temperature_c - reference_temp_c)`, at least 0: exactly 1
     /// at the reference temperature. The output amplifier's read noise is added by the
     /// AFE ([`afe::Params::read_noise_e`](crate::afe::Params::read_noise_e)), which
-    /// takes the camera's `read_noise_e`; this is the factor that brings it to the
-    /// sensor's temperature.
+    /// resolves the camera's `read_noise_e`; the simulator multiplies it by this factor
+    /// to bring it to the sensor's temperature.
     #[must_use]
     pub fn read_noise_scale(&self) -> f64 {
         self.read_noise_per_c
@@ -607,7 +625,11 @@ pub fn expose(params: &Params, state: &mut State, scene: &Scene, index: u64, out
     state.exposure_scale = scale;
     let electrons_per_unit = params.white_e() * scale;
     let full_well = params.well_e();
-    let spill_level = params.antibloom_ratio.mul_add(params.well_ratio, 1.0) * full_well;
+    // The well at the bias plus the drain's capacity, in nominal full wells.
+    let spill_level = params
+        .antibloom_ratio
+        .mul_add(params.drain_ratio, params.well_ratio)
+        * params.full_well_e;
     let any_spill = integrate(params, scene, index, electrons_per_unit, spill_level, out);
     if any_spill {
         bloom(spill_level, full_well, &mut out.plane, &mut state.carry);

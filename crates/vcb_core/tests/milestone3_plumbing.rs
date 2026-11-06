@@ -5,8 +5,8 @@
 #![cfg(all(feature = "serde", feature = "test-util"))]
 
 use vcb_core::preset::{
-    AddressFault, FaultKind, MemoryBend, Mode, OpticsBend, RailBend, ReclockBend, Resolution,
-    SensorBend,
+    AddressFault, FaultKind, MemoryBend, Mode, OpticsBend, RailBend, ReclockBend, ResetBend,
+    Resolution, SensorBend,
 };
 use vcb_core::{Camera, Frame, Preset, Reconfigured, Scene, Simulator, Timing, memory};
 
@@ -73,8 +73,9 @@ type Section = (&'static str, fn(&mut Preset));
 
 /// Each section at values that leave the camera as it is: the IR-cut filter in place,
 /// no load added to the rail, the oscillator at the camera's own 27 MHz, no address
-/// fault, the sensor at the camera's own temperature and substrate bias.
-const INERT: [Section; 5] = [
+/// fault, the sensor at the camera's own temperature and substrate bias, every reset
+/// pulse arriving in full.
+const INERT: [Section; 6] = [
     ("optics", |p| {
         p.bend.optics = Some(OpticsBend {
             ir_cut_pulled_frac: 0.0,
@@ -85,6 +86,7 @@ const INERT: [Section; 5] = [
     ("clock", |p| p.bend.clock = Some(ReclockBend::new(27.0))),
     ("memory", |p| p.bend.memory = Some(MemoryBend::default())),
     ("sensor", |p| p.bend.sensor = Some(SensorBend::default())),
+    ("reset", |p| p.bend.reset = Some(ResetBend::default())),
 ];
 
 /// Each section bent: the filter off, a loaded rail, a detuned oscillator, a stuck pin.
