@@ -32,6 +32,12 @@ the stage whose hardware it changes, with presets tuned by eye.
   `amp_glow_radius_frac` 0.15, `substrate_v` 12 V, `full_well_frac_per_v` 0.25,
   `drain_loss_v` 2 V and `dark_nonuniformity` 0.3, and `[afe] fd_swing_v` 0.6 V,
   graded by confidence, most of them PROVISIONAL.
+- In the app, a "Sensor bend" block on the Sensor panel (temperature in °C and
+  substrate bias in V, dimmed at the camera's values, with readouts of the dark
+  current's multiple and the full well) and a "Reset gate" block on the AFE panel
+  (missed pulses per second, run length in pixels, reset strength in per cent, with
+  the swing and the packet size a weak reset shows on); the strip lights Sensor and
+  AFE for them; every knob keeps the circuit running. Guide sections for both.
 - Four presets: `a520-heat-gun` (mottled shadows and hot crosses in daylight, the
   readout corner's glow on a dark, long exposure), `a520-substrate` (highlights that
   bloom along their columns), `a520-reset-drag` (bright runs ending in black streaks,

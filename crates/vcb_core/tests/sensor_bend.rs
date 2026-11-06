@@ -852,3 +852,27 @@ fn out_of_range_temperatures_and_biases_are_rejected() {
         assert!(error.to_string().contains(field), "{field}: {error}");
     }
 }
+
+#[test]
+fn the_optical_black_integrates_the_same_exposure_as_the_image_in_both_modes() {
+    // The electronic shutter clears masked photosites too, so a hot sensor's black
+    // clamp must not subtract a frame period's dark from a shutter-length exposure.
+    let camera = camera();
+    for mode in [Mode::Still, Mode::Movie] {
+        for exposure in [None, Some(0.002)] {
+            let mut preset = bent(bare(mode), Some(120.0), None);
+            if let Some(exposure_s) = exposure {
+                preset = exposed(preset, exposure_s);
+            }
+            let timing = Timing::derive(&camera, &preset, 64, 48).unwrap();
+            let readout = readout::Params::resolve(&camera, &preset, &timing).unwrap();
+            let sensor = sensor_params(&camera, &preset, 64, 48);
+            let image = f64::from(sensor.dark_e_per_s) * f64::from(sensor.exposure_s);
+            let ob = f64::from(readout.dark_e);
+            assert!(
+                (ob - image).abs() <= 1e-3 * image,
+                "{mode:?} with exposure {exposure:?}: optical black {ob} e, image {image} e"
+            );
+        }
+    }
+}

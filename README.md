@@ -78,10 +78,10 @@ file, open an image or a video with "Open…" or drop it on the window. Run it f
 repository root so it finds `cameras/` (or set `VCB_CAMERAS`) and the `presets/` list,
 or build `target/Virtual Camera Bender.app` with `scripts/bundle-macos.sh`, which
 carries both. The inspector holds every stage in signal order, in physical units:
-scene and the IR-cut filter, sensor, readout, the transfer-clock and analog-front-end
-bends, the bus bend as a front panel, the master clock, the processor overrides, the
-SDRAM address pins and the supply rail, under a signal-path strip that lights every
-bent stage. Dragging a control shows
+scene and the IR-cut filter, the sensor with its temperature and substrate bias,
+readout, the transfer-clock and analog-front-end bends with the reset gate, the bus
+bend as a front panel, the master clock, the processor overrides, the SDRAM address
+pins and the supply rail, under a signal-path strip that lights every bent stage. Dragging a control shows
 a 720-pixel preview and releasing it renders the full frame; the camera keeps running
 between renders until "Reset circuit". Videos get a scrubber, frame steps and play
 through the preview camera, and "Export video…" renders a clip to H.264 or ProRes in

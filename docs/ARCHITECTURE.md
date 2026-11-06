@@ -664,8 +664,7 @@ highlights blooms only when overexposed. The output stage's swing `fd_swing_v` i
 PROVISIONAL, the source follower's saturation signal plus a margin. The floating
 diffusion does not spill: its charge is unbounded, and an over-full diffusion does not
 leak over the reset gate's barrier, which matters only for how fast a weak reset
-drains it after a run of missed pulses. In movie mode the optical-black photosites
-integrate dark current over a whole frame and the image's over the shutter's
-exposure; at the reference temperature the two differ by hundredths of an electron,
-but on a hot sensor with a movie exposure shorter than the frame the black clamp
-removes too much and the shadows crush green.
+drains it after a run of missed pulses. The optical-black photosites integrate dark
+current over the same exposure as the image's in both modes (the electronic shutter
+clears masked photosites too), so a hot sensor's black clamp removes the mean dark
+and no more.

@@ -54,9 +54,9 @@ what auto-exposure takes back.
 | H1 | 70 °C with scene auto-exposure at 1/2, 1/8 and 1/30 s; 90 and 100 °C at 1/30 s | 1/2 s: a white frame, the hills barely there. 1/8 s: two stops over, pale sky, bright turquoise water. 1/30 s: the clean frame at sheet scale; 100 °C a fine grain at 1:1 | hold 1/30 s, raise the heat |
 | H2 | 94 °C (the dark charge of 70 °C at half a second), 110 and 120 °C, all at 1/30 s | 94 °C: nothing at sheet scale. 110 °C: grain over the sky, the water greyer (its red channel rises from 4.7 to 23.7 of 255 as the dark noise rectifies at black), a pink glow over the rocks at the bottom left. 120 °C: coarse chroma grain, the corner pink | between 110 and 120 |
 | H3 | 105, 110, 115 °C at 1/30 s, at 40 % and in 1:1 crops of the hills | 105 °C: grain at 1:1 only. 110 °C: heavy chroma grain at 1:1, a hot cross on the hill. 115 °C: grain at sheet scale and the glow plain in the corner, the frame still readable | 115 °C at 1/30 s, then dropped (H5) |
-| H4 | 115 °C at 1/30 s in movie mode on the pan | Darker and green, the shadows crushed (see below); grain halved by the 4-column binning; the glow at the top left | core fix reported |
+| H4 | 115 °C at 1/30 s in movie mode on the pan | Darker and green, the shadows crushed (see below); grain halved by the 4-column binning; the glow at the top left | fixed after stage 18 |
 | H5 | The orchestrator's direction, from the panels agent's finding that a long exposure whites the sample out: the camera's 1/125 s with scene auto-exposure, 100, 110, 120 and 130 °C | 100 °C: nothing at sheet scale. 110 °C: grain at 1:1. 120 °C: grain over the sky at sheet scale; at 1:1 the shadows mottled in chroma, a hot cross on the hill, the water grainy, the corner only faintly pink. 130 °C: coarse grain, the corner pink | heat gun: 120 °C at 1/125 s, scene auto-exposure; the glow left to a dark scene |
-| H6 | 120 °C in movie mode on the pan | Crushed and green as in H4, more so: the optical black now gathers eight times the image's dark charge | core fix reported |
+| H6 | 120 °C in movie mode on the pan | Crushed and green as in H4, more so: the optical black now gathers eight times the image's dark charge | fixed after stage 18 |
 | SB1 | 10 V at 1/125 s; with `[scene] headroom` 8 and 20; at 1/60 s | Nothing at sheet scale; headroom 20 changes a few trunk pixels. The sample is barely clipped (a few pixels at 255), and the inverse shoulder lifts its brightest values only to about 1.4 times white whatever the headroom | the bloom needs an overexposure |
 | SB2 | 10 V against 12 V at 1/30, 1/20, 1/15, 1/13, 1/10 and 1/8 s, fixed exposure | 1/30 s: a cyan fringe along the hill crests, the sky's charge spilling into the hill within its column. 1/15 s: the water's blue floods the treetop. 1/13 s: white flares from the branches across the water, the treetop blue. 1/10 s: the trunk washes out. At 12 V the same exposures only clip | substrate: 10 V, 1/13 s |
 | SB3 | 14 and 15 V at 1/125 s | 14 V: the clouds clip flat. 15 V: the clipped sky develops violet and the clouds pink, the processor assuming the nominal well. No bloom | the header's note on the raised bias |
@@ -118,14 +118,13 @@ crossing the swing in turn, the green-blue rows of the blue sky first.
 - The substrate preset blooms only overexposed, three stops over the daylight
   exposure; on a scene with real clipped highlights (the sun, glints) it would bloom at
   a shorter exposure.
-- In movie mode the heat gun and the hot reclock come out dark and green. The readout
-  stage integrates the optical-black photosites' dark current over a whole frame
-  (1/15 s) where the image's integrate over the shutter's exposure, 1/125 s, so at
-  120 °C the black clamp subtracts about 3,400 e too much, 27 % of reference white. At
-  the reference temperature the difference is six hundredths of an electron. The masked
-  photosites see the same shutter, so their exposure should be the image's: a fix in
-  `readout::Params::resolve`, not a preset value (an exposure of a whole frame, which
-  would match, overexposes the still by three stops).
+- In movie mode the heat gun and the hot reclock first came out dark and green: the
+  readout stage integrated the optical-black photosites' dark current over a whole
+  frame (1/15 s) where the image's integrate over the shutter's exposure, 1/125 s, so
+  at 120 °C the black clamp subtracted about 3,400 e too much, 27 % of reference white
+  (rounds H4 and H6). Fixed after stage 18 in `readout::Params::resolve`: the masked
+  photosites see the same shutter, so they integrate the image's exposure in both
+  modes, with a test in `tests/sensor_bend.rs`.
 - The glow's geometry and the sensor's uniform temperature are guesses: a heat gun
   pointed at one side would warm it unevenly, and the temperature does not drift
   through a video.

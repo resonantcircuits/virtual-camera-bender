@@ -384,11 +384,12 @@ pub struct Params {
 impl Params {
     /// Resolves the readout parameters from the camera, preset and derived timing.
     ///
-    /// The preset's `[bend.clocks] cte` replaces the sensor's own when set. Movie mode
-    /// integrates dark current over one frame at the nominal frame rate, still mode
-    /// over the set exposure, the preset's `[sensor] exposure_s` or else the still
-    /// exposure, as the image's photosites do; the dark current is the sensor's at the
-    /// preset's `[bend.sensor] temperature_c`.
+    /// The preset's `[bend.clocks] cte` replaces the sensor's own when set. The
+    /// optical-black photosites integrate dark current over the same exposure as the
+    /// image's photosites: the preset's `[sensor] exposure_s` or else the mode's camera
+    /// exposure, which the movie mode's electronic shutter (it clears every photosite,
+    /// masked ones included) limits to one frame period; the dark current is the
+    /// sensor's at the preset's `[bend.sensor] temperature_c`.
     ///
     /// # Errors
     ///
@@ -400,7 +401,11 @@ impl Params {
                 .sensor
                 .and_then(|o| o.exposure_s)
                 .unwrap_or(camera.still.exposure_s),
-            Mode::Movie => 1.0 / camera.movie.fps,
+            Mode::Movie => preset
+                .sensor
+                .and_then(|o| o.exposure_s)
+                .unwrap_or(camera.movie.exposure_s)
+                .min(1.0 / camera.movie.fps),
         };
         let clocks = preset.bend.clocks.clone().unwrap_or_default();
         let native_rows = camera.sensor.native_height / (2 * timing.line_skip.max(1)) * 2;
