@@ -195,6 +195,12 @@ pub struct Afe {
     pub noise_1f_corner_hz: f64,
     /// Analog simulation sub-steps per pixel period.
     pub oversample: u32,
+    /// Largest swing of the CCD's output stage in volts.
+    ///
+    /// The floating diffusion's level that the CDS still follows: charge on the
+    /// diffusion beyond `fd_swing_v / conv_gain` is lost to the output. With a sound
+    /// reset gate a packet never comes near it. See [`afe`](crate::afe).
+    pub fd_swing_v: f64,
 }
 
 /// The `[adc]` section: the converter and its parallel output bus.
