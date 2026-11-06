@@ -1,0 +1,21 @@
+# Canon PowerShot A520 with the IR-cut filter removed: the washed full-spectrum photograph.
+# The hot mirror slid fully off the sensor (the DSC-V1 magnet bypass). The scene's near
+# infrared, estimated from its colours with the default weights and foliage raised, reaches all
+# three dyes through the camera's nir_response; scene auto-exposure takes the extra light back
+# and grey-world white balance fights the cast: cream clouds, teal water, pale vegetation.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[isp]
+ae_mode = "scene"                   # the camera meters what the sensor now sees, near infrared included
+wb = "auto"                         # grey world on the raw, as a full-spectrum shooter's custom white balance
+
+[bend.optics]
+ir_cut_pulled_frac = 1.0            # the filter fully off the sensor
+foliage_nir = 3.0                   # PROVISIONAL, by eye: an assumption about the scene, green read as chlorophyll (a typical leaf is 4)
+nir_scale = 1.3                     # PROVISIONAL, by eye: a sunlit scene a little brighter in the near infrared than in the visible

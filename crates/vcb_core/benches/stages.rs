@@ -2,14 +2,21 @@
 //!
 //! The benches render a synthetic 2272 by 1704 scene (a sky gradient with a clipped
 //! sun, textured ground, dark buildings with lit windows) through `cameras/a520.toml`
-//! in still mode at native resolution, with two presets: `clean`, the unmodified
-//! camera, and `hpf`, the bus bend with the bypass function.
+//! in still mode at native resolution. Every stage runs with two presets: `clean`, the
+//! unmodified camera, and `hpf`, the bus bend with the bypass function. The stages that
+//! milestone 3 bent also run a bent case: the scene with `full-spectrum` (the IR-cut
+//! filter removed), the supply rail and the AFE on it with `brownout` (a sagging,
+//! rippling rail), the processor's capture with `reclock-roll` (a detuned, wandering
+//! oscillator) and the frame buffer with `s9000-tear` (two marginal address contacts).
 //!
 //! Each stage bench times one public stage function on the signal that the stages
 //! before it produced. Persistent state carries on from one iteration to the next, as
-//! in a video. The two stages that rewrite their buffer in place, the bus bend and the
-//! codec, get a fresh copy of their input for every iteration, made outside the timed
-//! region. The `frame` bench times [`Simulator::frame`], the whole chain.
+//! in a video. The stages that rewrite their buffer in place, the bus bend, the capture,
+//! the frame buffer and the codec, get a fresh copy of their input for every iteration,
+//! made outside the timed region. The bus, capture and frame-buffer benches time one
+//! iteration per sample: their pass-through case takes nanoseconds, and divan would
+//! otherwise copy a frame-sized input for each of hundreds of iterations at once. The
+//! `frame` bench times [`Simulator::frame`], the whole chain.
 //!
 //! Run with `cargo bench -p vcb_core`.
 
@@ -20,18 +27,45 @@ use divan::Bencher;
 use vcb_core::adc::{self, Codes};
 use vcb_core::afe::{self, Analog};
 use vcb_core::isp::{self, Raw};
-use vcb_core::power::Rail;
+use vcb_core::power::{self, Rail};
 use vcb_core::preset::{Mode, Resolution};
 use vcb_core::readout::{self, Stream};
 use vcb_core::sensor::{self, Charge};
-use vcb_core::{Camera, Frame, Preset, Scene, Simulator, Timing, bus, codec, noise, scene};
+use vcb_core::{
+    Camera, Frame, Preset, Scene, Simulator, Timing, bus, capture, codec, memory, noise, scene,
+};
 
 fn main() {
     divan::main();
 }
 
-/// Presets benchmarked, named by their file `presets/a520-<name>.toml`.
+/// Presets benchmarked by every stage, named by their file `presets/a520-<name>.toml`.
 const PRESETS: [&str; 2] = ["clean", "hpf"];
+
+/// Presets of the scene bench: the two of every stage and the IR-cut filter removed.
+const SCENE_PRESETS: [&str; 3] = ["clean", "hpf", "full-spectrum"];
+
+/// Presets of the AFE bench: the two of every stage and a sagging rail.
+const AFE_PRESETS: [&str; 3] = ["clean", "hpf", "brownout"];
+
+/// Presets of the supply-rail bench: no rail bend, and a loaded, rippling rail.
+const POWER_PRESETS: [&str; 2] = ["clean", "brownout"];
+
+/// Presets of the capture bench: no reclock, and a detuned, wandering oscillator.
+const CAPTURE_PRESETS: [&str; 2] = ["clean", "reclock-roll"];
+
+/// Presets of the frame-buffer bench: no memory bend, and two marginal address contacts.
+const MEMORY_PRESETS: [&str; 2] = ["clean", "s9000-tear"];
+
+/// Presets of the whole-chain bench: the two of every stage and one per bent stage.
+const FRAME_PRESETS: [&str; 6] = [
+    "clean",
+    "hpf",
+    "full-spectrum",
+    "brownout",
+    "reclock-roll",
+    "s9000-tear",
+];
 
 /// Width of the scene: the A520's native still width.
 const WIDTH: u32 = 2272;
@@ -103,29 +137,40 @@ struct Chain {
     scene: scene::Params,
     sensor: sensor::Params,
     readout: readout::Params,
+    power: Option<power::Params>,
     afe: afe::Params,
     adc: adc::Params,
     bus: Option<bus::Params>,
+    capture: Option<capture::Params>,
     isp: isp::Params,
+    memory: Option<memory::Params>,
     codec: codec::Params,
     scene_state: scene::State,
     sensor_state: sensor::State,
     readout_state: readout::State,
+    power_state: power::State,
     afe_state: afe::State,
     bus_state: bus::State,
+    capture_state: capture::State,
+    memory_state: memory::State,
     isp_state: isp::State,
     codec_state: codec::State,
     prepared: Scene,
     charge: Charge,
     stream: Stream,
-    /// The camera's nominal supply rail on every line.
+    /// The supply rail on every line: the camera's nominal without a rail bend.
     rail: Rail,
     analog: Analog,
     /// The ADC's words, before the bend.
     codes: Codes,
-    /// The words the image processor latches, after the bend.
+    /// The words on the bus, after the bend.
     bent: Codes,
+    /// The words the image processor latches on its own clock, after the capture.
+    captured: Codes,
+    /// The clamped raw, before the frame buffer.
     raw: Raw,
+    /// The raw read back from the frame buffer, before development.
+    read_back: Raw,
     /// The developed frame, before the codec.
     developed: Frame,
 }
@@ -154,16 +199,23 @@ impl Chain {
             scene: scene::Params::resolve(c, p, t).unwrap_or_else(|e| unresolved("scene", &e)),
             sensor: sensor::Params::resolve(c, p, t).unwrap_or_else(|e| unresolved("sensor", &e)),
             readout,
+            power: power::Params::resolve(c, p, t).unwrap_or_else(|e| unresolved("power", &e)),
             afe: afe::Params::resolve(c, p, t).unwrap_or_else(|e| unresolved("afe", &e)),
             adc: adc::Params::resolve(c, p, t).unwrap_or_else(|e| unresolved("adc", &e)),
             bus: bus::Params::resolve(c, p, t).unwrap_or_else(|e| unresolved("bus", &e)),
+            capture: capture::Params::resolve(c, p, t)
+                .unwrap_or_else(|e| unresolved("capture", &e)),
             isp,
+            memory: memory::Params::resolve(c, p, t).unwrap_or_else(|e| unresolved("memory", &e)),
             codec: codec::Params::resolve(c, p, t).unwrap_or_else(|e| unresolved("codec", &e)),
             scene_state: scene::State::default(),
             sensor_state: sensor::State::default(),
             readout_state: readout::State::default(),
+            power_state: power::State::default(),
             afe_state: afe::State::default(),
             bus_state: bus::State::default(),
+            capture_state: capture::State::default(),
+            memory_state: memory::State::default(),
             isp_state: isp::State::default(),
             codec_state: codec::State::default(),
             prepared: Scene::new(width, height),
@@ -172,8 +224,10 @@ impl Chain {
             rail: Rail::new(&layout, camera.power.rail_v),
             analog: Analog::new(layout.clone()),
             codes: Codes::new(layout.clone()),
-            bent: Codes::new(layout),
+            bent: Codes::new(layout.clone()),
+            captured: Codes::new(layout),
             raw: Raw::new(cols, rows),
+            read_back: Raw::new(cols, rows),
             developed,
         };
         chain.run();
@@ -204,6 +258,13 @@ impl Chain {
             0,
             stream,
         );
+        power::track(
+            self.power.as_ref(),
+            &mut self.power_state,
+            &self.bus_state,
+            0,
+            &mut self.rail,
+        );
         afe::process(
             &self.afe,
             &mut self.afe_state,
@@ -221,17 +282,32 @@ impl Chain {
             0,
             &mut self.bent,
         );
-        isp::clamp_black(&self.isp, &self.bent, &self.rail, &mut self.raw);
+        self.captured.words_mut().copy_from_slice(self.bent.words());
+        capture::reframe(
+            self.capture.as_ref(),
+            &mut self.capture_state,
+            &self.rail,
+            0,
+            &mut self.captured,
+        );
+        isp::clamp_black(&self.isp, &self.captured, &self.rail, &mut self.raw);
+        self.read_back.clone_from(&self.raw);
+        memory::bend(
+            self.memory.as_ref(),
+            &mut self.memory_state,
+            0,
+            &mut self.read_back,
+        );
         isp::develop(
             &self.isp,
             &mut self.isp_state,
-            &self.raw,
+            &self.read_back,
             &mut self.developed,
         );
     }
 }
 
-#[divan::bench(args = PRESETS, sample_count = 20)]
+#[divan::bench(args = SCENE_PRESETS, sample_count = 20)]
 fn scene_prepare(bencher: Bencher, preset: &str) {
     let mut chain = Chain::new(preset);
     bencher.bench_local(|| {
@@ -270,7 +346,20 @@ fn readout_read(bencher: Bencher, preset: &str) {
     bencher.bench_local(|| readout::read(readout, readout_state, charge, 0, stream));
 }
 
-#[divan::bench(args = PRESETS, sample_count = 20)]
+#[divan::bench(args = POWER_PRESETS, sample_count = 20)]
+fn power_track(bencher: Bencher, preset: &str) {
+    let mut chain = Chain::new(preset);
+    let Chain {
+        power,
+        power_state,
+        bus_state,
+        rail,
+        ..
+    } = &mut chain;
+    bencher.bench_local(|| power::track(power.as_ref(), power_state, bus_state, 0, rail));
+}
+
+#[divan::bench(args = AFE_PRESETS, sample_count = 20)]
 fn afe_process(bencher: Bencher, preset: &str) {
     let mut chain = Chain::new(preset);
     let Chain {
@@ -290,7 +379,7 @@ fn adc_convert(bencher: Bencher, preset: &str) {
     bencher.bench_local(|| adc::convert(&chain.adc, &chain.analog, &mut chain.codes));
 }
 
-#[divan::bench(args = PRESETS, sample_count = 20)]
+#[divan::bench(args = PRESETS, sample_count = 20, sample_size = 1)]
 fn bus_bend(bencher: Bencher, preset: &str) {
     let mut chain = Chain::new(preset);
     let Chain {
@@ -305,10 +394,43 @@ fn bus_bend(bencher: Bencher, preset: &str) {
         .bench_local_refs(|codes| bus::bend(bus.as_ref(), bus_state, rail, 0, codes));
 }
 
+#[divan::bench(args = CAPTURE_PRESETS, sample_count = 20, sample_size = 1)]
+fn capture_reframe(bencher: Bencher, preset: &str) {
+    let mut chain = Chain::new(preset);
+    let Chain {
+        capture,
+        capture_state,
+        rail,
+        bent,
+        ..
+    } = &mut chain;
+    bencher
+        .with_inputs(|| bent.clone())
+        .bench_local_refs(|codes| {
+            capture::reframe(capture.as_ref(), capture_state, rail, 0, codes);
+        });
+}
+
 #[divan::bench(args = PRESETS, sample_count = 20)]
 fn isp_clamp_black(bencher: Bencher, preset: &str) {
     let mut chain = Chain::new(preset);
-    bencher.bench_local(|| isp::clamp_black(&chain.isp, &chain.bent, &chain.rail, &mut chain.raw));
+    bencher.bench_local(|| {
+        isp::clamp_black(&chain.isp, &chain.captured, &chain.rail, &mut chain.raw);
+    });
+}
+
+#[divan::bench(args = MEMORY_PRESETS, sample_count = 20, sample_size = 1)]
+fn memory_bend(bencher: Bencher, preset: &str) {
+    let mut chain = Chain::new(preset);
+    let Chain {
+        memory,
+        memory_state,
+        raw,
+        ..
+    } = &mut chain;
+    bencher
+        .with_inputs(|| raw.clone())
+        .bench_local_refs(|raw| memory::bend(memory.as_ref(), memory_state, 0, raw));
 }
 
 #[divan::bench(args = PRESETS, sample_count = 20)]
@@ -317,11 +439,11 @@ fn isp_develop(bencher: Bencher, preset: &str) {
     let Chain {
         isp,
         isp_state,
-        raw,
+        read_back,
         developed,
         ..
     } = &mut chain;
-    bencher.bench_local(|| isp::develop(isp, isp_state, raw, developed));
+    bencher.bench_local(|| isp::develop(isp, isp_state, read_back, developed));
 }
 
 #[divan::bench(args = PRESETS, sample_count = 20)]
@@ -338,7 +460,7 @@ fn codec_encode(bencher: Bencher, preset: &str) {
         .bench_local_refs(|frame| codec::encode(codec, codec_state, frame));
 }
 
-#[divan::bench(args = PRESETS, sample_count = 20)]
+#[divan::bench(args = FRAME_PRESETS, sample_count = 20)]
 fn frame(bencher: Bencher, preset: &str) {
     let (camera, preset) = load(preset);
     let input = input();

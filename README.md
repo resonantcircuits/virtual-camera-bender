@@ -8,6 +8,14 @@ circuit's capacitor and logic gates, the image processor and the JPEG encoder. T
 glitches are not filters; they come out of the circuit, configured in ohms,
 microfarads and hertz.
 
+Beside the bus bend, the CCD's clock faults and an oscillator injected into the analog
+front end, the camera can be bent four more ways, each modelled in the hardware it
+changes: the IR-cut filter slid off the sensor, so the silicon sees near
+infrared; a sagging, rippling supply rail that blooms rows, locks the analog front end
+out and browns the processor out; a replaced master oscillator that the image processor
+no longer keeps in step with; and faulted address pins on the frame-buffer memory,
+which fold the frame in powers of two and let earlier frames through.
+
 The reference for the A520 bend is a set of photos from a real modified camera. The
 validation sheet puts our HPF, DIV and INV renders beside them; it is built by
 `scripts/validate-a520.sh` from local reference images into the gitignored
@@ -76,15 +84,39 @@ the background. `docs/USER-GUIDE.md` explains every control and the shortcuts.
 ## Cameras and presets
 
 A camera file (`cameras/a520.toml`) describes the hardware in physical units: sensor
-size, full well and conversion gain, pixel clock and blanking, AFE gain and bandwidth,
-ADC bits and black level, the 74HC logic, the image processor's colour matrix and the
-measured JPEG tables. Every value carries a confidence letter and a pointer to its
-source in `docs/research/a520-technical.md`. A preset (`presets/*.toml`) names a
-camera, picks the readout mode and resolution, and declares the bends patched into it:
-which data lines feed the DIP bank, the capacitor and pot values, the inverter or
-divider, the target pin. It reads like a schematic. The four presets are the clean
-A520 and the three reference bends: `hpf` (high-pass contours), `div` (divider
-streaks) and `inv` (inverted, posterised colour).
+size, full well and conversion gain, the dyes' near-infrared response, pixel clock and
+blanking, AFE gain and bandwidth, ADC bits and black level, the 74HC logic, the supply
+rail and its failure thresholds, the image processor's colour matrix and black clamp,
+the frame-buffer SDRAM's organisation and the measured JPEG tables. Every value carries
+a confidence letter and a pointer to its source in `docs/research/a520-technical.md`.
+A preset (`presets/*.toml`) names a camera, picks the readout mode and resolution, and
+declares the bends patched into it: which data lines feed the DIP bank, the capacitor
+and pot values, the inverter or divider, the target pin; how far the IR-cut filter has
+slid; the loads on the rail; the replacement oscillator; the faulted address pins. It
+reads like a schematic, and its header says what is wired and why.
+
+The presets, all of the A520 (`presets/a520-<name>.toml`):
+
+| Preset | Bend | Look |
+|---|---|---|
+| `clean` | none | the unmodified camera |
+| `hpf` | bus, bypass | high-pass contours, the reference bend |
+| `div` | bus, divider | divider streaks |
+| `inv` | bus, inverter | inverted, posterised colour |
+| `full-spectrum` | IR-cut filter removed | the washed full-spectrum photograph: cream clouds, teal water, pale vegetation |
+| `chlorophyll` | IR-cut filter removed, low red gain | aerochrome-ish: deep sky and water, foliage glowing pink-white |
+| `full-spectrum-hpf` | IR-cut filter removed and the HPF bus bend | the reference bend on a full-spectrum camera |
+| `brownout` | rail, steady load and ripple | breathing bright bands, no failures |
+| `sieve` | rail, load spikes | rows that die into solid colour, clustered |
+| `dying-battery` | rail and frame buffer | lockout stripes, then the frame buffer's earlier content below the brownout |
+| `loose-sync` | master clock, small detune, line lock | a held picture that shears and snaps back |
+| `reclock-roll` | master clock, wide drift, narrow lock | tears and colour-phase bands that move between frames |
+| `s9000-tear` | frame buffer, marginal contacts | torn bands and stale frames showing through |
+| `mirror-bank` | frame buffer, one solid row pin | a crystalline repeated band (stills only) |
+
+`hpf`, `div` and `inv` are tuned against photos of a real bent A520; the others are
+tuned by eye, since no reference images exist for those bends
+(`docs/research/milestone3-tuning-notes.md`).
 
 ## Repository layout
 
@@ -109,11 +141,11 @@ How the simulation is built, stage by stage, is in
 
 ## Status
 
-This is the first milestone of the Rust rewrite: the validated core and the command
-line. It simulates the A520 in still and movie modes with the bus, clock and analog
-front-end bends. The look of the bends is being tuned against the reference photos.
-A GPU path, a desktop app with a patch-bay interface, more cameras and more bends are
-later milestones.
+The Rust rewrite has its validated core, the command line and the desktop app
+(milestones 1 and 2). Milestone 3 adds the optics, supply-rail, master-clock and
+frame-buffer bends beside the bus, CCD-clock and analog-front-end bends, with ten
+presets; the user's testing round comes next. A GPU path, more cameras and more bends
+are later milestones.
 
 ## Legacy version
 

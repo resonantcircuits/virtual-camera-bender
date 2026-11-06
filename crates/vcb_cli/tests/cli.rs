@@ -123,10 +123,33 @@ fn presets_lists_every_preset_file() {
     let run = vcb(&["presets", "--dir", "presets"]);
     assert!(run.status.success(), "stderr: {}", text(&run.stderr));
     let stdout = text(&run.stdout);
-    for name in ["a520-clean", "a520-hpf", "a520-div", "a520-inv"] {
-        assert!(stdout.contains(name), "missing {name} in\n{stdout}");
+    let shipped = [
+        ("a520-clean", "none"),
+        ("a520-hpf", "bus"),
+        ("a520-div", "bus"),
+        ("a520-inv", "bus"),
+        ("a520-full-spectrum", "optics"),
+        ("a520-chlorophyll", "optics"),
+        ("a520-full-spectrum-hpf", "bus,optics"),
+        ("a520-brownout", "rail"),
+        ("a520-sieve", "rail"),
+        ("a520-dying-battery", "rail,memory"),
+        ("a520-loose-sync", "clock"),
+        ("a520-reclock-roll", "clock"),
+        ("a520-s9000-tear", "memory"),
+        ("a520-mirror-bank", "memory"),
+    ];
+    for (name, bends) in shipped {
+        let line = stdout
+            .lines()
+            .find(|line| line.split_whitespace().next() == Some(name))
+            .unwrap_or_else(|| panic!("missing {name} in\n{stdout}"));
+        assert!(
+            line.ends_with(&format!("bends={bends}")),
+            "{name} should list bends={bends}: {line}"
+        );
     }
-    assert!(stdout.contains("bends=bus"), "{stdout}");
+    assert_eq!(stdout.lines().count(), shipped.len(), "{stdout}");
 }
 
 #[test]

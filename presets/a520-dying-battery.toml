@@ -1,0 +1,27 @@
+# Canon PowerShot A520 on a dying battery, with its frame buffer: lockout stripes, then brownout.
+# A tired battery (1.5 ohm source) under a 300 mA added load holds the 3.3 V rail at 2.85 V;
+# 400 mV of slow ripple and 133 mA spikes (0.2 V, 1 ms, 80 a second) ride on it. As the ripple
+# falls, the spikes lock the AFE out (stripes of the held word), then the rail stays under the
+# 2.7 V lockout (a solid band), and the first spike near the trough takes it under the
+# processor's 2.4 V brownout: the processor captures nothing more, its DMA stores no more lines,
+# and the frame buffer reads back what those rows held, the previous frame in a video (in a
+# still from power-on, the SDRAM's power-up content). [bend.memory] has no faults: it only keeps
+# the SDRAM's content in play, which without it the brownout would leave black.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone3-tuning-notes.md.
+camera = "a520"
+seed = 1                            # also seeds the spikes' arrivals
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.rail]
+source_ohm = 1.5                    # PROVISIONAL: a tired pair of AA cells and the converter behind them
+load_ma = 300.0                     # the backlight and the lens motor's holding current: 0.45 V down
+ripple_mv = 400.0                   # PROVISIONAL, by eye: 2.45 V to 3.25 V
+ripple_hz = 4.0                     # one trough per still frame (late in it), one every four movie frames
+spike_ma = 133.0                    # PROVISIONAL, by eye: 0.2 V spikes
+spike_hz = 80.0
+spike_ms = 1.0                      # about 8 still lines a spike
+
+[bend.memory]                       # no faults: the frame buffer keeps what it held

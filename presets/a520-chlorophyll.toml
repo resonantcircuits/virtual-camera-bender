@@ -1,0 +1,22 @@
+# Canon PowerShot A520 with the IR-cut filter removed and a low red gain: aerochrome-ish.
+# The hot mirror fully off the sensor; foliage reflects eight times its visible green in the
+# near infrared (the Wood effect, strong), and the processor's red gain is turned down below
+# the daylight 2.0 and its blue gain up, as colour-infrared film shifts its dyes. Scene
+# auto-exposure takes the extra light back: deep sky and water, foliage glowing pink-white.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[isp]
+ae_mode = "scene"                   # the camera meters what the sensor now sees, near infrared included
+wb_r_gain = 0.9                     # PROVISIONAL, by eye: the red gain well below the daylight 2.0
+wb_b_gain = 1.7                     # PROVISIONAL, by eye: the blue gain a little above the daylight 1.5
+
+[bend.optics]
+ir_cut_pulled_frac = 1.0            # the filter fully off the sensor
+foliage_nir = 8.0                   # PROVISIONAL, by eye: twice a typical leaf, so the sparse foliage of the sample glows
+nir_scale = 1.3                     # PROVISIONAL, by eye: a sunlit scene a little brighter in the near infrared than in the visible

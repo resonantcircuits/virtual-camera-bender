@@ -1,0 +1,18 @@
+# Canon PowerShot A520 on a sagging supply rail: breathing bright bands, no failures.
+# A tired battery (1.5 ohm source) under a steady 100 mA added load holds the 3.3 V rail at
+# 3.15 V; 420 mV of slow ripple on the source swings it between 2.73 V and 3.57 V, never under
+# the AFE's 2.7 V lockout. The AFE's reference follows the rail, so the lines read where it dips
+# bloom up to a fifth brighter: about three bands across a still, drifting through a video.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.rail]
+load_ma = 100.0                     # LEDs and an added oscillator: 0.15 V through the tired battery
+source_ohm = 1.5                    # PROVISIONAL: a tired pair of AA cells and the converter behind them
+ripple_mv = 420.0                   # PROVISIONAL, by eye: as deep as the band contrast goes without a lockout
+ripple_hz = 12.0                    # about 2.7 cycles per 0.23 s still frame, 0.8 per movie frame

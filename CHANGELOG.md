@@ -5,6 +5,81 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Milestone 3: the bends from the old presets' spirit
+
+The legacy JavaScript presets' looks return as physical models in the stage whose
+hardware each bend changes; their normalised knobs become bench quantities and their
+coin flips circuits with memory.
+
+#### Added
+
+- The IR-cut filter removal, `[bend.optics]`, in the scene stage: the hot mirror slides
+  off the top `ir_cut_pulled_frac` of the sensor behind an out-of-focus shadow, and the
+  scene's near infrared, estimated from its linear colours (`nir_weights`, raised on
+  foliage by `foliage_nir`, off by default, and scaled by `nir_scale`), defocused and
+  added to every dye. Scene auto-exposure and white balance react unchanged, so the
+  full-spectrum look comes out of the chain.
+- The supply rail, a new `power` stage and `[bend.rail]`: one 3.3 V rail behind the
+  source impedance and decoupling, loaded by a steady current, Poisson load spikes and
+  the bus bend's own current, with ripple on the source, computed per readout line in
+  closed form and carried across frames. The AFE's reference and pedestal follow it,
+  and below its lockout the AFE holds its last word and then restores its pedestal;
+  the bus drivers, 74HC gates and latch threshold scale with it, and the gates float
+  below their minimum supply; the processor browns out for the rest of the frame.
+- The master-clock reclock, a new `capture` stage and `[bend.clock]`: the timing
+  generator and AFE run from an oscillator at `osc_mhz`, wandering by `drift_ppm` at
+  `drift_hz` and following the rail by `ppm_per_v`, while the processor keeps its
+  crystal, generates VD and latches the bus on its own clock, with optional HD
+  re-synchronisation within `hd_lock_px`. `Timing` carries both clocks:
+  `pixel_period_s` and `clock_ratio` for the sensor side, `dsp_pixel_period_s` and
+  `frame_period_s` for the processor.
+- The SDRAM address-line bend, a new `memory` stage and `[bend.memory]`: the clamped raw
+  is written to the frame buffer in readout order and read back a frame period later
+  through physical address pins, each carrying a column and a row bit, stuck `low` or
+  `high`, `bridge`d, or marginal (`on_frac`, `switch_hz`); the SDRAM keeps its content
+  across frames and reconfigurations.
+- The connections between the bends: the rail drives the reclocked oscillator; a
+  processor brownout stores no more rows, so the frame buffer shows what it held there;
+  the processor's black clamp corrects only within `[isp] clamp_range`, so a
+  locked-out AFE's held word keeps its colour.
+- Camera values in `cameras/a520.toml`: `[power]` (`rail_v` 3.3 V, `source_ohm` 0.5,
+  `decoupling_uf` 47, `quiescent_ma` 60, `afe_uvlo_v` 2.7 V, `logic_min_v` 2.0 V,
+  `dsp_brownout_v` 2.4 V, `afe_restart_lines` 3), `[memory]` (`column_bits` 9,
+  `row_bits` 12, `bank_bits` 2, `raw_base` 0, a 128 Mbit x16 SDRAM),
+  `[sensor] nir_response` [1.0, 0.55, 0.5], `[lens] nir_defocus_frac` 0.003 and
+  `filter_edge_blur_frac` 0.06, and `[isp] clamp_range` 128, graded by confidence,
+  most of them PROVISIONAL.
+- Ten presets: `a520-full-spectrum` (the washed full-spectrum photograph),
+  `a520-chlorophyll` (aerochrome-ish, foliage glowing), `a520-full-spectrum-hpf` (the
+  HPF bend on a full-spectrum camera), `a520-brownout` (breathing bright bands),
+  `a520-sieve` (clustered rows dying into solid colour), `a520-dying-battery` (lockout
+  stripes, then the frame buffer's earlier content below the brownout),
+  `a520-loose-sync` (a held picture that shears and snaps back), `a520-reclock-roll`
+  (travelling tears and colour-phase bands), `a520-s9000-tear` (torn bands and stale
+  frames) and `a520-mirror-bank` (one solid row pin, a crystalline repeated band).
+- Tests of the four bends' physics, replay and reconfiguration (`optics`, `power`,
+  `capture`, `memory`, `milestone3_plumbing`), golden frames of the ten presets, and
+  benchmarks of `power::track`, `capture::reframe` and `memory::bend` with a bent case
+  for each new stage, the scene with the filter removed and the AFE on a sagging rail.
+- `docs/research/milestone3-tuning-notes.md`, how the presets and camera values were
+  chosen.
+
+#### Changed
+
+- The AFE runs from the rail instead of an ideal supply; on a nominal rail it gives the
+  same bytes.
+- Sub-line analog constants scale with the processor's period, so a reclocked sensor
+  clock leaves them fixed in seconds and a slower oscillator settles more per pixel;
+  the AFE's oscillators advance VD to VD over the processor's frame period, and the
+  smear's readout time stops at VD.
+- `vcb presets` names the new bends and `vcb inspect` the timing generator's clock
+  beside the native one; `Simulator::set_preset` keeps the rail, the oscillator's
+  drift and the SDRAM's content through any change of the new sections.
+- `docs/ARCHITECTURE.md` describes the power, capture and memory stages and the optics
+  step, the two clocks, the new seeds and state, and the new configuration; the README
+  lists the presets.
+- The four existing golden frames are unchanged.
+
 ### Milestone 2: the desktop app
 
 #### Added

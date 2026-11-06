@@ -1,0 +1,21 @@
+# Canon PowerShot A520 with the master oscillator replaced (the LTC1799 mod): loose sync.
+# The timing generator and AFE run from an oscillator 18.5 ppm below the camera's 27 MHz that
+# wanders 600 ppm either way at about 10 Hz; the processor keeps its crystal and resets its line
+# counter to the timing generator's line start when that lies within 1.5 pixels. While the
+# wander is under 420 ppm the slip per line fits the window and the picture holds; past it the
+# processor lets go, the slip accumulates into a diagonal shear with a wedge of blanking, and
+# it snaps back when the timing generator's line start passes through the window again.
+# Nothing corrects the Bayer phase, so the sheared stretches develop colour-phase static.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
+camera = "a520"
+seed = 1                            # also seeds the wander's phases, which place the snaps
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.clock]
+osc_mhz = 26.9995                   # PROVISIONAL, by eye: a small detune; a steady 0.05 % already shears a still past reading
+drift_ppm = 600.0                   # PROVISIONAL, by eye: up to 2.1 pixels of slip a still line
+drift_hz = 10.0                     # PROVISIONAL, by eye: about two swings per still frame, so it holds and lets go more than once
+hd_lock_px = 1.5                    # the processor's capture window at each line start

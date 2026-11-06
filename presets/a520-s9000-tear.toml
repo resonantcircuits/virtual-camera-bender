@@ -1,0 +1,27 @@
+# Canon PowerShot A520 with two marginal SDRAM address contacts: the Fujifilm S9000's tearing.
+# Address pin a8 makes contact to ground (stuck low) 30 % of the time, switching about eight
+# times a second, and a6 to the supply (stuck high) 30 % of the time, about five times a second.
+# The processor writes the raw in readout order and reads it back a frame later; where a contact
+# changed in between, the read finds what the write did not put there: torn bands, folded copies
+# of the frame, and earlier frames showing through (in a still from power-on, the SDRAM's
+# power-up content). a8 carries column bit 8 and row bit 19 (231 still lines), a6 column bit 6
+# and row bit 17 (58 lines); both act on the movie raw as well.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone3-tuning-notes.md.
+camera = "a520"
+seed = 1                            # also seeds the contacts' telegraph processes
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[[bend.memory.faults]]
+pin = 8
+kind = "low"
+on_frac = 0.3                       # PROVISIONAL, by eye
+switch_hz = 8.0                     # PROVISIONAL, by eye: a few torn bands per frame; at hundreds of hertz the frame shreds into lines
+
+[[bend.memory.faults]]
+pin = 6
+kind = "high"
+on_frac = 0.3                       # PROVISIONAL, by eye
+switch_hz = 5.0                     # PROVISIONAL, by eye

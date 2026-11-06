@@ -50,17 +50,23 @@ camera's analog memory carries from one render to the next.
 `Simulator::frame` runs the stages in order on buffers allocated once. Each stage
 module has a `Params` struct resolved once from camera, preset and `Timing`, a `State`
 where the hardware remembers across frames, and one public function per frame. The
-module docs hold the formulas; this section states the contracts.
+power, capture and memory stages resolve to nothing without their preset section and
+then pass their signal through untouched. The module docs hold the formulas; this
+section states the contracts.
 
 | Stage | Function | In → out | Parameters | State |
 |---|---|---|---|---|
-| Scene | `scene::prepare` | `Scene` → `Scene` (sensor size) | camera `[isp]` `[lens]`; preset `[scene]` | – |
+| Scene | `scene::prepare` | `Scene` → `Scene` (sensor size) | camera `[isp]` `[lens]` `[sensor] nir_response`; preset `[scene]` `[bend.optics]` | – (working planes only) |
 | Sensor | `sensor::expose` | `Scene` → `Charge` (electrons) | camera `[sensor]` `[still]` `[movie]` `[isp]`; preset `[sensor]` `[isp]` | – |
 | Readout | `readout::read` | `Charge` → `Stream` (readout order) | camera clocking; preset `[bend.clocks]` | running faults |
-| AFE | `afe::process` | `Stream` → `Analog` (volts) | camera `[sensor]` `[afe]` `[adc]`; preset `[bend.afe]` | node, flicker, phases |
+| Power | `power::track` | the bend's current of the last frame → `Rail` (volts per line) | camera `[power]`; preset `[bend.rail]` | decoupling voltage, ripple phase, running spike |
+| AFE | `afe::process` | `Stream`, `Rail` → `Analog` (volts) | camera `[sensor]` `[afe]` `[adc]` `[power]`; preset `[bend.afe]` | node, flicker, phases, lockout |
 | ADC | `adc::convert` | `Analog` → `Codes` (words) | camera `[adc]` | – |
-| Bus | `bus::bend` | `Codes` in place | preset `[bend.bus]`; camera `[adc]` `[logic]` | capacitor and line voltages, diodes, gates |
-| ISP | `isp::clamp_black`, `isp::develop`, `isp::meter` | `Codes` → `Raw` → `Frame` | camera `[isp]` `[adc]` `[movie]`; preset `[isp]` | exposure and white-balance servos |
+| Bus | `bus::bend` | `Codes` in place, reading `Rail` | preset `[bend.bus]`; camera `[adc]` `[logic]` `[power]` | capacitor and line voltages, diodes, gates, current per line |
+| Capture | `capture::reframe` | `Codes` in place, reading `Rail` | preset `[bend.clock]`; camera `[still]` `[movie]` `[adc]` `[power]` | drift phases |
+| ISP | `isp::clamp_black` | `Codes`, `Rail` → `Raw` | camera `[isp]` `[adc]` `[power]` | – |
+| Memory | `memory::bend` | `Raw` in place | camera `[memory]`; preset `[bend.memory]` | SDRAM content, contacts |
+| ISP | `isp::develop`, `isp::meter` | `Raw` → `Frame` | camera `[isp]` `[adc]` `[movie]`; preset `[isp]` | exposure and white-balance servos |
 | Codec | `codec::encode` | `Frame` in place | camera `[jpeg]` `[still]` `[movie]` | – |
 
 ### Scene
@@ -72,6 +78,21 @@ reaches `headroom` times reference white, with channel ratios kept and clipped c
 estimated from nearby unclipped highlights; it is a documented guess about lost data.
 A cos⁴ falloff of `vignette_stops` dims the corners; the inverse colour matrix and
 daylight gains move the scene into sensor primaries, clipping negative responses.
+
+With `[bend.optics]` the IR-cut filter has slid off the top `ir_cut_pulled_frac` of
+the sensor (the DSC-V1's magnet bypass), and the photosites there collect near
+infrared through all three dyes. An RGB photo records none, so the scene's NIR is
+estimated, a documented guess like highlight reconstruction: a weighted sum of the
+linear scene (`nir_weights`, red-heavy, so a clear sky stays dark), raised on green
+foliage by `foliage_nir` (the Wood effect, an assumption about the scene and off by
+default) and scaled by `nir_scale`. The NIR image is defocused over `[lens]
+nir_defocus_frac` of the width, since the lens focuses the visible, gated by the
+filter's out-of-focus shadow (`filter_edge_blur_frac` of the height wide) and added
+to each channel through `[sensor] nir_response`. Nothing downstream knows about it:
+scene auto-exposure meters the sum and takes the extra light back, daylight white
+balance turns it pink and grey world fights the cast, so the full-spectrum look
+comes out of the chain. Real NIR data, a fourth scene plane, would replace the
+estimate at the same point. The step has neither memory nor randomness.
 
 ### Sensor
 
@@ -113,6 +134,32 @@ The geometric tail matches the binomial trail to first order in `N (1 - cte)`.
 `[bend.clocks]` adds vertical stalls, double pulses and horizontal glitch bands at rates
 per second; an odd slip swaps the Bayer phase, which develops as a colour swap.
 
+### Power
+
+One 3.3 V rail feeds the AFE, the bus drivers, the bend's 74HC chips and the
+processor's inputs: an EMF behind the regulator's and battery's `source_ohm` with
+`decoupling_uf` across it, holding `rail_v` at the camera's own `quiescent_ma`, so only
+added current sags it. `[bend.rail]` adds a steady `load_ma`, load spikes of `spike_ma`
+lasting `spike_ms` that arrive as a Poisson process at `spike_hz` (one transient load,
+so an arrival during a spike extends it), ripple of `ripple_mv` at `ripple_hz` on the
+EMF, and optionally a weaker `source_ohm`; the bus bend's own current, measured on
+each line of the previous frame, loads the same line of this one. `power::track`
+advances the RC in closed form between events and stores the voltage at the start
+and end of every readout line, which the consumers take as linear within the line;
+ripple faster than about half the line rate is therefore sampled, not resolved.
+Without the section the rail holds `rail_v` to the bit and every consumer takes its
+ideal path.
+
+The consumers are thresholds and ratios, not dice. The AFE's reference and pedestal
+follow the rail, so codes above black inflate by `rail_v / v` as it sags; below
+`afe_uvlo_v` the AFE locks out and the bus holds its last word, optical black
+included; when the rail returns, the AFE's black clamp restores the pedestal with a
+time constant of `afe_restart_lines` native lines. The bus drivers, the gates' thresholds and the processor's latch
+threshold scale with the rail, and below `logic_min_v` the 74HC chips float and
+forget their state. A line that starts below `dsp_brownout_v` browns the processor
+out for the rest of the frame (ISP). A reclocked oscillator follows the rail through
+`ppm_per_v` (Capture).
+
 ### AFE
 
 An AD9949-class front end, run in `f64` at `oversample` sub-steps per pixel period.
@@ -121,8 +168,9 @@ Correlated double sampling gives `conv_gain_uv_per_e`; a late reset sample (`cds
 (`[bend.afe] inject`: sine, square, saw, sample-and-hold) adds at the input, the PGA
 applies `pga_gain_db`, optionally modulated by `gain_mod`, and one pole of
 `bandwidth_hz` with a slew limit drives the ADC. Blanking advances in closed form, so
-oscillators roll on across lines and frames. The supply is ideal (`rail_v` is the hook
-for sag); bandwidth and slew rate are provisional.
+oscillators roll on across lines and frames. The supply is the rail of the power
+stage, read per sample; a line at the nominal rail takes the ideal path, which gives
+the ideal supply's bytes. Bandwidth and slew rate are provisional.
 
 ### ADC
 
@@ -152,7 +200,11 @@ processor latches each touched line's actual voltage at `latch_phase` against
 0.75. Its charge flows partly through the coupling capacitor, which shifts the
 capacitor's voltage by about `line_pf / cap_uf` of each step on S. An RC line only
 moves between settled levels, so neither the capacitance nor an early latch raises a
-bit whose settled level lies below the threshold.
+bit whose settled level lies below the threshold. The drivers, the gates and the
+latch threshold run from the rail; every level scales with it, and the network,
+linear in its sources, keeps its tables by carrying its state over the rail ratio.
+The bend records the mean current its high sources draw on each line, which loads
+the rail on that line of the next frame.
 
 Every capacitance becomes its backward-Euler companion and each diode a switch,
 leaving a piecewise-linear network with three states (no diode, ground or supply
@@ -171,6 +223,29 @@ a diode changes runs sub-step by sub-step. Blanking runs in closed form on the s
 mode once the lines have settled, split where a gate transition falls due or a diode
 turns off; gates see no input crossings there.
 
+### Capture
+
+With `[bend.clock]` the timing generator and the AFE run from an oscillator at
+`osc_mhz` (the LTC1799 mod) while the processor keeps the camera's crystal, generates
+VD and latches the bus once per period of its own clock. Everything upstream has run
+on the timing generator's clock, so `capture::reframe` replaces each word by the one
+the bus carried at the processor's latch instant: the timing generator's position is
+the integral of the frequency ratio since VD, which restarts it every frame; where it
+is in blanking, or past its last line, the bus carries the black code, and latches
+after the next VD are lost, so a slow generator never delivers its last lines. The
+frequency wanders by up to `drift_ppm` (two incommensurate sines at `drift_hz`, their
+phases seeded and running on across frames) and follows the rail by `ppm_per_v`. At
+each of its line starts the processor resets its line counter to a timing-generator
+line start that lies within `hd_lock_px` periods; this is a counter reset, not a loop
+filter, so a phase that slips faster than the window is caught only as it wraps past.
+Nothing corrects the Bayer phase: a word latched an odd number of periods or lines
+away develops in another channel, as colour-phase static. A free-running detune
+shears the picture by `(ratio - 1)` of a line per line and tears it with blanking
+where it wraps; a steady oscillator draws the same tears in every frame, and the
+drift moves them. At match-input the capture runs on the camera's native line and
+clock and is sampled onto the virtual grid, so a preview shows the native look
+downscaled. A steady oscillator at the nominal frequency leaves every word in place.
+
 ### ISP
 
 `clamp_black` reads `dsp_bits` lines from `dsp_lsb` (on the A520 `D11` to `D2`, a
@@ -182,7 +257,12 @@ readout order from the first line's measurement:
 so a bend that disturbs the optical-black columns shifts black for a few lines. The
 loop corrects only within `[isp] clamp_range` codes of the nominal black, so a line
 whose optical black holds a picture word, as from a locked-out AFE, keeps its colour.
-`develop` normalises by `white_code` (derived from the analog chain), white-balances the
+The processor's capture runs from the rail: a line that starts below `[power]
+dsp_brownout_v` browns it out, and it captures nothing more of the frame, which leaves
+that line and every later one as zero rows (`Raw::dropped_from`); the next frame is
+captured afresh.
+
+After the frame buffer (Memory, below), `develop` normalises by `white_code` (derived from the analog chain), white-balances the
 mosaic, clipping where the least-amplified channel saturates, demosaics (Malvar or
 bilinear), applies the colour matrix, bins movie frames, applies tone curve and sRGB
 through one table, then noise reduction and an unsharp mask on `Y'CbCr`, radii as
@@ -198,6 +278,25 @@ the time constant `ae_tau_s` or `wb_tau_s` of camera time: a frame corrects
 uses the scene-metered exposure and the daylight gains, so a still with servos equals
 one with `ae_mode = "scene"` and daylight white balance. A servo that is turned off
 forgets its value at once.
+
+### Memory
+
+Between `clamp_black` and `develop`, with `[bend.memory]`, the clamped raw passes
+through the processor's frame-buffer SDRAM: written as the lines arrive, in readout
+order, one sample per word at `raw_base + y * cols + x`, and read back a frame period
+later. The controller splits the linear address row-bank-column (`column_bits`,
+`bank_bits`, `row_bits`; a modelling choice, DIGIC's is undocumented), and the SDRAM
+takes row and column on the same pins, so pin `a_p` carries column bit `p` in one
+phase and a row bit in the other, and one faulted pin corrupts two bits. A pin stuck
+`low` or `high`, or two pins `bridge`d to their OR, fold the frame onto itself in
+exact powers of two: where sites share a word the later write wins, and an odd row
+offset moves the copy onto the other Bayer row phase. A marginal contact (`on_frac`,
+`switch_hz`) is a random telegraph process in camera time, sampled exactly at each
+line's write and again at its read; where it changed in between, the read finds what
+the write did not put there: an earlier frame, another row, or the SDRAM's power-on
+content (random codes hashed from the unit seed). Rows the processor did not capture
+after a brownout are not written, so they read what the SDRAM held. Without the
+section the raw passes untouched and a brownout leaves black rows.
 
 ### Codec
 
@@ -218,8 +317,28 @@ a frame `rows_read + vblank_lines` lines; `rows_read` keeps one row pair in ever
 `line_skip` pairs. Orientation `auto` holds the camera in portrait when the input is
 taller than wide: the scene is swapped onto the landscape sensor, the output back.
 
-At `native` resolution the sensor size, pixel clock, optical black and blanking are the
-camera's. At `match-input` the sensor takes the oriented input size rounded down to
+The camera has two clocks, which are one until a preset reclocks it. The processor's
+crystal clocks its latch on the bus, `dsp_pixel_period_s`, and generates VD, so the
+frame period `frame_period_s` is always the processor's. The timing generator's clock
+drives the CCD's transfer, the AFE, the ADC and the bus drivers: `pixel_period_s`,
+which is `dsp_pixel_period_s / clock_ratio`, and `line_period_s`; `clock_ratio` is 1,
+or with `[bend.clock]` the oscillator's `osc_mhz` over the readout mode's nominal
+pixel clock. VD restarts the timing generator, which reads until the next VD and
+loses what it has not read by then. On the sensor's clock run the readout and its
+fault rates, the AFE's sub-steps and blanking, the ADC, the bus bend's circuit, the
+supply rail's samples per readout line and the frame buffer's writes; on the
+processor's run the capture's latches, the black clamp and brownout, the frame
+buffer's read a frame period after the write, the servos and the movie shutter's
+longest exposure; the smear's readout time, on the sensor's clock, stops at VD.
+Oscillators (the AFE's injection and gain modulation, the flicker corner, the rail's
+ripple and spikes, the reclock's drift, the marginal memory contacts) run in real
+time within the readout and advance over the processor's frame period, VD to VD,
+from one frame to the next. A new oscillator therefore keeps the frame period and the
+geometry of a running simulator. The table in `Timing`'s documentation assigns every
+consumer its clock.
+
+At `native` resolution the sensor size, the processor's pixel clock, optical black and
+blanking are the camera's. At `match-input` the sensor takes the oriented input size rounded down to
 even, and the native active-line time and frame period stay fixed: the pixel period is
 the native active-line time over `cols`. Optical black scales with the width (at least
 eight columns, or the native count if smaller), vertical blanking with the rows;
@@ -241,6 +360,17 @@ from frame to frame they advance over the processor's frame period, VD to VD. Fa
 durations are native lines scaled to the virtual rows, CTE counts native transfers, and
 ISP radii are fractions of the width.
 
+The milestone 3 bends follow the same rule. The rail's source impedance, decoupling,
+spikes and ripple, the oscillator's detune, drift and supply sensitivity, and the
+memory contacts' switching are physical and used as given, so a dip or a wander
+covers the same fraction of the frame at every resolution. The NIR's defocus and the
+filter's shadow are fractions of the frame. The capture runs on the native line and
+clock and samples the result onto the virtual grid, since a match-input line is
+mostly blanking and would tear differently at every size; `hd_lock_px` counts native
+periods. The memory faults' address weights scale with the virtual pitch and rows and
+round to powers of two, so a fold keeps its fraction of the frame, exactly where the
+size ratios are powers of two.
+
 ## 5. Determinism and randomness
 
 All randomness lives in `noise`. Each stage seeds itself with
@@ -252,22 +382,40 @@ noise). The fixed pattern (non-uniformity, hot photosites, the spread of the bus
 drivers) uses the camera's `unit_seed`, so `--seed` leaves it alone. Parallel passes
 reduce per-row results in a fixed order, so thread count never changes a byte.
 
+The milestone 3 stages follow the pattern. `power` draws the rail's spike arrivals
+from a `Pcg32` seeded with its stage seed and the frame index; `capture` takes the
+starting phases of its oscillator's drift from its stage seed; `memory` runs each
+marginal contact from a `Pcg32` seeded with its stage seed and the pin, the frame
+index as the stream, and hashes the SDRAM's power-on content from the camera's
+`unit_seed` (salt `memory.power-on`), since a cell's power-up state belongs to the
+chip. The optics step has no randomness. Their state: the rail keeps the decoupling
+capacitor's voltage, the ripple's phase and what is left of a running spike; the AFE
+whether it is locked out, the held word and the pedestal it is restoring; the bus
+bend the current it drew on each line, for the next frame's rail; the capture the
+drift's two phases; the frame buffer every SDRAM word the frames have reached since
+power-on and each contact's state. The scene keeps only the NIR's working planes.
+
 The contract: the same sequence of scenes and indices, from a fresh simulator or after
 `Simulator::reset`, with the same camera, preset and seed, is identical byte for byte.
 An index rendered twice without a reset need not repeat: the state has moved on.
 
 `Simulator::set_preset` and `set_scene_size` reconfigure a running simulator, as a knob
 turned on the bent camera. If the readout geometry stays (sensor size, rows read,
-columns, optical black, blanking, clocks, mode, orientation, output size and
-oversampling), every stage's parameters are resolved anew and all buffers and state
-are kept: the AFE's node, flicker level and oscillator phases (a new waveform continues
-the old phase), running clock faults, the servos, and the bus bend's capacitor
-voltages, diodes and gates while its wiring stays. The wiring is the set of source
-pins, the target, the function, the pot node, whether the pot is at zero, the common
-bus and whether patch resistors are fitted; new component values keep the charge. A
-new wiring, or adding or removing the bend, returns the bend to power-on, and a servo
-that the preset turns off forgets its value; a new geometry rebuilds everything as
-`build` does. Values that leave the geometry alone, such as the exposure time, take
+columns, optical black, blanking, the processor's clock, mode, orientation, output size
+and oversampling; the timing generator's clock may move), every stage's parameters are
+resolved anew and all buffers and state are kept: the AFE's node, flicker level and
+oscillator phases (a new waveform continues the old phase), running clock faults, the
+servos, and the bus bend's capacitor voltages, diodes and gates while its wiring
+stays. The wiring is the set of source pins, the target, the function, the pot node,
+whether the pot is at zero, the common bus and whether patch resistors are fitted;
+new component values keep the charge. The rail's state, the drift's phases and the
+SDRAM's content and contacts carry on whatever `[bend.optics]`, `[bend.rail]`,
+`[bend.clock]` and `[bend.memory]` become, a new oscillator frequency included, and
+new memory faults read the old content. A new wiring, or adding or removing the bus
+bend, returns that bend to power-on; removing `[bend.rail]` returns the rail to the
+nominal voltage and removing `[bend.memory]` forgets the SDRAM; a servo that the
+preset turns off forgets its value; a new geometry rebuilds everything as `build`
+does. Values that leave the geometry alone, such as the exposure time, take
 effect with the next frame. Both calls return a `Reconfigured`: `Kept`, with flags
 for a reset bus bend and a forgotten servo, or `Rebuilt`, so a caller such as the
 app knows whether the next frame continues the sequence or starts it afresh. A
@@ -276,15 +424,25 @@ rejected preset changes nothing.
 ## 6. Configuration
 
 Camera files (`cameras/<name>.toml`) hold `[camera]`, `[sensor]`, `[lens]`, `[still]`,
-`[movie]`, `[afe]`, `[adc]`, `[logic]`, `[isp]` and `[jpeg]`, reject unknown keys and
-are range-checked by `Camera::validate`. `[sensor] nominal_exposure_s` calibrates the
-sensitivity; `[still]` and `[movie]` each give their `exposure_s`, the movie's at most
-`1 / fps`. `[logic]` describes the bend's 74HC chips,
-including input protection (`clamp_diode_v`, `clamp_r_ohm`, `input_leak_mohm`). Each
-physical value carries a confidence letter from the key-constants table of
-`docs/research/a520-technical.md`: **A** measured or stated for the A520, **B** stated
-for the near-certain sibling part, **C** a documented substitute of the same class,
-**D** derived; or **PROVISIONAL**, a placeholder or choice awaiting validation.
+`[movie]`, `[afe]`, `[adc]`, `[logic]`, `[power]`, `[isp]`, `[memory]` and `[jpeg]`,
+reject unknown keys and are range-checked by `Camera::validate`. `[sensor]
+nominal_exposure_s` calibrates the sensitivity; `[still]` and `[movie]` each give their
+`exposure_s`, the movie's at most `1 / fps`. `[sensor] nir_response` is each dye's
+charge from unit near infrared relative to the green channel's from reference white;
+`[lens] nir_defocus_frac` is the blur of the NIR image as a fraction of the width and
+`filter_edge_blur_frac` the width of the IR-cut filter's shadow as a fraction of the
+height. `[logic]` describes the bend's 74HC chips, including input protection
+(`clamp_diode_v`, `clamp_r_ohm`, `input_leak_mohm`). `[power]` describes the 3.3 V
+rail (`rail_v`, `source_ohm`, `decoupling_uf`, `quiescent_ma`) and its failure
+thresholds (`afe_uvlo_v`, `logic_min_v`, `dsp_brownout_v`, each below `rail_v`) with
+the AFE's `afe_restart_lines`. `[isp] clamp_range` is the black clamp's correction
+range either side of black, in processor codes. `[memory]` gives the frame-buffer
+SDRAM's `column_bits`, `row_bits` and `bank_bits` and the raw buffer's word address
+`raw_base`. Each physical value carries a confidence letter from the key-constants
+table of `docs/research/a520-technical.md`: **A** measured or stated for the A520,
+**B** stated for the near-certain sibling part, **C** a documented substitute of the
+same class, **D** derived; or **PROVISIONAL**, a placeholder or choice awaiting
+validation.
 
 A preset needs only `camera`. `[readout]` sets mode, resolution and orientation;
 `[scene]` the highlight headroom; `[sensor]` the exposure time `exposure_s`, which
@@ -293,7 +451,16 @@ it there); `[bend.bus]` source pins, target, function, `cap_uf`,
 `pot_kohm`, `pot_node`, `series_ohm` and `common_bus`; `[bend.clocks]` CTE and fault
 rates; `[bend.afe]` injection, gain modulation and CDS skew; `[isp]` overrides, which
 change only what the processor assumes (the sensor's response stays the camera's), so
-they show as colour errors.
+they show as colour errors. The milestone 3 bends: `[bend.optics]` the filter's
+position `ir_cut_pulled_frac` and the NIR estimate (`nir_weights`, `foliage_nir`,
+`nir_scale`); `[bend.rail]` `load_ma`, `spike_ma`, `spike_hz`, `spike_ms`, `ripple_mv`,
+`ripple_hz` and a replacement `source_ohm`; `[bend.clock]` the oscillator's `osc_mhz`
+(required), `drift_ppm`, `drift_hz`, `ppm_per_v` and the processor's `hd_lock_px`;
+`[bend.memory]` a list of `[[bend.memory.faults]]`, each a `pin` with a `kind` (`low`,
+`high`, or `bridge` `with` another pin) and, for a marginal contact, `on_frac` and
+`switch_hz`, a pin carrying one fault at most. Whether a pin exists on the camera's
+SDRAM is checked when the simulator resolves the preset. `[bend.clock]` and
+`[bend.clocks]` are different sections: the second is the CCD's transfer clocks.
 
 To add a camera, write a camera file with a confidence letter and citation per value
 and name it in a preset; the RGGB mosaic and the selector banks are still code. To add
@@ -301,18 +468,24 @@ a bend, model it in the stage whose circuit it changes: a `[bend.<name>]` struct
 unit-suffixed fields and validation, resolved into that stage's `Params`, cross-frame
 memory in its `State`, randomness from the stage seed with a new salt, sub-line
 constants scaled as in section 4, tests of its physics and of its replay from reset.
-A bend elsewhere, such as the SDRAM address lines, becomes a new stage before the codec.
+A bend in hardware that no stage models becomes a new stage in signal order, as the
+supply rail, the processor's capture and the frame buffer did; a stage that other
+stages feel publishes a buffer they read, as the rail does.
 
 ## 7. Testing and validation
 
 Tests of the public API live in `crates/*/tests/`, one file per area (`noise`,
 `timing`, `config`, `stages`, `clean_camera`, `readout_afe`, `bus`, `codec`,
-`simulator`, `interactive`, `servo`, `golden`, `io`, `video`, `cli`, and the app's
+`simulator`, `interactive`, `servo`, `optics`, `power`, `capture`, `memory`,
+`milestone3_plumbing`, `golden`, `io`, `video`, `cli`, and the app's
 panels, render worker, video, export and viewport); the `test-util` feature exposes
 internal state to them. They assert physical properties and invariants, never restated
 constants: a 1 kHz square injection crosses zero twice per cycle, equal drivers meet
-at half rail, the divider skips pixel-rate edges, flat fields stay flat, every bend
-replays identically from power-on. There is no random-input framework. Video tests
+at half rail, the divider skips pixel-rate edges, flat fields stay flat, the rail of an
+unloaded camera is the nominal to the bit, an oscillator at the nominal frequency
+captures byte-identically to none, a solid stuck pin aliases exactly in powers of two,
+the NIR of a pure blue sky stays below a twentieth of a white's, every bend replays
+identically from power-on. There is no random-input framework. Video tests
 generate clips with ffmpeg and skip without it.
 
 The golden tests guard against unintended change: a synthetic 160 by 120 scene (a
@@ -350,22 +523,56 @@ The AFE steps through about 16 million sub-steps per frame; the bus bend, with t
 capacitances on the HPF wiring (the coupling capacitor and the lines on S and T),
 evaluates about 4 million pixel periods in closed form and steps through the rest.
 
+The milestone 3 stages were timed on the project's development VM instead (an AMD
+Ryzen 7 5825U guest with 4 virtual cores under KVM, Ubuntu 26.04, Rust 1.99, shared
+with other work, so whole-frame medians scattered by up to a fifth between runs),
+against a clean frame of 430 ms there. `power::track` on the brownout preset's rail
+takes 0.09 ms, two hundredths of a percent of a frame, one closed-form step per line.
+`capture::reframe` on the reclock roll takes 4.6 ms, about 1 % of a frame. `memory::bend`
+with the S9000 tear's two contacts takes 6.0 ms, under 1.5 % of a frame; a fault on a
+higher pin widens the store towards the whole SDRAM and the copy with it. The optics
+step raises `scene::prepare` from 42.5 to 81.5 ms, 9 % of a frame, mostly the
+defocus of the NIR image. On the brownout's sagging rail `afe::process` takes 104 ms
+against 86 ms on the nominal one, 4 % of a frame more, since a line off the nominal
+rail leaves the AFE's ideal path. Without their sections the three new stages return
+in nanoseconds.
+
 ## 9. Extension points and known limitations
 
-Extension points are the `[bend.*]` sections, camera files, the `rail_v` hook for
-supply sag, and new stages in `Simulator::frame`.
+Extension points are the `[bend.*]` sections, camera files, new stages in
+`Simulator::frame`, the `Rail` for any further consumer of the supply, and the scene's
+NIR estimate, which a fourth scene plane of measured near infrared would replace at
+the same point with nothing downstream changing.
 
 Highlight reconstruction guesses at lost data. Shot noise is Gaussian, smear one
-streak per column, the CTE trail geometric. The AFE has one pole and an ideal supply.
-Scene auto-exposure meters the clean scene without lag; the servos meter the bent raw
-with a lag, on the plain mean luminance and grey world, without DIGIC's weighting.
-Auto-exposure stands in for the aperture: there is no separate aperture or ISO
-control, and the movie shutter's exposure does not follow the light. Bus lines carry
-capacitance but no inductance, so they never ring past their settled level. Bend
+streak per column, the CTE trail geometric. The AFE has one pole. Scene auto-exposure
+meters the prepared scene, near infrared included, without lag; the servos meter the
+bent raw with a lag, on the plain mean luminance and grey world, without DIGIC's
+weighting. Auto-exposure stands in for the aperture: there is no separate aperture or
+ISO control, and the movie shutter's exposure does not follow the light. Bus lines
+carry capacitance but no inductance, so they never ring past their settled level. Bend
 gates see no crossings during blanking, and gate timing resolves to one sub-step.
 The colour matrix, tone curve, noise reduction, sharpening, mosaic phase, AFE
 bandwidth and many sensor values (the nominal exposure among them) are stand-ins or
 provisional; defect concealment is absent. The movie line skip and the AFE part are
 inferred. The A520 bend layout is hard-coded. No post stage or GPU path exists: the
-desktop app renders on the CPU and shows each frame as a texture. Validation is by
-eye against one composite.
+desktop app renders on the CPU and shows each frame as a texture. The bus bends are
+validated by eye against one composite, the milestone 3 bends by eye alone.
+
+The milestone 3 bends add their own. The NIR estimate guesses at what an RGB photo
+never recorded: the weights are a mild assumption, `foliage_nir` an explicit one (that
+green means chlorophyll), and the deep red the hot mirror also trims is left out. The
+AFE's reference follows the rail ratiometrically, a PROVISIONAL model of a reference
+without headroom where an AD9949 rejects supply variation inside its range. The rail is
+one supply: the CCD's clock and substrate supplies and the processor's core do not
+sag with it, the 74HC chips keep their timing and the drivers their strength at a low
+rail, the bend's current loads it a frame late, and ripple faster than about half the
+line rate is sampled per line, not resolved. The processor drives VD and restarts the
+timing generator every frame, so a steady detune draws the same tears in every frame
+and nothing rolls vertically across frames; a generator that free-runs across VD is a
+later option. The bus bend latches at the timing generator's phase, not at the
+processor's latch instant. The frame buffer holds one sample per word: DIGIC's packed
+10-bit raw layout and its address mapping are unknown and not modelled, nor are the
+SDRAM's burst counter, `a10`'s auto-precharge, refresh, or the interleaving of the next
+frame's writes with this frame's reads, and the A520's SDRAM part is unidentified. Its
+row pins above `a8` lie beyond the movie raw and act on stills only.

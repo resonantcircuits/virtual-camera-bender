@@ -1,0 +1,23 @@
+# Canon PowerShot A520 on a weak supply with load spikes: the chromatic sieve.
+# A weak battery (3 ohm source, a time constant of one line against the 47 uF decoupling)
+# carries 185 mA spikes, 2.5 ms long, 40 a second: each holds the rail near 2.75 V, just over
+# the AFE's 2.7 V lockout. Slow ripple of 130 mV lowers that plateau under the lockout in its
+# troughs, so the spikes there lock the AFE out: the bus holds its last word, optical black
+# included, and the processor's limited black clamp develops the held lines as solid colour.
+# The dead lines cluster where the ripple is low; the spikes elsewhere bloom thin bright lines.
+# No bus bend: the high-pass bend would darken the held words.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.rail]
+source_ohm = 3.0                    # PROVISIONAL: a weak battery
+spike_ma = 185.0                    # PROVISIONAL, by eye: a plateau of 2.745 V, 45 mV over the lockout
+spike_hz = 40.0                     # a flash charger pulsing
+spike_ms = 2.5                      # about 19 still lines a spike
+ripple_mv = 130.0                   # the plateau falls to 2.615 V in the troughs: under the lockout, over the processor's 2.4 V
+ripple_hz = 4.0                     # about one cluster per still frame

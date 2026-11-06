@@ -1,0 +1,20 @@
+# Canon PowerShot A520 with the master oscillator replaced (the LTC1799 mod): reclock roll.
+# The timing generator and AFE run from an oscillator 18.5 ppm below the camera's 27 MHz that
+# wanders 1200 ppm either way at about 4 Hz, up to 4.3 pixels of slip a still line, against a
+# processor capture window of half a pixel, which holds only while the wander passes zero. The
+# picture rolls in waves of shear, blanking tears through it in wedges, and the Bayer phase
+# falls where the slip leaves it, in colour-phase bands; the wander moves all of it from frame
+# to frame (VD restarts the timing generator, so a steady oscillator would draw the same tears).
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone3-tuning-notes.md.
+camera = "a520"
+seed = 1                            # also seeds the wander's phases
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.clock]
+osc_mhz = 26.9995                   # PROVISIONAL, by eye: the oscillator's centre, a small detune
+drift_ppm = 1200.0                  # PROVISIONAL, by eye: a warm RC oscillator in the hand, wandering wide
+drift_hz = 4.0                      # PROVISIONAL, by eye: under a third of a swing per movie frame, so the tears travel
+hd_lock_px = 0.5                    # a narrow capture window
