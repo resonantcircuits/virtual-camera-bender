@@ -13,8 +13,8 @@ year = 2005
 
 [lens]
 vignette_stops = 0.6                # PROVISIONAL: corner falloff of a wide-open compact zoom, cos^4 law
-nir_defocus_frac = 0.003            # PROVISIONAL: NIR focuses behind the sensor of a lens corrected for visible light
-filter_edge_blur_frac = 0.02        # PROVISIONAL: shadow edge of the IR-cut filter, out of focus in front of the sensor
+nir_defocus_frac = 0.003            # PROVISIONAL: NIR focuses behind the sensor (1-2 px at f/4) and its charge spreads in the silicon; 6.8 px, the soft glow of full-spectrum photos, by eye
+filter_edge_blur_frac = 0.06        # PROVISIONAL: IR-cut filter edge shadow, gap / f-number: an assumed 1 mm gap at f/4 (f/2.6-5.5, section 1) of the 4.26 mm height
 
 [sensor]
 native_width = 2272                 # A: largest JPEG size (key constants)
@@ -33,7 +33,7 @@ antibloom_ratio = 1000.0            # C: overflow drain absorbs 1000x full-well 
 smear_db = -90.0                    # C: ICX452 high-frame-rate mode (section 3)
 cte = 0.99999                       # C: interline CCDs (section 4)
 hot_pixels_per_mpix = 5.0           # PROVISIONAL
-nir_response = [1.0, 0.75, 0.7]     # C: dye transmission of a Bayer CCD beyond 750 nm, red highest; PROVISIONAL
+nir_response = [1.0, 0.55, 0.5]     # C: Bayer dyes past 700 nm: red from 650 nm, green and blue past ~800 nm where silicon has lost half its response; PROVISIONAL, by eye
 cfa = "RGGB"                        # PROVISIONAL: phase of the A520 mosaic unconfirmed
 unit_seed = 1                       # this unit's fixed pattern (PRNU, DSNU, hot photosites, bus driver spread)
 
