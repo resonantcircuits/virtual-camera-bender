@@ -466,6 +466,7 @@ impl Simulator {
         capture::reframe(
             params.capture.as_ref(),
             &mut state.capture,
+            &b.rail,
             index,
             &mut b.codes,
         );

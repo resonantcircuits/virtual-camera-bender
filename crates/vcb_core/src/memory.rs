@@ -91,10 +91,14 @@
 //! or the power-on content.
 //!
 //! In the camera the next frame's writes interleave with this frame's reads; here they
-//! follow them, so a read never sees the next frame's samples. The rows of a frame are
-//! stored through one function, so the processor's capture can withhold the rows it
-//! never received; a withheld row's words keep what they held, and its read finds
-//! that.
+//! follow them, so a read never sees the next frame's samples.
+//!
+//! A processor that browns out mid-frame captures no more lines
+//! ([`Raw::dropped_from`]), so its DMA writes none of them: from the first dropped line
+//! on, in readout order, no row is stored, its words keep what they held (the rows of
+//! the last frame that reached them, or the power-on content), and the read-back shows
+//! that where the black clamp left zero rows. Without `[bend.memory]` the stage does
+//! not run and those rows stay black.
 //!
 //! # Memory content
 //!
@@ -776,10 +780,12 @@ fn chance(rng: &mut Pcg32, probability: f64) -> bool {
 
 /// Rewrites `raw` with frame `index` as the processor reads it back from the SDRAM.
 ///
-/// Without a bend (`params` is `None`) it does nothing. With one, every image row is
-/// stored in readout order, one row at a time, through the faults acting at its write,
-/// then read back a frame period later through the faults acting then; see the
-/// [module documentation](self). Without faults the raw comes back unchanged.
+/// Without a bend (`params` is `None`) it does nothing. With one, every image row the
+/// processor captured is stored in readout order, one row at a time, through the faults
+/// acting at its write, then the whole frame is read back a frame period later through
+/// the faults acting then; see the [module documentation](self). The rows from
+/// [`Raw::dropped_from`] on, in readout order, are not stored: their read finds the
+/// SDRAM's earlier content. Without faults or a brownout the raw comes back unchanged.
 ///
 /// # Panics
 ///
@@ -800,15 +806,18 @@ pub fn bend(params: Option<&Params>, state: &mut State, index: u64, raw: &mut Ra
     state.sdram.cover(&params.span, &params.power_on);
     state.sample_contacts(params, index);
 
+    // From the first line the processor dropped on, nothing reaches the SDRAM.
+    let captured = raw.dropped_from().map_or(params.rows, |y| params.line(y));
     let mut in_place = 0;
-    for line in 0..params.rows {
+    for line in 0..captured {
         let y = params.line(line);
         let active = state.write_active[line as usize];
         if store_row(params, state, y, active, raw.plane().row(y)) {
             in_place += 1;
         }
     }
-    // When every row went to its own words, a row read through no fault reads itself.
+    // When every row went to its own words, a row read through no fault reads itself;
+    // a row that was never stored reads what its words hold.
     let reread = in_place < params.rows;
 
     let (sdram, read_active) = (&state.sdram, &state.read_active);
@@ -825,8 +834,8 @@ pub fn bend(params: Option<&Params>, state: &mut State, index: u64, raw: &mut Ra
 
 /// Writes image row `y` into the SDRAM through the faults in `active`, site by site in column order.
 ///
-/// Every row of a frame is stored through this function, in readout order. Returns
-/// whether the row went to its own words.
+/// Every captured row of a frame is stored through this function, in readout order.
+/// Returns whether the row went to its own words.
 fn store_row(params: &Params, state: &mut State, y: u32, active: u32, sites: &[f32]) -> bool {
     let sdram = &mut state.sdram;
     let first = params.address(0, y);

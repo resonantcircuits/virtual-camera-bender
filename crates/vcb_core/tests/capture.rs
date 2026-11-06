@@ -3,10 +3,16 @@
 
 #![cfg(all(feature = "serde", feature = "test-util"))]
 
+use std::f64::consts::TAU;
+
 use vcb_core::adc::Codes;
-use vcb_core::preset::{Mode, ReclockBend, Resolution};
-use vcb_core::readout::Layout;
-use vcb_core::{Camera, Frame, Preset, Reconfigured, Scene, Simulator, Timing, afe, capture};
+use vcb_core::afe::{Analog, Inject, Wave};
+use vcb_core::power::Rail;
+use vcb_core::preset::{AfeBend, Mode, RailBend, ReclockBend, Resolution};
+use vcb_core::readout::{Direction, Layout, Stream};
+use vcb_core::{
+    Camera, Frame, Preset, Reconfigured, Scene, Simulator, Timing, afe, capture, sensor,
+};
 
 /// The word the tests' capture puts on the bus during blanking, unlike any tagged word.
 const BLANK: u16 = u16::MAX;
@@ -58,6 +64,8 @@ struct Rig {
     timing: Timing,
     params: capture::Params,
     codes: Codes,
+    /// The supply rail of every readout line, nominal unless a test sets it.
+    rail: Rail,
 }
 
 impl Rig {
@@ -73,6 +81,7 @@ impl Rig {
         let mut rig = Self {
             timing,
             params,
+            rail: Rail::new(&layout, camera.power.rail_v),
             codes: Codes::new(layout),
         };
         rig.retag();
@@ -107,7 +116,13 @@ impl Rig {
     /// Captures a freshly tagged frame from `state` and returns the words, line by line.
     fn capture(&mut self, state: &mut capture::State, index: u64) -> Vec<Vec<u16>> {
         self.retag();
-        capture::reframe(Some(&self.params), state, index, &mut self.codes);
+        capture::reframe(
+            Some(&self.params),
+            state,
+            &self.rail,
+            index,
+            &mut self.codes,
+        );
         self.codes
             .words()
             .chunks_exact(self.stored())
@@ -628,4 +643,301 @@ fn an_invalid_oscillator_is_rejected_by_the_timing() {
         let error = Timing::derive(&camera, &bent, 64, 48).unwrap_err();
         assert!(error.is_config(), "{osc_mhz}: {error}");
     }
+}
+
+#[test]
+fn a_sagging_rail_slows_a_supply_sensitive_oscillator_from_the_line_it_reaches() {
+    // The rail drops half a volt from the middle of the frame on; at 2e6 / L ppm per
+    // volt the oscillator then runs one period per line slow.
+    let mode = Mode::Still;
+    let line = Rig::native(mode, reclock(mode, 1.0, 0.0)).line_len();
+    let bend = ReclockBend {
+        ppm_per_v: 2e6 / line as f64,
+        ..reclock(mode, 1.0, 0.0)
+    };
+    let mut rig = Rig::native(mode, bend);
+    let rows = rig.rail.lines();
+    let half = rows / 2;
+    let sagged_v = rig.rail.nominal_v() - 0.5;
+    for n in half..rows {
+        rig.rail.set(n, sagged_v, sagged_v);
+    }
+    let lines = rig.capture_once();
+    for (k, words) in lines.iter().enumerate().take(half as usize - 1) {
+        for (j, &word) in words.iter().enumerate() {
+            assert_eq!(untag(word), Some((k % 16, j)), "line {k}, sample {j} moved");
+        }
+    }
+    let at = positions(&lines, line);
+    let mut checked = 0usize;
+    for k in half as usize + 2..at.len() {
+        for (j, (before, now)) in at[k - 1].iter().zip(&at[k]).enumerate() {
+            if let (Some(before), Some(now)) = (before, now) {
+                assert_eq!(now + 1, before + line, "line {k}, sample {j}");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > at.len() * rig.stored() / 4, "{checked} pairs");
+}
+
+/// The still preset at match-input with the rail and the oscillator bent.
+fn railed(rail: Option<RailBend>, clock: ReclockBend) -> Preset {
+    let mut preset = preset(Mode::Still, Resolution::MatchInput, Some(clock));
+    preset.bend.rail = rail;
+    preset
+}
+
+#[test]
+fn the_rail_detunes_the_oscillator_only_where_it_moves() {
+    let scene = scene(WIDTH, HEIGHT);
+    let camera = camera();
+    // 400 mA more through the 0.5 ohm source: the rail settles 0.2 V low.
+    let sag = RailBend {
+        load_ma: 0.2 / camera.power.source_ohm * 1e3,
+        ..RailBend::default()
+    };
+    let at = |ppm_per_v: f64| ReclockBend {
+        ppm_per_v,
+        ..ReclockBend::new(nominal_mhz(Mode::Still))
+    };
+    let mut sagging = simulator(railed(Some(sag), at(1000.0)));
+    let sensitive = render(&mut sagging, &scene, 0..2);
+    let rail = sagging.rail();
+    let middle_v = rail.v_at(rail.lines() / 2, 0.5);
+    assert!(
+        (middle_v - (camera.power.rail_v - 0.2)).abs() < 1e-3,
+        "the rail stands at {middle_v} V"
+    );
+    let immune = render(&mut simulator(railed(Some(sag), at(0.0))), &scene, 0..2);
+    assert_ne!(sensitive, immune, "200 ppm slow on the sagging rail");
+    assert_eq!(
+        render(&mut simulator(railed(None, at(1000.0))), &scene, 0..2),
+        render(&mut simulator(railed(None, at(0.0))), &scene, 0..2),
+        "a nominal rail leaves a supply-sensitive oscillator on its frequency"
+    );
+}
+
+#[test]
+fn a_rail_fed_oscillator_replays_from_reset_and_keeps_state_when_its_sensitivity_turns() {
+    let scene = scene(WIDTH, HEIGHT);
+    let spiking = RailBend {
+        load_ma: 150.0,
+        spike_ma: 300.0,
+        spike_hz: 6.0,
+        spike_ms: 20.0,
+        ripple_mv: 30.0,
+        ripple_hz: 120.0,
+        source_ohm: Some(1.0),
+    };
+    let clock = |ppm_per_v: f64| ReclockBend {
+        ppm_per_v,
+        ..wandering(26.7)
+    };
+    let bent = railed(Some(spiking), clock(3000.0));
+    let mut sim = simulator(bent.clone());
+    let first = render(&mut sim, &scene, 0..4);
+    sim.reset();
+    assert_eq!(render(&mut sim, &scene, 0..4), first, "after reset");
+    assert_eq!(
+        render(&mut simulator(bent.clone()), &scene, 0..4),
+        first,
+        "from a new simulator"
+    );
+
+    // Turning the sensitivity is a knob: the rail's and the drift's states carry on.
+    let mut running = simulator(bent);
+    render(&mut running, &scene, 0..2);
+    let (rail, drift) = (
+        running.power_state().clone(),
+        running.capture_state().clone(),
+    );
+    let turned = railed(Some(spiking), clock(-3000.0));
+    assert_eq!(running.set_preset(turned.clone()).unwrap(), KEPT);
+    assert_eq!(running.power_state(), &rail);
+    assert_eq!(running.capture_state(), &drift);
+    let mut through = simulator(turned);
+    render(&mut through, &scene, 0..2);
+    assert_eq!(
+        through.power_state(),
+        &rail,
+        "the rail does not depend on the clock"
+    );
+}
+
+/// Electrons of the bright side of the edges in the AFE tests.
+const EDGE_E: f32 = 5000.0;
+
+/// Sample of each line at which the AFE tests' edge rises, after optical black.
+const EDGE_AT: usize = 20;
+
+/// The resolved quiet AFE of a 64 by 48 match-input still, reclocked to `osc_mhz` if given.
+fn quiet_afe(osc_mhz: Option<f64>) -> (Timing, Layout, afe::Params) {
+    let camera = camera();
+    let preset = preset(
+        Mode::Still,
+        Resolution::MatchInput,
+        osc_mhz.map(ReclockBend::new),
+    );
+    let timing = Timing::derive(&camera, &preset, 64, 48).unwrap();
+    let layout = Layout::from_timing(&timing, Direction::TopDown);
+    let mut params = afe::Params::resolve(&camera, &preset, &timing).unwrap();
+    params.read_noise_e = 0.0;
+    params.noise_1f_corner_hz = 0.0;
+    (timing, layout, params)
+}
+
+/// The AFE's response to an edge on every line, from black to [`EDGE_E`], normalised.
+///
+/// Returns the first eight samples from the edge on, 0 before the edge and 1 settled.
+fn edge_response(osc_mhz: Option<f64>, set: impl Fn(&mut afe::Params)) -> Vec<f64> {
+    let (_, layout, mut params) = quiet_afe(osc_mhz);
+    set(&mut params);
+    let len = layout.line_len() as usize;
+    let edge = layout.ob_cols() as usize + EDGE_AT;
+    let mut stream = Stream::new(layout.clone());
+    for line in stream.samples_mut().chunks_exact_mut(len) {
+        line[edge..].fill(EDGE_E);
+    }
+    let mut analog = Analog::new(layout.clone());
+    let rail = Rail::new(&layout, camera().power.rail_v);
+    afe::process(
+        &params,
+        &mut afe::State::default(),
+        &stream,
+        &rail,
+        0,
+        &mut analog,
+    );
+    let low = params.pedestal_v;
+    let high = low + f64::from(EDGE_E) * params.volts_per_electron();
+    analog.volts()[10 * len + edge..10 * len + edge + 8]
+        .iter()
+        .map(|&v| (f64::from(v) - low) / (high - low))
+        .collect()
+}
+
+#[test]
+fn the_afe_keeps_its_bandwidth_and_slew_in_seconds_under_a_new_oscillator() {
+    let nominal = nominal_mhz(Mode::Still);
+    // A time constant of one processor pixel period, at every resolution.
+    let pole = |p: &mut afe::Params| p.bandwidth_hz = 1.0 / (TAU * p.native_pixel_period_s);
+    let plain = edge_response(None, pole);
+    assert_eq!(
+        edge_response(Some(nominal), pole),
+        plain,
+        "the camera's own clock settles as without the bend"
+    );
+    let half = edge_response(Some(nominal / 2.0), pole);
+    // One sample spans one time constant on the nominal clock and two at half of it.
+    assert!(
+        (plain[0] - (1.0 - (-1.0f64).exp())).abs() < 1e-4,
+        "{plain:?}"
+    );
+    assert!((half[0] - (1.0 - (-2.0f64).exp())).abs() < 1e-4, "{half:?}");
+    assert!(half[0] > plain[0] && half[1] > plain[1], "a sharper edge");
+
+    // The bandwidth in sensor pixels doubles with half the clock.
+    let in_pixels = |osc_mhz: Option<f64>| {
+        let (timing, _, params) = quiet_afe(osc_mhz);
+        params.bandwidth_hz * timing.pixel_period_s / params.resolution_scale
+    };
+    let ratio = in_pixels(Some(nominal / 2.0)) / in_pixels(None);
+    assert!((ratio - 2.0).abs() < 1e-9, "{ratio}");
+
+    // A slew-limited edge ramps twice as far per sample at half the clock.
+    let slow = |p: &mut afe::Params| p.slew_v_per_us = 2.0;
+    let (plain, half) = (
+        edge_response(None, slow),
+        edge_response(Some(nominal / 2.0), slow),
+    );
+    assert!(plain[0] < 0.5, "the slew limits the edge: {plain:?}");
+    assert!(
+        (half[0] / plain[0] - 2.0).abs() < 1e-3,
+        "{half:?} against {plain:?}"
+    );
+}
+
+#[test]
+fn the_afe_oscillators_advance_from_vd_to_vd_at_every_clock() {
+    let freq_hz = 1234.567;
+    let nominal = nominal_mhz(Mode::Still);
+    for osc_mhz in [None, Some(nominal / 2.0), Some(nominal * 1.5)] {
+        let (timing, layout, mut params) = quiet_afe(osc_mhz);
+        params.inject = Some(Inject {
+            wave: Wave::Sine,
+            freq_hz,
+            amplitude_v: 0.01,
+            phase_skew: 0.0,
+        });
+        let mut state = afe::State::default();
+        let mut analog = Analog::new(layout.clone());
+        let rail = Rail::new(&layout, camera().power.rail_v);
+        afe::process(
+            &params,
+            &mut state,
+            &Stream::new(layout),
+            &rail,
+            0,
+            &mut analog,
+        );
+        let expected = (freq_hz * timing.frame_period_s).rem_euclid(1.0);
+        let gap = (state.phase() - expected).rem_euclid(1.0);
+        assert!(
+            gap.min(1.0 - gap) < 1e-9,
+            "{osc_mhz:?} MHz: phase {} after a frame, expected {expected}",
+            state.phase()
+        );
+    }
+    // Through the simulator, the injection runs on with the processor's frame.
+    let mut bent = preset(
+        Mode::Movie,
+        Resolution::MatchInput,
+        Some(ReclockBend::new(nominal / 2.0)),
+    );
+    bent.bend.afe = Some(AfeBend {
+        inject: Some(Inject {
+            wave: Wave::Square,
+            freq_hz,
+            amplitude_v: 0.01,
+            phase_skew: 0.0,
+        }),
+        ..AfeBend::default()
+    });
+    let mut sim = simulator(bent);
+    let scene = scene(WIDTH, HEIGHT);
+    render(&mut sim, &scene, 0..3);
+    let expected = (3.0 * freq_hz * sim.timing().frame_period_s).rem_euclid(1.0);
+    let gap = (sim.afe_state().phase() - expected).rem_euclid(1.0);
+    assert!(gap.min(1.0 - gap) < 1e-9, "after three frames");
+}
+
+#[test]
+fn the_smear_gathers_light_only_until_vd() {
+    let camera = camera();
+    let mode = Mode::Movie;
+    let smear = |ratio: Option<f64>| {
+        let preset = preset(
+            mode,
+            Resolution::MatchInput,
+            ratio.map(|ratio| reclock(mode, ratio, 0.0)),
+        );
+        let timing = Timing::derive(&camera, &preset, WIDTH, HEIGHT).unwrap();
+        let params = sensor::Params::resolve(&camera, &preset, &timing).unwrap();
+        (timing, params)
+    };
+    let (timing, plain) = smear(None);
+    let read_s = f64::from(timing.rows_read) * timing.line_period_s;
+    assert!(read_s < timing.frame_period_s);
+    assert!((f64::from(plain.readout_s) / read_s - 1.0).abs() < 1e-6);
+    // A fast oscillator transfers the frame sooner and smears less.
+    let (_, fast) = smear(Some(1.25));
+    let less = fast.smear_per_electron() / plain.smear_per_electron();
+    assert!((less - 0.8).abs() < 1e-5, "{less}");
+    // A slow one is cut off by VD: its transfer lasts one frame period, not 1 / ratio.
+    let (_, slow) = smear(Some(0.5));
+    let more = slow.smear_per_electron() / plain.smear_per_electron();
+    let expected = (timing.frame_period_s / read_s) as f32;
+    assert!((more / expected - 1.0).abs() < 1e-5, "{more}");
+    assert!(more < 2.0);
 }

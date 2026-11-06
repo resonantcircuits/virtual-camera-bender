@@ -3,9 +3,10 @@
 //! The image processor (Canon's DIGIC in the A520) receives the ADC words line by
 //! line, but reads only `dsp_bits` bus lines starting at `dsp_lsb` (on the A520, lines
 //! `D11` to `D2` of the 12-bit bus, a 10-bit raw). [`clamp_black`] takes that view and
-//! removes the black level line by line, as the DSP's clamp loop does, leaving a
-//! [`Raw`] Bayer plane of the active area in processor codes above black, rows in image
-//! order. [`develop`] then turns it into a [`Frame`]:
+//! removes the black level line by line, as the DSP's clamp loop does within its
+//! correction range (`[isp] clamp_range`), leaving a [`Raw`] Bayer plane of the active
+//! area in processor codes above black, rows in image order. [`develop`] then turns it
+//! into a [`Frame`]:
 //!
 //! 1. Normalisation: codes are divided by `white_code`, the code above black that
 //!    reference white produces at the sensor's nominal exposure, so linear 1.0 is
@@ -228,8 +229,10 @@ impl Raw {
     /// The row is numbered in image order, as the plane's rows are: the image row of
     /// the first readout line the processor dropped. Every line read after it is lost
     /// too: with a top-down readout the rows from it to the bottom, with a bottom-up
-    /// one the rows from it to the top. Their sites are zero. `None` when every row was
-    /// captured; [`clamp_black`] sets it afresh for every frame.
+    /// one the rows from it to the top. Their sites are zero, until the frame buffer's
+    /// [`memory::bend`](crate::memory::bend), with `[bend.memory]`, fills them with what
+    /// the SDRAM held there. `None` when every row was captured; [`clamp_black`] sets it
+    /// afresh for every frame.
     #[must_use]
     pub fn dropped_from(&self) -> Option<u32> {
         self.dropped
@@ -286,6 +289,12 @@ pub struct Params {
     pub dsp_bits: u8,
     /// Supply voltage at the start of a line below which the processor captures nothing more of the frame.
     pub dsp_brownout_v: f64,
+    /// Nominal black level in processor codes, the centre of the clamp's range.
+    ///
+    /// `[adc] black_level >> dsp_lsb`, the word the processor reads for the nominal black.
+    pub black_code: f64,
+    /// Correction range of the black clamp either side of `black_code`, in processor codes.
+    pub clamp_range: f64,
     /// Colour filter array of the raw plane.
     pub cfa: Cfa,
     /// White balance.
@@ -390,6 +399,8 @@ impl Params {
             dsp_lsb: camera.adc.dsp_lsb,
             dsp_bits: camera.adc.dsp_bits,
             dsp_brownout_v: camera.power.dsp_brownout_v,
+            black_code: nominal_black,
+            clamp_range: isp.clamp_range,
             cfa: sensor.cfa,
             wb,
             cam_to_srgb: colour::to_f32(&cam_to_srgb),
@@ -491,9 +502,13 @@ impl Default for State {
 /// Each word becomes `(code >> dsp_lsb) & (2^dsp_bits - 1)`. The clamp measures the
 /// mean of every line's optical-black samples and follows it with a one-pole loop of
 /// four lines' time constant, `b[n] = b[n-1] + (1 - e^(-1/4)) (ob[n] - b[n-1])`, in
-/// readout order, starting from the first line's measurement. Each line's level is
-/// subtracted from its active samples, which are written into `out` with rows in
-/// image order; [`Raw::black_levels`] records the levels.
+/// readout order, starting from the first line's measurement. The loop corrects only
+/// within its range: each estimate is held within [`Params::black_code`] `±`
+/// [`Params::clamp_range`], so a line whose optical black carries a picture word, as
+/// from an AFE locked out on a held word, keeps that word's colour instead of
+/// developing black, while ordinary drift of a few codes is followed. Each line's
+/// level is subtracted from its active samples, which are written into `out` with rows
+/// in image order; [`Raw::black_levels`] records the levels.
 ///
 /// `rail` is the supply rail of every readout line from
 /// [`power::track`](crate::power::track), which powers the processor's capture. A
@@ -545,13 +560,19 @@ pub fn clamp_black(params: &Params, codes: &Codes, rail: &Rail, out: &mut Raw) {
         let mean = if ob == 0 { 0.0 } else { sum as f64 / ob as f64 };
         out.black[layout.image_row(line) as usize] = mean as f32;
     }
-    // The clamp loop runs in readout order.
+    // The clamp loop runs in readout order, its estimate held within its range.
     let alpha = 1.0 - (-1.0 / CLAMP_TAU_LINES).exp();
+    let (low, high) = (
+        params.black_code - params.clamp_range,
+        params.black_code + params.clamp_range,
+    );
     let mut level = None;
     for line in 0..captured {
         let slot = &mut out.black[layout.image_row(line) as usize];
         let measured = f64::from(*slot);
-        let next = level.map_or(measured, |b: f64| b + alpha * (measured - b));
+        let next = level
+            .map_or(measured, |b: f64| b + alpha * (measured - b))
+            .clamp(low, high);
         level = Some(next);
         *slot = next as f32;
     }

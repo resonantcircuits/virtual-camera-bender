@@ -126,6 +126,7 @@ ae_target = 0.18                    # PROVISIONAL: mid-grey
 ae_mode = "fixed"                   # "scene" meters every frame, "servo" follows the bent raw with a lag; fixed keeps the exposure as set
 ae_tau_s = 0.3                      # PROVISIONAL: time constant of the auto-exposure servo in movie and live view
 wb_tau_s = 0.5                      # PROVISIONAL: time constant of the auto-white-balance servo
+clamp_range = 128.0                 # PROVISIONAL: DIGIC's black-clamp correction either side of black in 10-bit codes, unknown; holds the DIV bend's D9 on optical black (up to 101 codes, so not 64) and leaves a locked-out AFE's mid-scale word coloured
 demosaic = "malvar"                 # PROVISIONAL: DIGIC's algorithm is unpublished; gradient-corrected linear
 
 [memory]

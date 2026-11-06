@@ -1,13 +1,18 @@
 //! The frame-buffer SDRAM's address pins: folds in powers of two, marginal contacts,
-//! stale content, power-on content, resolution scaling and the running camera's state.
+//! stale content, power-on content, resolution scaling and the running camera's state;
+//! and the rows a processor brownout never stored.
 
 #![cfg(all(feature = "serde", feature = "test-util"))]
 
-use vcb_core::isp::Raw;
+use vcb_core::adc::Codes;
+use vcb_core::isp::{self, Raw};
 use vcb_core::memory::{self, Params, State};
-use vcb_core::preset::{AddressFault, FaultKind, MemoryBend, Mode, Resolution};
-use vcb_core::readout::Direction;
-use vcb_core::{Camera, Frame, Preset, Reconfigured, Scene, Simulator, Timing};
+use vcb_core::power::Rail;
+use vcb_core::preset::{
+    AddressFault, FaultKind, MemoryBend, Mode, Orientation, RailBend, Resolution,
+};
+use vcb_core::readout::{Direction, Layout};
+use vcb_core::{Camera, Frame, Preset, Reconfigured, Scene, Simulator, Timing, noise};
 
 /// The outcome of a reconfiguration that keeps every buffer and all state.
 const KEPT: Reconfigured = Reconfigured::Kept {
@@ -733,4 +738,174 @@ fn a_new_marginal_fault_reads_the_frame_before_it_through_the_kept_store() {
         }
     }
     assert!(seen > 0);
+}
+
+/// Codes of `layout`: optical black at `black`, the active words hashed with `key`.
+fn hashed_codes(layout: &Layout, black: u16, key: u32) -> Codes {
+    let mut codes = Codes::new(layout.clone());
+    let (ob, len) = (layout.ob_cols() as usize, layout.line_len() as usize);
+    for (i, code) in codes.words_mut().iter_mut().enumerate() {
+        *code = if i % len < ob {
+            black
+        } else {
+            (noise::hash_u32(i as u32, key, noise::salt("memory test"), 5) & 0x0fff) as u16
+        };
+    }
+    codes
+}
+
+#[test]
+fn rows_lost_to_a_brownout_read_what_the_sdram_held_there() {
+    for direction in [Direction::TopDown, Direction::BottomUp] {
+        let camera = small(direction);
+        let preset = preset(Vec::new());
+        let timing = Timing::derive(&camera, &preset, 64, 48).unwrap();
+        let layout = Layout::from_timing(&timing, direction);
+        let processor = isp::Params::resolve(&camera, &preset, &timing).unwrap();
+        let params = native(&camera, &preset);
+        let black = camera.adc.black_level;
+        let nominal = Rail::new(&layout, camera.power.rail_v);
+        // The processor browns out at the start of readout line `lost`.
+        let lost = layout.rows() / 2 + 3;
+        let mut browned = nominal.clone();
+        let low_v = processor.dsp_brownout_v - 0.1;
+        for line in lost..layout.rows() {
+            browned.set(line, low_v, low_v);
+        }
+        let clamp = |key: u32, rail: &Rail| {
+            let mut raw = Raw::new(layout.cols(), layout.rows());
+            isp::clamp_black(
+                &processor,
+                &hashed_codes(&layout, black, key),
+                rail,
+                &mut raw,
+            );
+            raw
+        };
+
+        // From power-on, the lost rows read the SDRAM's power-on content.
+        let mut state = State::default();
+        let first = clamp(1, &browned);
+        assert_eq!(first.dropped_from(), Some(layout.image_row(lost)));
+        let read = run(&params, &mut state, 0, &first);
+        for line in 0..layout.rows() {
+            let y = layout.image_row(line);
+            if line < lost {
+                assert_eq!(read.plane().row(y), first.plane().row(y), "{direction:?}");
+            } else {
+                let power_on: Vec<f32> = (0..params.pitch)
+                    .map(|x| params.power_on.word(params.address(x, y)))
+                    .collect();
+                assert_eq!(read.plane().row(y), power_on, "{direction:?}: row {y}");
+            }
+        }
+
+        // A whole frame fills the buffer; the next brownout shows it below the line.
+        let whole = clamp(2, &nominal);
+        assert_eq!(run(&params, &mut state, 1, &whole), whole, "{direction:?}");
+        let now = clamp(3, &browned);
+        let read = run(&params, &mut state, 2, &now);
+        for line in 0..layout.rows() {
+            let y = layout.image_row(line);
+            if line < lost {
+                assert_eq!(read.plane().row(y), now.plane().row(y), "{direction:?}");
+            } else {
+                assert!(now.plane().row(y).iter().all(|&site| site == 0.0));
+                assert_eq!(
+                    read.plane().row(y),
+                    whole.plane().row(y),
+                    "{direction:?}: row {y} shows the frame before"
+                );
+            }
+        }
+
+        // The next whole frame overwrites every row again.
+        let later = clamp(4, &nominal);
+        assert_eq!(run(&params, &mut state, 3, &later), later, "{direction:?}");
+    }
+}
+
+/// A uniform card of one 8-bit sRGB level.
+fn card((width, height): (u32, u32), level: u8) -> Scene {
+    Scene::from_srgb8(width, height, &vec![level; (width * height * 3) as usize])
+}
+
+/// The mean of the 8-bit channels of row `row`.
+fn row_mean(frame: &Frame, row: u32) -> f64 {
+    let sum: f64 = (0..frame.width())
+        .flat_map(|x| frame.pixel(x, row))
+        .map(f64::from)
+        .sum();
+    sum / f64::from(3 * frame.width())
+}
+
+#[test]
+fn a_spike_that_browns_the_processor_out_leaves_the_last_frame_below_the_line() {
+    let camera = camera();
+    let power = camera.power.clone();
+    // A narrow, tall frame, so the 235 us recovery spans about one line.
+    let size = (64, 1024);
+    let mut spiking = Preset::new("a520");
+    spiking.readout.resolution = Resolution::MatchInput;
+    spiking.readout.orientation = Orientation::Landscape;
+    spiking.bend.rail = Some(RailBend {
+        spike_ma: (power.rail_v - power.dsp_brownout_v + 0.2) / 5.0 * 1000.0,
+        spike_hz: 4.0,
+        spike_ms: 3.0,
+        source_ohm: Some(5.0),
+        ..RailBend::default()
+    });
+    let mut buffered = spiking.clone();
+    buffered.bend.memory = Some(MemoryBend::default());
+    let build = |preset: Preset| {
+        Simulator::builder((camera.clone(), preset))
+            .input_size(size.0, size.1)
+            .build()
+            .unwrap()
+    };
+    let (mut plain, mut sdram) = (build(spiking), build(buffered));
+    // Two greys in turn, so a row tells which frame it came from.
+    let cards = [card(size, 80), card(size, 170)];
+    let mut whole: Option<Frame> = None;
+    let mut checked = 0;
+    for index in 0..24u64 {
+        let scene = &cards[(index % 2) as usize];
+        let without = plain.frame(scene, index).clone();
+        let with = sdram.frame(scene, index).clone();
+        let rail = sdram.rail();
+        let rows = rail.lines();
+        let drop = (0..rows).find(|&line| rail.start_v(line) < power.dsp_brownout_v);
+        if let (Some(line), Some(before)) = (drop, &whole)
+            && line > 32
+            && line + 32 < rows
+        {
+            for row in 0..line - 16 {
+                assert_eq!(
+                    (0..with.width())
+                        .map(|x| with.pixel(x, row))
+                        .collect::<Vec<_>>(),
+                    (0..without.width())
+                        .map(|x| without.pixel(x, row))
+                        .collect::<Vec<_>>(),
+                    "frame {index}: row {row} above the brownout"
+                );
+            }
+            let now = row_mean(&with, line / 2);
+            for row in line + 16..rows {
+                assert!(
+                    row_mean(&without, row) < 2.0,
+                    "frame {index}: row {row} without the memory bend"
+                );
+                let stale = row_mean(&with, row);
+                assert!(
+                    (stale - row_mean(before, row)).abs() < 1.0 && (stale - now).abs() > 20.0,
+                    "frame {index}: row {row} at {stale}, the frame before at {}, this one at {now}",
+                    row_mean(before, row)
+                );
+            }
+            checked += 1;
+        }
+        whole = drop.is_none().then_some(with);
+    }
+    assert!(checked > 0, "no brownout followed a whole frame");
 }

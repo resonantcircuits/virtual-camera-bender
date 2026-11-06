@@ -1,5 +1,6 @@
 //! The optics, rail, clock and memory bends in the chain: inert sections change no
-//! byte, and adding, removing or turning one keeps the running camera's state.
+//! byte, adding, removing or turning one keeps the running camera's state, and the four
+//! connected replay from reset.
 
 #![cfg(all(feature = "serde", feature = "test-util"))]
 
@@ -294,4 +295,66 @@ fn removing_the_rail_and_memory_bends_returns_them_to_power_on() {
         "the rail is back at the nominal voltage"
     );
     assert_eq!(sim.memory_state(), &memory::State::default());
+}
+
+/// The four bends wired together: rail spikes that brown the processor out, an
+/// oscillator that follows the rail, the SDRAM keeping the rows the processor missed.
+fn connected(ppm_per_v: f64) -> Preset {
+    let power = camera().power;
+    let mut preset = clean(Mode::Still);
+    preset.bend.optics = Some(OpticsBend::default());
+    preset.bend.rail = Some(RailBend {
+        load_ma: 100.0,
+        spike_ma: (power.rail_v - power.dsp_brownout_v + 0.2) / 5.0 * 1000.0,
+        spike_hz: 6.0,
+        spike_ms: 10.0,
+        source_ohm: Some(5.0),
+        ..RailBend::default()
+    });
+    preset.bend.clock = Some(ReclockBend {
+        drift_ppm: 500.0,
+        ppm_per_v,
+        ..ReclockBend::new(26.9)
+    });
+    preset.bend.memory = Some(MemoryBend::default());
+    preset
+}
+
+#[test]
+fn the_connected_bends_replay_from_reset_and_keep_their_state_through_a_knob() {
+    let scene = scene();
+    let brownout_v = camera().power.dsp_brownout_v;
+    let mut sim = build(connected(2000.0));
+    let mut browned = 0;
+    let first: Vec<Frame> = (0..6)
+        .map(|index| {
+            let frame = sim.frame(&scene, index).clone();
+            let rail = sim.rail();
+            browned += usize::from((0..rail.lines()).any(|line| rail.start_v(line) < brownout_v));
+            frame
+        })
+        .collect();
+    assert!(browned > 0, "no frame browned the processor out");
+    sim.reset();
+    let again: Vec<Frame> = (0..6)
+        .map(|index| sim.frame(&scene, index).clone())
+        .collect();
+    assert_eq!(again, first, "from reset");
+    let mut fresh = build(connected(2000.0));
+    let third: Vec<Frame> = (0..6)
+        .map(|index| fresh.frame(&scene, index).clone())
+        .collect();
+    assert_eq!(third, first, "from a new simulator");
+
+    // A new supply sensitivity keeps the rail, the drift and the SDRAM's content.
+    let (rail, drift, sdram) = (
+        sim.power_state().clone(),
+        sim.capture_state().clone(),
+        sim.memory_state().clone(),
+    );
+    assert_eq!(sim.set_preset(connected(-2000.0)).unwrap(), KEPT);
+    assert_eq!(sim.power_state(), &rail);
+    assert_eq!(sim.capture_state(), &drift);
+    assert_eq!(sim.memory_state(), &sdram);
+    sim.frame(&scene, 6);
 }
