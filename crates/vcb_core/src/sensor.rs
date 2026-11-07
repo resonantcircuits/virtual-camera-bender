@@ -12,10 +12,12 @@
 //!    top of the set exposure: 1 unless auto-exposure meters the scene
 //!    ([`Ae::Scene`]), when it is `target / luminance`, the luminance being the
 //!    prepared scene's mean times `exposure_s / nominal_exposure_s`, clamped to two
-//!    stops either way. The image processor's auto-exposure servo sets it instead once
-//!    it has metered a frame ([`Params::exposure_scale`]). Auto-exposure therefore
-//!    compensates a changed exposure time within its two stops, as the camera's
-//!    aperture would; with a fixed exposure the time alone sets the brightness.
+//!    stops either way (with a light leak, `(target - leak) / luminance`, below). The
+//!    image processor's auto-exposure servo sets it instead once it has metered a
+//!    frame ([`Params::exposure_scale`]). Auto-exposure therefore compensates a changed
+//!    exposure time within its two stops, as the camera's aperture would; with a fixed
+//!    exposure the time alone sets the brightness. A light leak through the body adds
+//!    its own charge here, which `exposure_scale` does not scale (below).
 //! 2. Photo-response non-uniformity: a fixed gain `1 + prnu * N(0, 1)` per photosite.
 //! 3. Dark signal: the mean dark charge `dark_e_per_s * k * exposure_s`, `k` the
 //!    Arrhenius factor of the sensor's temperature (below), spread over the photosites
@@ -40,8 +42,9 @@
 //!    camera's at the nominal substrate bias and move with it, the well one way and
 //!    the drain the other (below).
 //! 6. Interline smear, when the readout uses the electronic shutter (movie mode):
-//!    light leaking into the vertical register adds the same charge to every
-//!    photosite of a column (below).
+//!    light reaching the vertical register adds the same charge to every photosite
+//!    of a column (below). A light leak, which no shutter blocks, smears in both
+//!    modes.
 //!
 //! # Temperature and substrate bias
 //!
@@ -105,6 +108,69 @@
 //! The section has no state and draws no randomness of its own: the glow joins the
 //! dark charge before its shot noise is drawn.
 //!
+//! # Light leak
+//!
+//! A preset's `[bend.leak]` lets light into the body behind the lens: a drilled hole,
+//! an opened seam, a loosened lens mount. The light bypasses the aperture, the
+//! shutter and the IR-cut filter and, unfocused and scattered by the cavity, falls on
+//! the sensor as a soft glow from one edge, brightest at the opening. Each photosite
+//! collects
+//!
+//! `leak_e = edge_e[filter] * e^(-d / spread)`,
+//!
+//! `d` the distance of the photosite's centre from `edge` in photosite pitches and
+//! `spread` the leak's `spread_frac` of the sensor's width for a left or right leak,
+//! of its height for a top or bottom one, at the virtual sensor's size, so a
+//! match-input render shows the native leak downscaled (PROVISIONAL shape: a diffuse
+//! opening). The edge lies in the sensor's landscape orientation, like the amplifier
+//! glow's corner: when the camera is held in portrait the simulator turns the
+//! developed frame back afterwards, and the leak turns with it.
+//!
+//! The light's colour takes the scene's path into the sensor's primaries
+//! ([`scene`](crate::scene)): its linear sRGB `radiance * colour`, in multiples of
+//! reference white, goes through the camera's colour matrix and the inverse of the
+//! daylight white-balance gains `wb = [wb_r_gain, 1, wb_b_gain]`, and a negative
+//! response clips at zero. The light also passes behind the IR-cut filter, so its
+//! near infrared `radiance * nir` adds `nir_response[c]` of itself to channel `c`, in
+//! the same units (reference white gives 1 in green). At the edge, over the exposure,
+//!
+//! `edge_e[c] = (max(0, (srgb_to_cam * radiance * colour)[c] / wb[c]) + radiance *
+//! nir * nir_response[c]) * white_fraction * full_well_e * exposure_s /
+//! nominal_exposure_s`.
+//!
+//! A white leak without near infrared therefore develops neutral under the daylight
+//! balance, and daylight's near infrared, `nir = 1`, turns it pink, the full-spectrum
+//! look. The charge grows with the exposure time, for the leak shines while the
+//! photodiodes integrate, but not with `exposure_scale`, which stands for the
+//! aperture the leak bypasses.
+//!
+//! The leak's charge joins the scene's photo-charge before the photo-response
+//! non-uniformity, so it takes PRNU, dark charge, shot noise, the well, the drain and
+//! the spill as scene light does: a bright leak clips and, on a lowered substrate
+//! bias, blooms. In movie mode the vertical register sees the leak with the scene:
+//! the smear's `mean_e` (below) is the column's mean charge of both. In still mode the
+//! mechanical shutter blocks the scene during the transfer but not the leak, which
+//! enters behind it and keeps shining: the smear formula applies to the leak's column
+//! means alone, times the substrate bias's shutter factor (PROVISIONAL: the leak's
+//! light reaches the vertical register as the scene's does). A bright leak thus
+//! streaks every row of its columns in a still, the rows it does not reach included.
+//! The masked optical-black photosites stay dark, so the black clamp leaves the leak
+//! in the image.
+//!
+//! Scene auto-exposure meters through the sensor, so it sees the leak. With `l` the
+//! leak's mean charge over the frame, its channels weighed as the scene's and divided
+//! by `white_fraction * full_well_e`, the units of the scene's metered luminance `s`,
+//! the scale becomes `(target - l) / s`, clamped to two stops either way as without
+//! the leak, and two stops under wherever `l` alone reaches the target. The
+//! auto-exposure servo meters the bent raw, the leak in it, and needs nothing new.
+//!
+//! Not modelled: a point hole's falloff, which from a Lambertian opening in a wall
+//! square to the sensor at height `h` over it goes as `h x / (h² + x²)²` at the
+//! distance `x`, rising from the wall to a peak at `x = h / √3`; light falling on the
+//! photodiodes during the movie readout, beyond the smear; the leak's own flicker, the
+//! light being steady. The leak has no state and draws no randomness of its own, and
+//! every value of it is a knob a running camera keeps.
+//!
 //! # Smear
 //!
 //! Sony quotes smear in decibels by the V/10 method: the smear signal relative to the
@@ -123,10 +189,12 @@
 //! the sensor reads until VD, and `exposure_s` the integration time. Since `mean_e`
 //! grows with the exposure time, the smear charge depends only on the light and the
 //! transfer time: a shorter exposure leaves the same streak on a weaker signal.
-//! Assumptions: the leak is uniform along the column (one streak of constant height,
-//! no gradient from the position of the packet), the register does not saturate, and
-//! the smear charge carries its own shot noise. With the mechanical shutter (still
-//! mode) the array is dark during the transfer and there is no smear.
+//! Assumptions: the light reaching the register is uniform along the column (one
+//! streak of constant height, no gradient from the position of the packet), the
+//! register does not saturate, and the smear charge carries its own shot noise. With
+//! the mechanical shutter (still mode) the scene is dark during the transfer and does
+//! not smear; only a light leak, behind the shutter, does, its `mean_e` alone in the
+//! formula ([`Params::leak_smear_per_electron`]).
 //!
 //! [`expose`] writes a [`Charge`] plane in electrons at sensor resolution, which
 //! [`readout::read`](crate::readout::read) transfers out of the array.
@@ -138,7 +206,7 @@ use rayon::slice::ParallelSliceMut;
 
 use crate::noise;
 use crate::plane::Plane;
-use crate::preset::Mode;
+use crate::preset::{Edge, LeakBend, Mode};
 use crate::readout::Direction;
 use crate::scene::Channel;
 use crate::validate::positive;
@@ -182,6 +250,12 @@ const HOT_DECADES: f32 = 1.0;
 
 /// Fraction of the image height lit in the V/10 smear measurement (research section 3).
 const V10_WINDOW_FRACTION: f32 = 0.1;
+
+/// Columns after which the colour filter array repeats along a row.
+///
+/// The RGGB Bayer pattern of [`Cfa`]; the leak's column sums down the array are
+/// computed for this many columns and shared by the rest.
+const CFA_PERIOD: u32 = 2;
 
 /// Smallest exposure scale auto-exposure applies: two stops under the set exposure.
 ///
@@ -307,7 +381,11 @@ impl Charge {
 pub enum Ae {
     /// The light is integrated as configured.
     Fixed,
-    /// The light is scaled so the scene's mean luminance, at the set exposure, lands on `target`.
+    /// The light is scaled so the frame's mean luminance, at the set exposure, lands on `target`.
+    ///
+    /// The frame's luminance is the scene's, which the scale multiplies, plus a light
+    /// leak's, which it does not: the scale is `(target - leak) / scene` within two
+    /// stops either way (see the [module documentation](self)).
     Scene {
         /// Mean linear luminance of the developed frame, reference white 1.0.
         target: f32,
@@ -398,6 +476,11 @@ pub struct Params {
     pub smear: bool,
     /// Exposure control.
     pub ae: Ae,
+    /// Light leaking onto the sensor through the body; `None` where none enters.
+    ///
+    /// Resolved from the preset's `[bend.leak]`; absent without the section or where
+    /// its light puts no charge on any channel, `radiance = 0` among them.
+    pub leak: Option<Leak>,
     /// Exposure scale of the image processor's auto-exposure servo; it replaces `ae` when set.
     ///
     /// `None` when resolved. The simulator sets it before each frame from
@@ -423,13 +506,14 @@ impl Params {
     /// The preset's `[bend.sensor]` sets the temperature and substrate bias, which
     /// resolve into the dark current, the amplifier's glow, the well and drain and the
     /// smear as the [module documentation](self) describes; without it they are the
-    /// camera's.
+    /// camera's. The preset's `[bend.leak]` resolves into the [`Leak`]'s charge at its
+    /// edge for this exposure and its falloff at the virtual sensor's size.
     ///
     /// # Errors
     ///
     /// Returns a configuration error if the preset's exposure time is not positive and
-    /// finite, its `[bend.sensor]` values lie out of range, or the camera's colour
-    /// matrix is not invertible.
+    /// finite, its `[bend.sensor]` or `[bend.leak]` values lie out of range, or the
+    /// camera's colour matrix is not invertible.
     pub fn resolve(camera: &Camera, preset: &Preset, timing: &Timing) -> Result<Self, Error> {
         let sensor = &camera.sensor;
         let set_s = preset.sensor.and_then(|o| o.exposure_s);
@@ -482,6 +566,13 @@ impl Params {
                 Ae::Scene { target, weights }
             }
         };
+        // Reference white's charge at the set exposure, which the leak's radiance multiplies.
+        let white_e =
+            sensor.white_fraction * sensor.full_well_e * exposure_s / sensor.nominal_exposure_s;
+        let leak = match &preset.bend.leak {
+            Some(bend) => Leak::resolve(bend, camera, timing, white_e)?,
+            None => None,
+        };
         Ok(Self {
             full_well_e: sensor.full_well_e as f32,
             white_fraction: sensor.white_fraction as f32,
@@ -508,6 +599,7 @@ impl Params {
                 .min(timing.frame_period_s) as f32,
             smear,
             ae,
+            leak,
             exposure_scale: None,
             seed: noise::stage_seed(preset.seed, SALT),
             unit_seed: sensor.unit_seed,
@@ -541,7 +633,22 @@ impl Params {
     /// Zero without the electronic shutter; `smear_ratio` scales it.
     #[must_use]
     pub fn smear_per_electron(&self) -> f32 {
-        if !self.smear || self.exposure_s <= 0.0 {
+        if !self.smear {
+            return 0.0;
+        }
+        self.leak_smear_per_electron()
+    }
+
+    /// Returns the smear charge per electron of a light leak's mean column charge.
+    ///
+    /// The smear formula of the [module documentation](self) with `smear_ratio`, in
+    /// either mode: the mechanical shutter of a still blocks the scene during the
+    /// transfer but not the leak, which enters behind it. PROVISIONAL: the leak's light
+    /// reaches the vertical register as the scene's does. Equal to
+    /// [`smear_per_electron`](Self::smear_per_electron) with the electronic shutter.
+    #[must_use]
+    pub fn leak_smear_per_electron(&self) -> f32 {
+        if self.exposure_s <= 0.0 {
             return 0.0;
         }
         10f32.powf(self.smear_db / 20.0) / V10_WINDOW_FRACTION * self.readout_s / self.exposure_s
@@ -587,6 +694,155 @@ pub(crate) fn dark_factor(camera: &Camera, preset: &Preset) -> f64 {
     dark_ratio(sensor, temperature_c)
 }
 
+/// Light leaking onto the sensor from one edge, resolved for the frame's exposure.
+///
+/// Built by [`Params::resolve`] from the preset's `[bend.leak]`. A photosite at the
+/// distance `d` from `edge`, in photosite pitches to its centre, collects
+/// `edge_e[filter] * e^(-d / spread_px)` electrons; the
+/// [module documentation](self) gives the model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Leak {
+    /// The edge the light enters from, in the sensor's landscape orientation.
+    pub edge: Edge,
+    /// Distance over which the leak's charge falls by `1/e`, in photosite pitches.
+    ///
+    /// The section's `spread_frac` of the virtual sensor's width for a left or right
+    /// leak, of its height for a top or bottom one.
+    pub spread_px: f32,
+    /// Charge the leak puts on each channel's photosites at the edge, in electrons.
+    ///
+    /// In `R, G, B` order, over the frame's exposure time and unscaled by
+    /// auto-exposure: the light in sensor primaries plus its near infrared through
+    /// `[sensor] nir_response`, times reference white's charge at the set exposure.
+    pub edge_e: [f32; 3],
+}
+
+impl Leak {
+    /// Resolves `bend` for a camera and exposure; `None` where its light puts no charge.
+    ///
+    /// `white_e` is reference white's charge at the set exposure, in electrons.
+    fn resolve(
+        bend: &LeakBend,
+        camera: &Camera,
+        timing: &Timing,
+        white_e: f64,
+    ) -> Result<Option<Self>, Error> {
+        bend.validate()?;
+        if bend.radiance <= 0.0 {
+            return Ok(None);
+        }
+        let isp = &camera.isp;
+        let srgb_to_cam = colour::srgb_to_cam(&isp.xyz_to_cam)?;
+        let wb = [isp.wb_r_gain, 1.0, isp.wb_b_gain];
+        let rgb = bend.colour.map(|c| bend.radiance * c);
+        let nir = bend.radiance * bend.nir;
+        let edge_e: [f32; 3] = std::array::from_fn(|c| {
+            // Sensor primaries as the scene's: the matrix, then the inverse daylight gains.
+            let visible = (0..3).map(|k| srgb_to_cam[c][k] * rgb[k]).sum::<f64>() / wb[c];
+            let charge = nir.mul_add(camera.sensor.nir_response[c], visible.max(0.0));
+            (charge * white_e) as f32
+        });
+        if edge_e.iter().all(|&e| e <= 0.0) {
+            return Ok(None);
+        }
+        let extent = match bend.edge {
+            Edge::Left | Edge::Right => timing.sensor_width,
+            Edge::Top | Edge::Bottom => timing.sensor_height,
+        };
+        Ok(Some(Self {
+            edge: bend.edge,
+            spread_px: (bend.spread_frac * f64::from(extent)) as f32,
+            edge_e,
+        }))
+    }
+
+    /// Returns whether the leak's charge falls along the rows, from the left or right edge.
+    fn along_rows(self) -> bool {
+        matches!(self.edge, Edge::Left | Edge::Right)
+    }
+}
+
+/// A light leak's charge over the photosites of one frame.
+#[derive(Debug, Clone, Copy)]
+struct LeakMap<'a> {
+    /// Charge per channel at the edge, in electrons.
+    edge_e: [f32; 3],
+    /// Falloff `e^(-d / spread)` of each column (left, right) or row (top, bottom).
+    falloff: &'a [f32],
+    /// Whether `falloff` runs over the columns, for a leak from the left or right.
+    along_rows: bool,
+    /// Width of the photosite array.
+    width: u32,
+    /// Height of the photosite array.
+    height: u32,
+}
+
+impl<'a> LeakMap<'a> {
+    /// Computes the falloff of `leak` over a `width` by `height` array into `falloff`.
+    fn new(leak: Leak, width: u32, height: u32, falloff: &'a mut Vec<f32>) -> Self {
+        let along_rows = leak.along_rows();
+        let extent = if along_rows { width } else { height };
+        let from_end = matches!(leak.edge, Edge::Right | Edge::Bottom);
+        let per_px = 1.0 / leak.spread_px;
+        falloff.clear();
+        falloff.extend((0..extent).map(|i| {
+            let i = if from_end { extent - 1 - i } else { i };
+            // The distance of the photosite's centre from the edge.
+            (-(i as f32 + 0.5) * per_px).exp()
+        }));
+        Self {
+            edge_e: leak.edge_e,
+            falloff,
+            along_rows,
+            width,
+            height,
+        }
+    }
+
+    /// Returns the leak's charge at column `x` of row `y` behind the filter `channel`.
+    fn at(&self, x: u32, y: u32, channel: usize) -> f32 {
+        let i = if self.along_rows { x } else { y };
+        self.edge_e[channel] * self.falloff[i as usize]
+    }
+
+    /// Returns the leak's mean charge over the array in each channel, in electrons.
+    ///
+    /// The mean over every photosite of the charge a filter of that channel would
+    /// collect there, as the scene's planes give every channel at every photosite.
+    fn mean_e(&self) -> [f64; 3] {
+        let mean =
+            self.falloff.iter().copied().map(f64::from).sum::<f64>() / self.falloff.len() as f64;
+        self.edge_e.map(|e| f64::from(e) * mean)
+    }
+
+    /// Writes the leak's charge summed down each column into `columns`, in electrons.
+    fn column_sums(&self, cfa: Cfa, columns: &mut Vec<f64>) {
+        // Down a column the filters, and so the sum, depend on its phase in the pattern.
+        let down = |x: u32| -> f64 {
+            (0..self.height)
+                .map(|y| {
+                    let falloff = if self.along_rows {
+                        1.0
+                    } else {
+                        self.falloff[y as usize]
+                    };
+                    f64::from(self.edge_e[cfa.channel(x, y).index()] * falloff)
+                })
+                .sum()
+        };
+        let phases: [f64; CFA_PERIOD as usize] = std::array::from_fn(|x| down(x as u32));
+        columns.clear();
+        columns.extend((0..self.width).map(|x| {
+            let phase = phases[(x % CFA_PERIOD) as usize];
+            if self.along_rows {
+                f64::from(self.falloff[x as usize]) * phase
+            } else {
+                phase
+            }
+        }));
+    }
+}
+
 /// Persistent state of the photosite array: the last exposure and working buffers.
 ///
 /// An interline CCD empties every photosite at each transfer, so no charge carries
@@ -597,6 +853,10 @@ pub struct State {
     rows: Vec<f64>,
     columns: Vec<f64>,
     carry: Vec<f32>,
+    /// The light leak's falloff along its axis, rebuilt every frame with a leak.
+    leak_falloff: Vec<f32>,
+    /// The light leak's charge summed down each column, rebuilt every frame it smears.
+    leak_columns: Vec<f64>,
 }
 
 impl Default for State {
@@ -606,6 +866,8 @@ impl Default for State {
             rows: Vec::new(),
             columns: Vec::new(),
             carry: Vec::new(),
+            leak_falloff: Vec::new(),
+            leak_columns: Vec::new(),
         }
     }
 }
@@ -619,6 +881,9 @@ impl State {
 }
 
 /// Integrates `scene` into photosite charge for frame `index`.
+///
+/// A light leak ([`Params::leak`]) adds its charge to the scene's and smears in
+/// either mode.
 ///
 /// # Panics
 ///
@@ -634,10 +899,21 @@ pub fn expose(params: &Params, state: &mut State, scene: &Scene, index: u64, out
     if width == 0 || height == 0 {
         return;
     }
+    let State {
+        exposure_scale: applied,
+        rows,
+        columns,
+        carry,
+        leak_falloff,
+        leak_columns,
+    } = state;
+    let leak = params
+        .leak
+        .map(|leak| LeakMap::new(leak, width, height, leak_falloff));
     let scale = params
         .exposure_scale
-        .unwrap_or_else(|| exposure_scale(params, scene, &mut state.rows));
-    state.exposure_scale = scale;
+        .unwrap_or_else(|| exposure_scale(params, scene, leak.as_ref(), rows));
+    *applied = scale;
     let electrons_per_unit = params.white_e() * scale;
     let full_well = params.well_e();
     // The well at the bias plus the drain's capacity, in nominal full wells.
@@ -645,40 +921,70 @@ pub fn expose(params: &Params, state: &mut State, scene: &Scene, index: u64, out
         .antibloom_ratio
         .mul_add(params.drain_ratio, params.well_ratio)
         * params.full_well_e;
-    let any_spill = integrate(params, scene, index, electrons_per_unit, spill_level, out);
+    let any_spill = integrate(
+        params,
+        scene,
+        leak.as_ref(),
+        index,
+        electrons_per_unit,
+        spill_level,
+        out,
+    );
     if any_spill {
-        bloom(spill_level, full_well, &mut out.plane, &mut state.carry);
+        bloom(spill_level, full_well, &mut out.plane, carry);
     } else {
         out.plane
             .data_mut()
             .par_chunks_mut(width as usize)
             .for_each(|row| row.iter_mut().for_each(|e| *e = e.min(full_well)));
     }
+    // The scene smears through the electronic shutter only, the leak behind any shutter.
     let smear = params.smear_per_electron();
-    if smear > 0.0 {
-        column_light(params.cfa, scene, &mut state.columns);
-        let scale = smear * electrons_per_unit / height as f32;
-        let frame_seed = params.seed ^ index;
-        let columns = &state.columns;
-        out.plane
-            .data_mut()
-            .par_chunks_mut(width as usize)
-            .enumerate()
-            .for_each(|(y, row)| {
-                for (x, (e, &light)) in row.iter_mut().zip(columns).enumerate() {
-                    let added = scale * light as f32;
-                    let noise = noise::gauss(x as u32, y as u32, SALT_SMEAR, frame_seed);
-                    *e += (added + added.sqrt() * noise).max(0.0);
-                }
-            });
+    let scene_light = (smear > 0.0).then(|| {
+        column_light(params.cfa, scene, columns);
+        columns.as_slice()
+    });
+    let leak_smear = leak
+        .map(|_| params.leak_smear_per_electron())
+        .filter(|&smear| smear > 0.0);
+    let leak_light = leak.zip(leak_smear).map(|(leak, _)| {
+        leak.column_sums(params.cfa, leak_columns);
+        leak_columns.as_slice()
+    });
+    if scene_light.is_none() && leak_light.is_none() {
+        return;
     }
+    let scale = smear * electrons_per_unit / height as f32;
+    let leak_scale = leak_smear.unwrap_or(0.0) / height as f32;
+    let frame_seed = params.seed ^ index;
+    out.plane
+        .data_mut()
+        .par_chunks_mut(width as usize)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for (x, e) in row.iter_mut().enumerate() {
+                let mut added = scene_light.map_or(0.0, |light| scale * light[x] as f32);
+                if let Some(light) = leak_light {
+                    added = leak_scale.mul_add(light[x] as f32, added);
+                }
+                let noise = noise::gauss(x as u32, y as u32, SALT_SMEAR, frame_seed);
+                *e += (added + added.sqrt() * noise).max(0.0);
+            }
+        });
 }
 
 /// Returns the exposure scale for `scene`, metering it when auto-exposure is on.
 ///
 /// The meter sees the scene's light integrated for the set exposure time, so the
-/// scale it returns compensates a longer or shorter exposure within its two stops.
-fn exposure_scale(params: &Params, scene: &Scene, rows: &mut Vec<f64>) -> f32 {
+/// scale it returns compensates a longer or shorter exposure within its two stops. It
+/// sees a light leak too, which the scale does not reach: the scene's share of the
+/// target is what the leak leaves of it.
+fn exposure_scale(
+    params: &Params,
+    scene: &Scene,
+    leak: Option<&LeakMap<'_>>,
+    rows: &mut Vec<f64>,
+) -> f32 {
     let Ae::Scene { target, weights } = params.ae else {
         return 1.0;
     };
@@ -699,17 +1005,30 @@ fn exposure_scale(params: &Params, scene: &Scene, rows: &mut Vec<f64>) -> f32 {
     });
     let count = height as f64 * f64::from(scene.width());
     let mean = rows.iter().sum::<f64>() / count * f64::from(params.relative_exposure());
-    if mean > 0.0 {
-        ((f64::from(target) / mean) as f32).clamp(AE_MIN_SCALE, AE_MAX_SCALE)
+    // The leak's luminance in the scene's units, reference white's charge at the
+    // nominal exposure.
+    let leak = leak.map_or(0.0, |leak| {
+        let mean_e = leak.mean_e();
+        let luminance: f64 = (0..3).map(|c| f64::from(weights[c]) * mean_e[c]).sum();
+        luminance / (f64::from(params.white_fraction) * f64::from(params.full_well_e))
+    });
+    let left = f64::from(target) - leak;
+    if leak > 0.0 && left <= 0.0 {
+        AE_MIN_SCALE
+    } else if mean > 0.0 {
+        ((left / mean) as f32).clamp(AE_MIN_SCALE, AE_MAX_SCALE)
     } else {
         AE_MAX_SCALE
     }
 }
 
 /// Writes every photosite's charge before the well limit; returns whether any spills.
+///
+/// The leak's charge joins the scene's photo-charge before the PRNU.
 fn integrate(
     params: &Params,
     scene: &Scene,
+    leak: Option<&LeakMap<'_>>,
     index: u64,
     electrons_per_unit: f32,
     spill_level: f32,
@@ -733,8 +1052,12 @@ fn integrate(
             let glow_row = glow.map(|glow| (glow, glow.dy2(y)));
             let mut spills = false;
             for (x, charge) in (0..width).zip(row.iter_mut()) {
-                let radiance = source[cfa.channel(x, y).index()][x as usize].max(0.0);
+                let channel = cfa.channel(x, y).index();
+                let radiance = source[channel][x as usize].max(0.0);
                 let mut e = radiance * electrons_per_unit;
+                if let Some(leak) = leak {
+                    e += leak.at(x, y, channel);
+                }
                 if params.prnu > 0.0 {
                     e *= params
                         .prnu
