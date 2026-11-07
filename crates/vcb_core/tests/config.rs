@@ -428,6 +428,7 @@ fn milestone3_preset() -> Preset {
                 ..solid(0, FaultKind::Low)
             },
         ],
+        ..MemoryBend::default()
     });
     preset
 }
@@ -680,7 +681,10 @@ fn memory_fault_pins_must_exist_on_the_camera_sdram() {
     let timing = Timing::derive(&camera, &Preset::new("a520"), 64, 48).unwrap();
     let with_faults = |faults: Vec<AddressFault>| {
         let mut preset = Preset::new("a520");
-        preset.bend.memory = Some(MemoryBend { faults });
+        preset.bend.memory = Some(MemoryBend {
+            faults,
+            ..MemoryBend::default()
+        });
         preset
     };
 

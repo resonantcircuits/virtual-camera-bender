@@ -262,6 +262,8 @@ fn list_presets(args: &PresetsArgs) -> Result<()> {
                     preset.bend.clock.as_ref().map(|_| "clock"),
                     preset.bend.memory.as_ref().map(|_| "memory"),
                     preset.bend.reset.as_ref().map(|_| "reset"),
+                    preset.bend.serial.as_ref().map(|_| "serial"),
+                    preset.bend.leak.as_ref().map(|_| "leak"),
                 ]
                 .into_iter()
                 .flatten()

@@ -77,8 +77,8 @@ impl Preset {
     /// The camera's own values are checked by [`Camera::validate`](crate::Camera::validate).
     ///
     /// Checks that depend on the camera, such as bus pins against the ADC width or
-    /// memory fault pins against the SDRAM's address width, happen when the simulator
-    /// resolves the preset.
+    /// memory fault pins against the SDRAM's address and data pins, happen when the
+    /// simulator resolves the preset.
     ///
     /// # Errors
     ///
@@ -151,6 +151,12 @@ impl Preset {
         }
         if let Some(reset) = &self.bend.reset {
             reset.validate()?;
+        }
+        if let Some(serial) = &self.bend.serial {
+            serial.validate()?;
+        }
+        if let Some(leak) = &self.bend.leak {
+            leak.validate()?;
         }
         if let Some(isp) = &self.isp {
             validate_isp(isp)?;

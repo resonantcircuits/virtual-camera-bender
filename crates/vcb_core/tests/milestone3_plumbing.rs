@@ -102,6 +102,7 @@ const BENT: [Section; 4] = [
     ("memory", |p| {
         p.bend.memory = Some(MemoryBend {
             faults: vec![stuck(3)],
+            ..MemoryBend::default()
         });
     }),
 ];

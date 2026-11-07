@@ -78,7 +78,10 @@ fn marginal(fault: AddressFault, on_frac: f64, switch_hz: f64) -> AddressFault {
 
 fn preset(faults: Vec<AddressFault>) -> Preset {
     let mut preset = Preset::new("a520");
-    preset.bend.memory = Some(MemoryBend { faults });
+    preset.bend.memory = Some(MemoryBend {
+        faults,
+        ..MemoryBend::default()
+    });
     preset
 }
 
@@ -667,6 +670,7 @@ fn adding_a_fault_keeps_the_sdram_and_the_next_frame_reads_its_content() {
     let mut faulted = empty;
     faulted.bend.memory = Some(MemoryBend {
         faults: vec![solid(9, FaultKind::Low)],
+        ..MemoryBend::default()
     });
     assert_eq!(sim.set_preset(faulted.clone()).unwrap(), KEPT);
     assert_eq!(sim.memory_state(), &before, "the SDRAM keeps its content");

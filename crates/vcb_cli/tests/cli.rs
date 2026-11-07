@@ -166,13 +166,15 @@ fn presets_names_the_milestone_3_and_4_bends() {
                   [bend.rail]\n\
                   [bend.clock]\nosc_mhz = 27.0\n\
                   [bend.memory]\n\
-                  [bend.reset]\n";
+                  [bend.reset]\n\
+                  [bend.serial]\n\
+                  [bend.leak]\n";
     std::fs::write(dir.join("a520-every-new-bend.toml"), preset).unwrap();
     let run = vcb(&["presets", "--dir", path_arg(&dir)]);
     assert!(run.status.success(), "stderr: {}", text(&run.stderr));
     let stdout = text(&run.stdout);
     assert!(
-        stdout.contains("bends=optics,sensor,rail,clock,memory,reset"),
+        stdout.contains("bends=optics,sensor,rail,clock,memory,reset,serial,leak"),
         "{stdout}"
     );
 }

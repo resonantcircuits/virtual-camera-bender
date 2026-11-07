@@ -30,6 +30,23 @@ const MAX_LENS_BLUR_FRAC: f64 = 0.5;
 /// Largest supported width of one SDRAM address field (column, row or bank) in bits.
 const MAX_ADDRESS_FIELD_BITS: u8 = 16;
 
+/// Most data pins of a supported SDRAM, an x16 part; a stored word fits a `u16`.
+const MAX_DATA_PINS: u8 = 16;
+
+/// Largest supported width of an AFE register in bits.
+///
+/// The AFE's gain and clamp registers are 6 to 10 bits wide; 16 bounds a typo.
+const MAX_REGISTER_BITS: u8 = 16;
+
+/// Largest supported data field of an AFE serial write in bits.
+///
+/// The AD9949 class takes data fields of up to 24 bits after its 8-bit address; 32
+/// bounds a typo and keeps a field in a `u32`.
+const MAX_SERIAL_DATA_BITS: u8 = 32;
+
+/// Names of the four pixel gain registers in the order of `[afe] pxga_gain_db`.
+const PXGA_PHASES: [&str; 4] = ["r", "gr", "gb", "b"];
+
 /// Allowed gap between the AFE pedestal and the nominal black code.
 ///
 /// Expressed as a fraction of the code range. Both describe the same black level; a larger gap means one of them is mistyped.
@@ -238,6 +255,7 @@ impl Camera {
         non_negative("afe.noise_1f_corner_hz", afe.noise_1f_corner_hz)?;
         at_least("afe.oversample", afe.oversample, 1)?;
         positive("afe.fd_swing_v", afe.fd_swing_v)?;
+        self.validate_afe_registers()?;
 
         let adc = &self.adc;
         within(
@@ -292,6 +310,42 @@ impl Camera {
                 "adc.latch_phase must lie in [0, 1), got {}",
                 adc.latch_phase
             )));
+        }
+        Ok(())
+    }
+
+    fn validate_afe_registers(&self) -> Result<(), Error> {
+        let afe = &self.afe;
+        for (field, bits) in [
+            ("afe.vga_bits", afe.vga_bits),
+            ("afe.pxga_bits", afe.pxga_bits),
+            ("afe.clamp_bits", afe.clamp_bits),
+        ] {
+            bits_within(field, bits, 1, MAX_REGISTER_BITS)?;
+        }
+        let widest = afe.vga_bits.max(afe.pxga_bits).max(afe.clamp_bits);
+        bits_within(
+            "afe.serial_data_bits",
+            afe.serial_data_bits,
+            1,
+            MAX_SERIAL_DATA_BITS,
+        )?;
+        if afe.serial_data_bits < widest {
+            return Err(Error::config(format!(
+                "afe.serial_data_bits {} is narrower than the widest register's {widest} bits",
+                afe.serial_data_bits
+            )));
+        }
+        finite("afe.vga_min_db", afe.vga_min_db)?;
+        positive("afe.vga_db_per_code", afe.vga_db_per_code)?;
+        positive("afe.pxga_max_db", afe.pxga_max_db)?;
+        for (phase, gain_db) in PXGA_PHASES.iter().zip(afe.pxga_gain_db) {
+            within(
+                &format!("afe.pxga_gain_db ({phase})"),
+                gain_db,
+                0.0,
+                afe.pxga_max_db,
+            )?;
         }
         Ok(())
     }
@@ -387,11 +441,7 @@ impl Camera {
             ("memory.row_bits", memory.row_bits),
             ("memory.bank_bits", memory.bank_bits),
         ] {
-            if !(1..=MAX_ADDRESS_FIELD_BITS).contains(&bits) {
-                return Err(Error::config(format!(
-                    "{field} must lie in 1 to {MAX_ADDRESS_FIELD_BITS}, got {bits}"
-                )));
-            }
+            bits_within(field, bits, 1, MAX_ADDRESS_FIELD_BITS)?;
         }
         let words = 1u64 << memory.address_bits();
         if memory.raw_base >= words {
@@ -400,12 +450,39 @@ impl Camera {
                 memory.raw_base
             )));
         }
-        Ok(())
+        bits_within("memory.data_pins", memory.data_pins, 1, MAX_DATA_PINS)?;
+        if memory.data_pins < self.adc.dsp_bits {
+            return Err(Error::config(format!(
+                "memory.data_pins {} cannot hold the processor's {}-bit sample (adc.dsp_bits)",
+                memory.data_pins, self.adc.dsp_bits
+            )));
+        }
+        within(
+            "memory.reference_temp_c",
+            memory.reference_temp_c,
+            MIN_TEMPERATURE_C,
+            MAX_TEMPERATURE_C,
+        )?;
+        positive("memory.retention_s", memory.retention_s)?;
+        positive("memory.retention_halving_c", memory.retention_halving_c)?;
+        non_negative("memory.retention_spread", memory.retention_spread)?;
+        positive("memory.refresh_ms", memory.refresh_ms)
     }
 
     /// Returns the largest code the image processor reads, `2^dsp_bits - 1`.
     #[must_use]
     pub fn dsp_max_code(&self) -> u16 {
         ((1u32 << self.adc.dsp_bits.min(MAX_ADC_BITS)) - 1) as u16
+    }
+}
+
+/// Requires a bit or pin count in `low..=high`.
+fn bits_within(field: &str, bits: u8, low: u8, high: u8) -> Result<(), Error> {
+    if (low..=high).contains(&bits) {
+        Ok(())
+    } else {
+        Err(Error::config(format!(
+            "{field} must lie in {low} to {high}, got {bits}"
+        )))
     }
 }
