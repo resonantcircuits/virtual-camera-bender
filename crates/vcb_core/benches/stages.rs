@@ -10,7 +10,9 @@
 //! an overexposure that blooms), the supply rail and the AFE on it with `brownout` (a sagging, rippling rail),
 //! the AFE with `reset-drag` (a weak, flaky reset gate), the processor's capture with
 //! `reclock-roll` (a detuned, wandering oscillator) and the frame buffer with
-//! `s9000-tear` (two marginal address contacts).
+//! `s9000-tear` (two marginal address contacts), an empty `[bend.memory]` section (the
+//! store and the read alone), a stuck and a marginal data pin, and the SDRAM at 110 and
+//! 120 °C, steady and with the temperature turned every frame.
 //!
 //! Each stage bench times one public stage function on the signal that the stages
 //! before it produced. Persistent state carries on from one iteration to the next, as
@@ -31,7 +33,7 @@ use vcb_core::adc::{self, Codes};
 use vcb_core::afe::{self, Analog};
 use vcb_core::isp::{self, Raw};
 use vcb_core::power::{self, Rail};
-use vcb_core::preset::{Mode, Resolution};
+use vcb_core::preset::{DataFault, FaultKind, MemoryBend, Mode, Resolution};
 use vcb_core::readout::{self, Stream};
 use vcb_core::sensor::{self, Charge};
 use vcb_core::{
@@ -60,8 +62,18 @@ const POWER_PRESETS: [&str; 2] = ["clean", "brownout"];
 /// Presets of the capture bench: no reclock, and a detuned, wandering oscillator.
 const CAPTURE_PRESETS: [&str; 2] = ["clean", "reclock-roll"];
 
-/// Presets of the frame-buffer bench: no memory bend, and two marginal address contacts.
-const MEMORY_PRESETS: [&str; 2] = ["clean", "s9000-tear"];
+/// Cases of the frame-buffer bench: no memory bend, an empty one, two marginal address
+/// contacts, data pins stuck and marginal, and a hot SDRAM; see [`memory_case`].
+const MEMORY_CASES: [&str; 8] = [
+    "clean",
+    "empty",
+    "s9000-tear",
+    "d9-low",
+    "d7-marginal",
+    "hot-110",
+    "hot-120",
+    "hot-120-turning",
+];
 
 /// Presets of the whole-chain bench: the two of every stage and one per bent stage.
 const FRAME_PRESETS: [&str; 8] = [
@@ -427,18 +439,89 @@ fn isp_clamp_black(bencher: Bencher, preset: &str) {
     });
 }
 
-#[divan::bench(args = MEMORY_PRESETS, sample_count = 20, sample_size = 1)]
-fn memory_bend(bencher: Bencher, preset: &str) {
-    let mut chain = Chain::new(preset);
+/// Returns a frame-buffer bench case: its preset file and the memory section it sets.
+///
+/// `None` keeps the file's section: `clean` has none, `s9000-tear` two marginal
+/// address contacts. `empty` stores and reads the frame through no fault, `d9-low`
+/// sticks the top sample bit low, `d7-marginal` holds a flaky contact on bit 7 (30 %,
+/// 4 Hz), and `hot-110` and `hot-120` heat the SDRAM; `hot-120-turning` also sets
+/// the second temperature, which the bench alternates with the first every frame.
+fn memory_case(name: &str) -> (&'static str, Option<MemoryBend>, Option<f64>) {
+    let data = |pin, kind, contact: Option<(f64, f64)>| MemoryBend {
+        data_faults: vec![DataFault {
+            pin,
+            kind,
+            with: None,
+            on_frac: contact.map(|(on_frac, _)| on_frac),
+            switch_hz: contact.map(|(_, switch_hz)| switch_hz),
+        }],
+        ..MemoryBend::default()
+    };
+    let hot = |temperature_c| MemoryBend {
+        temperature_c: Some(temperature_c),
+        ..MemoryBend::default()
+    };
+    match name {
+        "clean" => ("clean", None, None),
+        "s9000-tear" => ("s9000-tear", None, None),
+        "empty" => ("clean", Some(MemoryBend::default()), None),
+        "d9-low" => ("clean", Some(data(9, FaultKind::Low, None)), None),
+        "d7-marginal" => (
+            "clean",
+            Some(data(7, FaultKind::High, Some((0.3, 4.0)))),
+            None,
+        ),
+        "hot-110" => ("clean", Some(hot(110.0)), None),
+        "hot-120" => ("clean", Some(hot(120.0)), None),
+        "hot-120-turning" => ("clean", Some(hot(120.0)), Some(121.0)),
+        _ => panic!("no frame-buffer bench case {name}"),
+    }
+}
+
+/// Resolves the frame buffer of `file` with the memory section `section`.
+fn memory_params(file: &str, section: MemoryBend) -> memory::Params {
+    let (camera, mut preset) = load(file);
+    preset.bend.memory = Some(section);
+    let timing = Timing::derive(&camera, &preset, WIDTH, HEIGHT)
+        .unwrap_or_else(|error| panic!("cannot derive the timing: {error}"));
+    memory::Params::resolve(&camera, &preset, &timing)
+        .unwrap_or_else(|e| unresolved("memory", &e))
+        .unwrap_or_else(|| panic!("the case sets a memory section"))
+}
+
+#[divan::bench(args = MEMORY_CASES, sample_count = 20, sample_size = 1)]
+fn memory_bend(bencher: Bencher, case: &str) {
+    let (file, section, turned_c) = memory_case(case);
+    let mut chain = Chain::new(file);
+    let mut turned = None;
+    if let Some(section) = section {
+        // The first frame allocates the store and computes the cells' masks.
+        let params = memory_params(file, section.clone());
+        let mut primed = chain.raw.clone();
+        memory::bend(Some(&params), &mut chain.memory_state, 0, &mut primed);
+        turned = turned_c.map(|temperature_c| {
+            memory_params(
+                file,
+                MemoryBend {
+                    temperature_c: Some(temperature_c),
+                    ..section
+                },
+            )
+        });
+        chain.memory = Some(params);
+    }
     let Chain {
         memory,
         memory_state,
         raw,
         ..
     } = &mut chain;
-    bencher
-        .with_inputs(|| raw.clone())
-        .bench_local_refs(|raw| memory::bend(memory.as_ref(), memory_state, 0, raw));
+    let mut flip = false;
+    bencher.with_inputs(|| raw.clone()).bench_local_refs(|raw| {
+        flip = !flip;
+        let params = turned.as_ref().filter(|_| flip).or(memory.as_ref());
+        memory::bend(params, memory_state, 0, raw);
+    });
 }
 
 #[divan::bench(args = PRESETS, sample_count = 20)]
