@@ -1,4 +1,4 @@
-//! The frame-buffer SDRAM: the raw frame stored and read back through its address pins.
+//! The frame-buffer SDRAM: the raw frame stored and read back through its pins and cells.
 //!
 //! # Place in the chain
 //!
@@ -57,6 +57,49 @@
 //! green: a magenta or green cast. The movie raw holds a quarter of the rows, so a row
 //! bit above its span (`a9` to `a11` on the A520) leaves a movie frame alone.
 //!
+//! # Data pins
+//!
+//! A word holds the clamped sample as the integer the DMA wrote: the processor's
+//! `dsp_bits`-bit code, the sample `v` with its row's black level `b` added back and
+//! rounded,
+//!
+//! > `W = round(v + b)`, held within `0..2^dsp_bits`,
+//!
+//! in the word's low bits. Data pin `d_n` carries bit `n` of every word. The pins at
+//! or above `dsp_bits` (`d10` to `d15` of the A520's 16) carry no sample bit: the DMA
+//! drives them low and the processor ignores them (the packed layout that would fill
+//! them is not modelled), so a fault on one is accepted and
+//! changes nothing, and a bridge to one leaves its partner as it is (the OR with a bit
+//! that is never set). A fault on pin `n` acts on the word's bits:
+//!
+//! - `low` clears bit `n`, `W & !2^n`;
+//! - `high` sets it, `W | 2^n`;
+//! - `bridge` with pin `m`: both read the OR of the two bits, so where either is set
+//!   both are.
+//!
+//! Each pin carries one fault, so the faults act on disjoint bits and commute.
+//!
+//! A fault acts at the write: the stored word takes the faulted bits, `W' = f(W)`, and
+//! the `f32` word holds `W' - b`, the faulted code less the writing row's black. It
+//! acts again at the read, through the contact as it then is: the read reconstructs
+//! the word as `W = round(v + b_r)` with the reading row's black `b_r`, the faults turn
+//! it into `W''`, and the value read is `v + W'' - W`. The read thus changes a word by
+//! the weights of the bits it changes and the word keeps the black of the row that
+//! wrote it; the reconstruction is exact while the two rows' blacks agree within half
+//! a code, as they do along a frame. A word whose bits a fault leaves alone keeps its
+//! value bit for bit. The black clamp has run before the store, so a stuck bit shifts
+//! the black with the signal: `d9` high puts every sample's code in the top half, at
+//! 512 and above; `d9` low folds the highlights down by 512 codes; `d5` high lifts the
+//! A520's black of 31 codes by 32.
+//!
+//! A solid fault reads stuck whatever was stored, decayed cells included: the word
+//! crosses the pins after its cells are sensed. A marginal data contact is sampled as
+//! an address contact is, once at each readout line's write burst and once at its
+//! read burst ([Marginal contacts](#marginal-contacts)). It leaves a corrupted bit in
+//! the word where it was faulted at the write, until the next write of the word, so a
+//! clean read of a stale word, one that a marginal address contact or a brownout
+//! reads back from an earlier frame, shows the bit of the write that left it there.
+//!
 //! # Marginal contacts
 //!
 //! A fault with `on_frac` and `switch_hz` is a marginal contact: a random telegraph
@@ -70,25 +113,28 @@
 //!
 //! the transition probabilities of that two-state process, so one uniform draw per
 //! line samples it exactly at any switching rate. The draws come from a [`Pcg32`]
-//! seeded from the stage seed and the pin, with the frame index as the stream id. A
-//! contact that appears powers up faulted with probability `π`. `on_frac = 1` is the
-//! solid fault; `switch_hz = 0` freezes the contact in its first state. The process
-//! persists across frames in [`State`].
+//! seeded from the stage seed and the pin, with the frame index as the stream id; a
+//! data pin's seed takes a salt of its own, so contacts on `d3` and on `a3` draw
+//! different streams. A contact that appears powers up faulted with probability `π`.
+//! `on_frac = 1` is the solid fault; `switch_hz = 0` freezes the contact in its first
+//! state. The process persists across frames in [`State`].
 //!
 //! # When the frame is written and read
 //!
 //! Readout line `l` (its image row follows from the readout direction) is written at
-//! `t0 + l * line_period_s` through the faults as they are then, and read back at
-//! `t0 + frame_period_s + l * line_period_s`, in readout order, through the faults as
-//! they are then; the read replaces the raw. The next frame's writes start a frame
-//! period after this frame's, so this frame's read instants are the next frame's write
-//! instants: a contact's read samples are the next frame's write samples. Writes go in readout
-//! order, line by line and column by column, so of two sites that share a word the
-//! later-written one wins. Where a contact differs between a line's write and its
-//! read, the read finds what the write did not put there: an earlier frame's sample
-//! (the stale frames and torn bands of the Fujifilm S9000's documented frame-buffer
-//! corruption, `docs/research/circuit-bend-reference.md`), another row of this frame,
-//! or the power-on content.
+//! `t0 + l * line_period_s` through the address and data faults as they are then, and
+//! read back at `t0 + frame_period_s + l * line_period_s`, in readout order, through
+//! the cells and the faults as they are then; the read replaces the raw. Every
+//! contact, address or data, is sampled at those two instants of each line. The next
+//! frame's writes start a frame period after this frame's, so this frame's read
+//! instants are the next frame's write instants: a contact's read samples are the next
+//! frame's write samples. Writes go in readout order, line by line and column by
+//! column, so of two sites that share a word the later-written one wins. Where a
+//! contact differs between a line's write and its read, the read finds what the write
+//! did not put there: an earlier frame's sample (the stale frames and torn bands of
+//! the Fujifilm S9000's documented frame-buffer corruption,
+//! `docs/research/circuit-bend-reference.md`), another row of this frame, or the
+//! power-on content.
 //!
 //! In the camera the next frame's writes interleave with this frame's reads; here they
 //! follow them, so a read never sees the next frame's samples.
@@ -99,6 +145,61 @@
 //! the last frame that reached them, or the power-on content), and the read-back shows
 //! that where the black clamp left zero rows. Without `[bend.memory]` the stage does
 //! not run and those rows stay black.
+//!
+//! # Retention
+//!
+//! A DRAM cell holds its bit as charge that leaks away, and the controller refreshes
+//! every row every `refresh_ms`, `t_ref`. The cell of bit `i` of the word at linear
+//! address `a` keeps its charge for
+//!
+//! > `τ = retention_s * 2^(-(T - T_0) / retention_halving_c) * e^(retention_spread * N)`,
+//!
+//! `T` the SDRAM's `temperature_c`, `T_0` the camera's `reference_temp_c`, and `N` a
+//! unit normal hashed from `a`, `i` and the camera's `unit_seed`: the chip's own map
+//! of weak cells, the same in every frame and every preset. A cell with `τ < t_ref`
+//! loses its bit before the refresh comes, and the refresh latches what it finds, so
+//! at every read the cell reads its leakage state, whatever and whenever the write
+//! was; a cell with `τ ≥ t_ref` is refreshed in time, every time, and never decays.
+//! True cells, those of an even SDRAM row (the row of a word is its linear address's
+//! row bits, so the parity is linear bit `r_0` of row bit 0 at the geometry), fall to
+//! 0; anti cells, of an odd row, rise to 1 (PROVISIONAL: the folded bit-line layout
+//! alternates them). The decayed cells of a word all fall or all rise, so a hot board
+//! shows dark single sites in some SDRAM rows and bright ones in the next, each by the
+//! weight of its bit.
+//!
+//! With `τ_m = retention_s * 2^(-(T - T_0) / retention_halving_c)` the median at `T`,
+//! a cell decays when `N < n_c = ln(t_ref / τ_m) / retention_spread`, which a fraction
+//! `p = Φ(n_c)` of the cells do (without spread, all cells or none). The normal is
+//! drawn as `N = Φ⁻¹(U)`, `U = (h + 1/2) / 2^32` from a 32-bit hash `h` of the cell,
+//! so the comparison is made on the hash: a cell decays exactly when
+//! `h < ceil(p 2^32 - 1/2)`, at the cost of one hash per cell and no inverse. The
+//! hashed tail ends at `Φ⁻¹(2^-33)`, 6.3 standard deviations. Only the cells of the
+//! sample bits are mapped: those of the pins above hold no sample bit.
+//!
+//! On the A520 (PROVISIONAL: a median of 128 s at 25 °C, a spread of 0.5) the refresh
+//! period lies 15 standard deviations below the median at the reference temperature,
+//! far beyond the hashed tail: no cell decays and the default renders the camera's
+//! bytes. Of a native still's sites, a decayed sample bit hits about 30 at 100 °C,
+//! 0.3 % at 110 °C, a fifth at 120 °C and 95 % at 130 °C; a site shows it where the
+//! stored bit differs from the leakage state.
+//!
+//! The stage keeps, per word of the store, the masks of the bits that fall and that
+//! rise at the current temperature, two 16-bit masks, four bytes a word, as many as
+//! the store's: another 15.5 MB beside the native still raw. They are computed, one
+//! hash per sample bit of every word, when the cells that decay change (a new
+//! temperature, or a wider store) and kept otherwise; while no cell can decay they are
+//! neither computed nor held. Every word the stage reads, stale words included,
+//! passes them, `(W & !fall) | rise`, before the read-side data faults act: the cells
+//! are sensed first, then the word crosses the pins.
+//!
+//! Not modelled: the age of a word beyond the refresh period (a cell decays or not by
+//! its retention against the refresh period alone, so a word read a frame after its
+//! write loses the same bits as one stale for a thousand frames, and a cell that
+//! decayed reads its stored bit again once the board cools, where the chip keeps the
+//! lost bit until the next write), the sliver between the frame period and the
+//! refresh period (a cell that could outlast the gap to the read if the read came
+//! before the refresh it misses decays all the same), and a row's refresh by its own
+//! reads.
 //!
 //! # Memory content
 //!
@@ -113,9 +214,10 @@
 //! less the nominal black level: a cell's power-up state belongs to the chip, not the
 //! preset (PROVISIONAL: the A520 SDRAM's power-up content is unknown).
 //!
-//! The store costs four bytes per word. At native resolution the still raw alone is
-//! 2272 by 1704 words, 15.5 MB; a fault on the top row pin `a11` widens the span to
-//! the whole 2^23-word SDRAM, 33.6 MB. A 640-wide preview needs a sixteenth of that.
+//! The store costs four bytes per word, and the cells' masks of a hot board four more.
+//! At native resolution the still raw alone is 2272 by 1704 words, 15.5 MB; a fault
+//! on the top row pin `a11` widens the span to the whole 2^23-word SDRAM, 33.6 MB. A
+//! 640-wide preview needs a sixteenth of that.
 //!
 //! # Resolution
 //!
@@ -131,10 +233,17 @@
 //! not a power of two, so a fold's row offset, and with it the Bayer row phase of the
 //! folded copy, can differ between a virtual geometry and native resolution.
 //!
+//! The data faults act on the bits of a sample and the cells on the bits of a word,
+//! so neither needs scaling: a frame at any size takes the same stuck bits and loses
+//! the same fraction of its sites to the heat. The true and anti cells follow the
+//! scaled row bit 0, so their rows span the same fraction of the frame as natively.
+//!
 //! Not modelled: the SDRAM's burst counter (every word's column address passes the
-//! pins), the auto-precharge role of `a10` in column commands, refresh, and the
-//! interleaving of the next frame's writes with this frame's reads.
+//! pins), the auto-precharge role of `a10` in column commands, the packed layout of
+//! the samples in the words, and the interleaving of the next frame's writes with this
+//! frame's reads.
 
+use std::f64::consts::SQRT_2;
 use std::fmt::{self, Debug, Formatter};
 use std::ops::Range;
 
@@ -143,24 +252,58 @@ use rayon::slice::ParallelSliceMut;
 
 use crate::isp::Raw;
 use crate::noise::{self, Pcg32};
-use crate::preset::{AddressFault, FaultKind, Mode};
+use crate::preset::{AddressFault, DataFault, FaultKind, Mode};
 use crate::readout::Direction;
 use crate::{Camera, Error, Preset, Timing};
 
 /// Salt of the stage seed, from which the contacts' streams derive.
 const SALT: u32 = noise::salt("memory");
 
-/// Salt of each marginal contact's stream, combined with its pin.
+/// Salt of each marginal address contact's stream, combined with its pin.
 const SALT_CONTACT: u32 = noise::salt("memory.contact");
+
+/// Salt of each marginal data contact's stream, combined with its pin.
+const SALT_DATA_CONTACT: u32 = noise::salt("memory.data-contact");
 
 /// Salt of the SDRAM's power-on content, hashed with the camera's `unit_seed`.
 const SALT_POWER_ON: u32 = noise::salt("memory.power-on");
 
+/// Salt of the chip's map of weak cells, hashed with the camera's `unit_seed`.
+const SALT_CELLS: u32 = noise::salt("memory.cells");
+
 /// Scale that maps 32 random bits onto `[0, 1)`.
 const UNIT_32: f64 = 1.0 / 4_294_967_296.0;
 
+/// Values a 32-bit hash takes, `2^32`: the resolution of a cell's hashed uniform.
+const HASH_VALUES: f64 = 4_294_967_296.0;
+
 /// Most faults the per-line masks hold; each fault needs its own pin, and a camera has at most 16.
 const MAX_FAULTS: usize = 32;
+
+/// Most bridges among the data faults: each joins two of at most 16 data pins.
+const MAX_BRIDGES: usize = 8;
+
+/// Words of the store and of the cells' masks filled per parallel task.
+const CHUNK_WORDS: usize = 4096;
+
+/// Coefficients of the Chebyshev fit of `erfc`, constant term first.
+///
+/// Press, Teukolsky, Vetterling and Flannery, *Numerical Recipes in C* (2nd ed., 1992),
+/// section 6.2, `erfcc`: `erfc(z) = t e^(-z² + P(t))` with `t = 1 / (1 + z / 2)`, a
+/// fractional error below 1.2e-7 for every `z ≥ 0`, so the far tail keeps its
+/// relative accuracy where the cells' decay is decided.
+const ERFC_FIT: [f64; 10] = [
+    -1.265_512_23,
+    1.000_023_68,
+    0.374_091_96,
+    0.096_784_18,
+    -0.186_288_06,
+    0.278_868_07,
+    -1.135_203_98,
+    1.488_515_87,
+    -0.822_152_23,
+    0.170_872_77,
+];
 
 /// A marginal contact: a random telegraph process in camera time.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -172,6 +315,14 @@ pub struct Contact {
 }
 
 impl Contact {
+    /// Returns the marginal contact of a fault's settings; `None` for a solid fault.
+    fn of(on_frac: Option<f64>, switch_hz: Option<f64>) -> Option<Self> {
+        match (on_frac, switch_hz) {
+            (Some(on_frac), Some(switch_hz)) if on_frac < 1.0 => Some(Self { on_frac, switch_hz }),
+            _ => None,
+        }
+    }
+
     /// Returns the probability that the contact is faulted `dt_s` after a sample in state `on`.
     ///
     /// `π + (1 - π) e^(-λ dt)` from faulted, `π (1 - e^(-λ dt))` from clear, with
@@ -191,6 +342,24 @@ impl Contact {
             pi * (1.0 - memory)
         }
     }
+}
+
+/// The bus a faulted pin belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bus {
+    /// The multiplexed address pins, `a0` upward.
+    Address,
+    /// The data pins, `d0` upward.
+    Data,
+}
+
+/// Where a fault sits: its bus, pins and kind, which a marginal contact's process follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Wiring {
+    bus: Bus,
+    pin: u8,
+    kind: FaultKind,
+    with: Option<u8>,
 }
 
 /// One faulted address pin with the linear address bits it drives at the simulated geometry.
@@ -237,19 +406,13 @@ impl Fault {
                 mask(bits[1]) | mask(with_bits[1]),
             ]),
         };
-        let contact = match (fault.on_frac, fault.switch_hz) {
-            (Some(on_frac), Some(switch_hz)) if on_frac < 1.0 => {
-                Some(Contact { on_frac, switch_hz })
-            }
-            _ => None,
-        };
         Self {
             pin: fault.pin,
             kind: fault.kind,
             with: fault.with,
             bits,
             with_bits,
-            contact,
+            contact: Contact::of(fault.on_frac, fault.switch_hz),
             action,
         }
     }
@@ -274,9 +437,82 @@ impl Fault {
         }
     }
 
-    /// Returns whether `contact` sits on this fault's wiring: the same pins and kind.
-    fn same_wiring(&self, contact: &ContactState) -> bool {
-        self.pin == contact.pin && self.kind == contact.kind && self.with == contact.with
+    /// Returns where the fault sits.
+    fn wiring(&self) -> Wiring {
+        Wiring {
+            bus: Bus::Address,
+            pin: self.pin,
+            kind: self.kind,
+            with: self.with,
+        }
+    }
+}
+
+/// One faulted data pin with the sample bits it acts on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataPin {
+    /// The faulted pin, `d0` upward.
+    pub pin: u8,
+    /// What the fault does.
+    pub kind: FaultKind,
+    /// The other pin of a bridge.
+    pub with: Option<u8>,
+    /// The word's bits the fault acts on: the pin's, and a bridge's other pin's.
+    ///
+    /// 0 where the fault is inert: a stuck pin at or above the sample's `dsp_bits`, or
+    /// a bridge with such a pin, whose OR with a bit that is never set changes nothing.
+    pub bits: u32,
+    /// The marginal contact; `None` for a solid fault.
+    pub contact: Option<Contact>,
+}
+
+impl DataPin {
+    /// Resolves one preset data fault on a word whose low `sample_bits` hold the sample.
+    fn new(fault: &DataFault, sample_bits: u32) -> Self {
+        let bit = |pin: u8| {
+            let pin = u32::from(pin);
+            if pin < sample_bits { 1u32 << pin } else { 0 }
+        };
+        let bits = match (fault.kind, fault.with) {
+            (FaultKind::Bridge, Some(with)) if bit(fault.pin) != 0 && bit(with) != 0 => {
+                bit(fault.pin) | bit(with)
+            }
+            (FaultKind::Bridge, _) => 0,
+            (FaultKind::Low | FaultKind::High, _) => bit(fault.pin),
+        };
+        Self {
+            pin: fault.pin,
+            kind: fault.kind,
+            with: fault.with,
+            bits,
+            contact: Contact::of(fault.on_frac, fault.switch_hz),
+        }
+    }
+
+    /// Returns whether the fault changes no word: its pins carry no sample bit.
+    #[must_use]
+    pub fn is_inert(&self) -> bool {
+        self.bits == 0
+    }
+
+    /// Returns the word that crosses the pins for `word` while the fault acts.
+    #[must_use]
+    pub fn apply(&self, word: u32) -> u32 {
+        match self.kind {
+            FaultKind::Low => word & !self.bits,
+            FaultKind::Bridge if word & self.bits == 0 => word,
+            FaultKind::High | FaultKind::Bridge => word | self.bits,
+        }
+    }
+
+    /// Returns where the fault sits.
+    fn wiring(&self) -> Wiring {
+        Wiring {
+            bus: Bus::Data,
+            pin: self.pin,
+            kind: self.kind,
+            with: self.with,
+        }
     }
 }
 
@@ -296,17 +532,25 @@ impl BitLayout {
     /// Returns the column and row bit pin `pin` carries, scaled to the geometry.
     fn pin_bits(&self, pin: u8) -> [Option<u32>; 2] {
         let pin = u32::from(pin);
-        // Bit 0 stays bit 0 and every other bit stays at least bit 1, so a fold keeps
-        // the Bayer column phase it has natively.
-        let scaled = |native: u32, shift: i32| {
-            let floor = native.min(1);
-            (i64::from(native) + i64::from(shift)).clamp(i64::from(floor), 62) as u32
-        };
         [
             (pin < self.column_bits).then(|| scaled(pin, self.column_shift)),
-            (pin < self.row_bits).then(|| scaled(self.row_base + pin, self.row_shift)),
+            (pin < self.row_bits).then(|| self.row_bit(pin)),
         ]
     }
+
+    /// Returns the linear bit of row bit `bit`, scaled to the geometry.
+    fn row_bit(&self, bit: u32) -> u32 {
+        scaled(self.row_base + bit, self.row_shift)
+    }
+}
+
+/// Returns linear bit `native` moved by `shift` octaves.
+///
+/// Bit 0 stays bit 0 and every other bit stays at least bit 1, so a fold keeps the
+/// Bayer column phase it has natively.
+fn scaled(native: u32, shift: i32) -> u32 {
+    let floor = native.min(1);
+    (i64::from(native) + i64::from(shift)).clamp(i64::from(floor), 62) as u32
 }
 
 /// Returns `round(log2(ratio))`.
@@ -340,13 +584,131 @@ impl PowerOn {
     }
 }
 
-/// The resolved address faults and the frame buffer's layout, present with `[bend.memory]`.
+/// The bits of one word whose cells lose their charge before the refresh comes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Decay {
+    /// Bits held by true cells that decay: they read 0 whatever was written.
+    pub fall: u16,
+    /// Bits held by anti cells that decay: they read 1 whatever was written.
+    pub rise: u16,
+}
+
+impl Decay {
+    /// Returns `word` as its cells hold it at the read.
+    #[must_use]
+    pub fn apply(self, word: u32) -> u32 {
+        (word & !u32::from(self.fall)) | u32::from(self.rise)
+    }
+
+    /// Returns whether no cell of the word decays.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.fall == 0 && self.rise == 0
+    }
+}
+
+/// The SDRAM's heat and the cells that lose their bit before the refresh.
+///
+/// See the [module documentation](self#retention) for the model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Retention {
+    /// Temperature of the SDRAM in degrees Celsius.
+    pub temperature_c: f64,
+    /// Median retention of a cell at that temperature, in seconds.
+    pub median_s: f64,
+    /// Period in which the controller refreshes every row, in seconds.
+    pub refresh_s: f64,
+    /// Fraction of the cells whose retention falls short of the refresh period.
+    pub decay_frac: f64,
+    /// Seed of the chip's map of weak cells, from the camera's `unit_seed`.
+    pub seed: u64,
+    /// Bits of a word that hold the sample, from bit 0: the processor's `dsp_bits`.
+    pub sample_bits: u32,
+    /// Linear address bit of the SDRAM's row bit 0 at the geometry: odd rows hold anti cells.
+    pub row_bit: u32,
+    /// Hashes below which a cell decays, `ceil(decay_frac 2^32 - 1/2)` within `[0, 2^32]`.
+    threshold: u64,
+}
+
+impl Retention {
+    /// Returns whether no cell of the chip decays at this temperature.
+    #[must_use]
+    pub fn is_inert(&self) -> bool {
+        self.threshold == 0
+    }
+
+    /// Returns whether the cell of bit `bit` of the word at `address` decays.
+    ///
+    /// The cell's hash `h` stands for the normal `N = Φ⁻¹((h + 1/2) / 2^32)`, and the
+    /// cell decays when its retention falls short of the refresh period.
+    #[must_use]
+    pub fn decays(&self, address: u64, bit: u32) -> bool {
+        let hash = noise::hash_u32(
+            address as u32,
+            (address >> 32) as u32,
+            SALT_CELLS ^ bit,
+            self.seed,
+        );
+        u64::from(hash) < self.threshold
+    }
+
+    /// Returns the bits of the word at `address` whose cells decay, by the parity of its SDRAM row.
+    #[must_use]
+    pub fn decay(&self, address: u64) -> Decay {
+        if self.is_inert() {
+            return Decay::default();
+        }
+        let bits = (0..self.sample_bits)
+            .filter(|&bit| self.decays(address, bit))
+            .fold(0u16, |bits, bit| bits | 1 << bit);
+        if address >> self.row_bit & 1 == 0 {
+            Decay {
+                fall: bits,
+                rise: 0,
+            }
+        } else {
+            Decay {
+                fall: 0,
+                rise: bits,
+            }
+        }
+    }
+
+    /// Returns what decides the chip's decayed cells, apart from the addresses.
+    fn map(&self) -> CellMap {
+        CellMap {
+            seed: self.seed,
+            threshold: self.threshold,
+            sample_bits: self.sample_bits,
+            row_bit: self.row_bit,
+        }
+    }
+}
+
+/// Returns the standard normal distribution function `Φ(x)`, through [`ERFC_FIT`].
+fn normal_cdf(x: f64) -> f64 {
+    let z = x.abs() / SQRT_2;
+    let t = 1.0 / (1.0 + 0.5 * z);
+    let fit = ERFC_FIT
+        .iter()
+        .rev()
+        .fold(0.0_f64, |sum, &c| sum.mul_add(t, c));
+    // Half of erfc(|x| / sqrt 2): the tail beyond |x|.
+    let tail = 0.5 * t * (fit - z * z).exp();
+    if x < 0.0 { tail } else { 1.0 - tail }
+}
+
+/// The resolved faults, heat and buffer layout, present with `[bend.memory]`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Params {
     /// Bits of the SDRAM's linear word address: column, row and bank bits together.
     pub address_bits: u32,
     /// Bendable address pins, `a0` to `a(pins - 1)`: `max(column_bits, row_bits)`.
     pub pins: u32,
+    /// Data pins of the SDRAM, `d0` to `d(data_pins - 1)`.
+    pub data_pins: u32,
+    /// Bits of the processor's sample, held in the low bits of a word: its `dsp_bits`.
+    pub sample_bits: u32,
     /// Word address of the raw buffer's first sample at this geometry.
     pub raw_base: u64,
     /// Words from one raw row to the next: the active columns.
@@ -359,8 +721,12 @@ pub struct Params {
     pub line_period_s: f64,
     /// Time from a line's write to its read, one frame period, in seconds.
     pub frame_period_s: f64,
-    /// The faulted pins in the preset's order, with their bits at this geometry.
+    /// The faulted address pins in the preset's order, with their bits at this geometry.
     pub faults: Vec<Fault>,
+    /// The faulted data pins in the preset's order, with the sample bits they act on.
+    pub data_faults: Vec<DataPin>,
+    /// The SDRAM's temperature and the cells that lose their bit at it.
+    pub retention: Retention,
     /// The word addresses the frame can reach: the raw buffer and every faulted address.
     pub span: Range<u64>,
     /// Seed of the contacts' streams.
@@ -370,16 +736,19 @@ pub struct Params {
 }
 
 impl Params {
-    /// Resolves the faults against the camera's `[memory]` section; `None` without `[bend.memory]`.
+    /// Resolves the section against the camera's `[memory]`; `None` without `[bend.memory]`.
     ///
-    /// The bits each pin drives are scaled from the native readout to the geometry of
-    /// `timing` as the [module documentation](self) describes.
+    /// The bits each address pin drives are scaled from the native readout to the
+    /// geometry of `timing` as the [module documentation](self) describes; the data
+    /// pins and the cells need no scaling. Without `temperature_c` the SDRAM runs at
+    /// the camera's `reference_temp_c`.
     ///
     /// # Errors
     ///
-    /// Returns a configuration error if a fault is invalid on its own, names a pin
-    /// beyond `a(max(column_bits, row_bits) - 1)` (the bank pins are not bendable), or
-    /// if the native raw buffer does not fit in the SDRAM above `raw_base`.
+    /// Returns a configuration error if a fault is invalid on its own, names an address
+    /// pin beyond `a(max(column_bits, row_bits) - 1)` (the bank pins are not bendable)
+    /// or a data pin beyond `d(data_pins - 1)`, or if the native raw buffer does not
+    /// fit in the SDRAM above `raw_base`.
     pub fn resolve(
         camera: &Camera,
         preset: &Preset,
@@ -409,6 +778,8 @@ impl Params {
             "{} faults on {pins} pins passed validation",
             bend.faults.len()
         );
+        let dsp_bits = u32::from(camera.adc.dsp_bits.min(16));
+        let data_faults = data_faults(&bend.data_faults, camera, dsp_bits)?;
 
         let line_skip = match timing.mode {
             Mode::Still => 1,
@@ -456,10 +827,14 @@ impl Params {
         };
         let span = (raw_base & !below)..((end - 1) | below) + 1;
 
-        let dsp_bits = u32::from(camera.adc.dsp_bits.min(16));
+        let temperature_c = bend.temperature_c.unwrap_or(memory.reference_temp_c);
+        let retention = retention(camera, temperature_c, dsp_bits, layout.row_bit(0));
+
         Ok(Some(Self {
             address_bits,
             pins,
+            data_pins: u32::from(memory.data_pins),
+            sample_bits: dsp_bits,
             raw_base,
             pitch: cols,
             rows,
@@ -467,6 +842,8 @@ impl Params {
             line_period_s: timing.line_period_s,
             frame_period_s: timing.frame_period_s,
             faults,
+            data_faults,
+            retention,
             span,
             seed: noise::stage_seed(preset.seed, SALT),
             power_on: PowerOn {
@@ -500,9 +877,102 @@ impl Params {
         Decoder::new(&self.faults, active).decode(address)
     }
 
-    /// Returns the seed of the stream of the contact on `pin`.
-    fn contact_seed(&self, pin: u8) -> u64 {
-        noise::stage_seed(self.seed, SALT_CONTACT ^ u32::from(pin))
+    /// Returns `word` as it crosses the data pins while the data faults in `active` act.
+    ///
+    /// Bit `i` of `active` stands for `data_faults[i]`.
+    #[must_use]
+    pub fn cross(&self, word: u32, active: u32) -> u32 {
+        Pins::new(&self.data_faults, active).apply(word)
+    }
+
+    /// Returns every marginal contact, address and data, with where it sits.
+    fn marginal(&self) -> impl Iterator<Item = (Wiring, Contact)> + '_ {
+        let address = self
+            .faults
+            .iter()
+            .filter_map(|fault| fault.contact.map(|contact| (fault.wiring(), contact)));
+        let data = self
+            .data_faults
+            .iter()
+            .filter_map(|fault| fault.contact.map(|contact| (fault.wiring(), contact)));
+        address.chain(data)
+    }
+
+    /// Returns the seed of the stream of the contact at `wiring`.
+    fn contact_seed(&self, wiring: Wiring) -> u64 {
+        let salt = match wiring.bus {
+            Bus::Address => SALT_CONTACT,
+            Bus::Data => SALT_DATA_CONTACT,
+        };
+        noise::stage_seed(self.seed, salt ^ u32::from(wiring.pin))
+    }
+
+    /// Returns whether a data fault changes any word.
+    fn bends_data(&self) -> bool {
+        self.data_faults.iter().any(|fault| !fault.is_inert())
+    }
+}
+
+/// Resolves the data faults on a word whose low `sample_bits` hold the sample.
+///
+/// # Errors
+///
+/// Returns a configuration error naming the first fault whose pin or bridge partner
+/// lies beyond the camera's data pins.
+fn data_faults(
+    faults: &[DataFault],
+    camera: &Camera,
+    sample_bits: u32,
+) -> Result<Vec<DataPin>, Error> {
+    let data_pins = u32::from(camera.memory.data_pins);
+    for (index, fault) in faults.iter().enumerate() {
+        for (key, pin) in [("pin", Some(fault.pin)), ("with", fault.with)] {
+            if let Some(pin) = pin.filter(|&pin| u32::from(pin) >= data_pins) {
+                return Err(Error::config(format!(
+                    "bend.memory.data_faults[{index}].{key} names pin d{pin}, but the camera's \
+                     SDRAM has the data pins d0 to d{}",
+                    data_pins - 1
+                )));
+            }
+        }
+    }
+    debug_assert!(
+        faults.len() <= MAX_FAULTS,
+        "{} data faults on {data_pins} pins passed validation",
+        faults.len()
+    );
+    Ok(faults
+        .iter()
+        .map(|fault| DataPin::new(fault, sample_bits))
+        .collect())
+}
+
+/// Resolves the cells' retention at `temperature_c` on the camera's SDRAM.
+fn retention(camera: &Camera, temperature_c: f64, sample_bits: u32, row_bit: u32) -> Retention {
+    let memory = &camera.memory;
+    let refresh_s = memory.refresh_ms / 1000.0;
+    let median_s = memory.retention_s
+        * (-(temperature_c - memory.reference_temp_c) / memory.retention_halving_c).exp2();
+    let decay_frac = if memory.retention_spread > 0.0 {
+        normal_cdf((refresh_s / median_s).ln() / memory.retention_spread)
+    } else if median_s < refresh_s {
+        1.0
+    } else {
+        0.0
+    };
+    // (h + 1/2) / 2^32 < p for the hashes h below ceil(p 2^32 - 1/2).
+    let threshold = (decay_frac * HASH_VALUES - 0.5)
+        .ceil()
+        .clamp(0.0, HASH_VALUES) as u64;
+    Retention {
+        temperature_c,
+        median_s,
+        refresh_s,
+        decay_frac,
+        seed: noise::stage_seed(camera.sensor.unit_seed, SALT_CELLS),
+        sample_bits,
+        row_bit,
+        threshold,
     }
 }
 
@@ -575,6 +1045,92 @@ impl Decoder {
     }
 }
 
+/// The data faults acting on one burst, composed: on disjoint pins they commute.
+#[derive(Debug, Clone, Copy)]
+struct Pins {
+    /// Bits no stuck-low pin clears.
+    keep: u32,
+    /// Bits a stuck-high pin sets.
+    set: u32,
+    /// The bridges' pairs of bits.
+    bridges: [u32; MAX_BRIDGES],
+    len: usize,
+}
+
+impl Pins {
+    /// Composes the data faults whose bit is set in `active`, leaving out the inert ones.
+    fn new(faults: &[DataPin], active: u32) -> Self {
+        let mut pins = Self {
+            keep: u32::MAX,
+            set: 0,
+            bridges: [0; MAX_BRIDGES],
+            len: 0,
+        };
+        for (i, fault) in faults.iter().enumerate() {
+            if active >> i & 1 == 0 || fault.is_inert() {
+                continue;
+            }
+            match fault.kind {
+                FaultKind::Low => pins.keep &= !fault.bits,
+                FaultKind::High => pins.set |= fault.bits,
+                FaultKind::Bridge => {
+                    pins.bridges[pins.len] = fault.bits;
+                    pins.len += 1;
+                }
+            }
+        }
+        pins
+    }
+
+    /// Returns whether no fault changes a word.
+    fn is_identity(&self) -> bool {
+        self.keep == u32::MAX && self.set == 0 && self.len == 0
+    }
+
+    /// Returns the word that crosses the pins for `word`.
+    fn apply(&self, word: u32) -> u32 {
+        let word = (word & self.keep) | self.set;
+        self.bridges[..self.len]
+            .iter()
+            .fold(word, |w, &bits| if w & bits == 0 { w } else { w | bits })
+    }
+}
+
+/// Returns the word the DMA writes for `value` of a row whose black level is `black`.
+///
+/// `round(v + b)` held within `0..=max_code`. The sum widened to `f64` takes the half
+/// exactly, and the conversion truncates and saturates below 0, so this rounds as
+/// `f32::round` does on the codes without its library call.
+fn code(value: f32, black: f32, max_code: u32) -> u32 {
+    ((f64::from(value + black) + 0.5) as u32).min(max_code)
+}
+
+/// Returns the value stored for `value` of a row with black `black`, written through `pins`.
+///
+/// The faulted code less the row's black; the value itself where no bit changes.
+fn write_word(value: f32, black: f32, pins: &Pins, max_code: u32) -> f32 {
+    let word = code(value, black, max_code);
+    let written = pins.apply(word);
+    if written == word {
+        value
+    } else {
+        written as f32 - black
+    }
+}
+
+/// Returns the stored `value` as a row with black `black` reads it, through its cells and `pins`.
+///
+/// The value changes by the weights of the bits that change.
+fn read_word(value: f32, black: f32, decay: Decay, pins: &Pins, max_code: u32) -> f32 {
+    let word = code(value, black, max_code);
+    let read = pins.apply(decay.apply(word));
+    if read == word {
+        value
+    } else {
+        value + (read as f32 - word as f32)
+    }
+}
+
 /// The SDRAM's words over the addresses the frames have reached.
 #[derive(Clone, Default, PartialEq)]
 struct Sdram {
@@ -604,10 +1160,10 @@ impl Sdram {
         let mut words = vec![0.0; len];
         let start = new.start;
         words
-            .par_chunks_mut(4096)
+            .par_chunks_mut(CHUNK_WORDS)
             .enumerate()
             .for_each(|(chunk, slots)| {
-                let first = start + (chunk * 4096) as u64;
+                let first = start + (chunk * CHUNK_WORDS) as u64;
                 for (offset, slot) in (0u64..).zip(slots.iter_mut()) {
                     *slot = power_on.word(first + offset);
                 }
@@ -626,12 +1182,63 @@ impl Sdram {
     }
 }
 
+/// What decides which cells of the chip decay, apart from their addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CellMap {
+    seed: u64,
+    threshold: u64,
+    sample_bits: u32,
+    row_bit: u32,
+}
+
+/// The decayed cells of the store's words at the SDRAM's temperature.
+#[derive(Clone, Default, PartialEq)]
+struct Cells {
+    /// The map and the store's span the masks were computed for; `None` before the first frame.
+    key: Option<(CellMap, Range<u64>)>,
+    /// Each word's decayed bits, `masks[i]` for the store's `words[i]`; empty while no cell decays.
+    masks: Vec<Decay>,
+}
+
+impl Cells {
+    /// Computes the masks over `span` unless they hold for `retention` and `span` already.
+    fn update(&mut self, retention: &Retention, span: Range<u64>) {
+        let key = (retention.map(), span);
+        if self.key.as_ref() == Some(&key) {
+            return;
+        }
+        if retention.is_inert() {
+            self.masks = Vec::new();
+        } else {
+            let span = &key.1;
+            let len =
+                usize::try_from(span.end - span.start).expect("the SDRAM span fits in memory");
+            self.masks.clear();
+            self.masks.resize(len, Decay::default());
+            let start = span.start;
+            self.masks
+                .par_chunks_mut(CHUNK_WORDS)
+                .enumerate()
+                .for_each(|(chunk, slots)| {
+                    let first = start + (chunk * CHUNK_WORDS) as u64;
+                    for (offset, slot) in (0u64..).zip(slots.iter_mut()) {
+                        *slot = retention.decay(first + offset);
+                    }
+                });
+        }
+        self.key = Some(key);
+    }
+
+    /// Returns the masks, `None` while no cell decays.
+    fn masks(&self) -> Option<&[Decay]> {
+        (!self.masks.is_empty()).then_some(self.masks.as_slice())
+    }
+}
+
 /// One marginal contact's process, sampled at every readout line.
 #[derive(Debug, Clone, PartialEq)]
 struct ContactState {
-    pin: u8,
-    kind: FaultKind,
-    with: Option<u8>,
+    wiring: Wiring,
     /// Whether the contact was faulted at each readout line's write of the last frame.
     write: Vec<bool>,
     /// Whether it was faulted at each line's read, the next frame's write.
@@ -640,23 +1247,33 @@ struct ContactState {
 
 /// The SDRAM's memory from frame to frame; the default is the power-on state.
 ///
-/// Holds the content of every word the frames have reached and the marginal contacts'
-/// states. A store is allocated with the first frame and widened when a new fault
-/// reaches further, never in the steady state.
+/// Holds the content of every word the frames have reached, the masks of the cells
+/// that decay at the SDRAM's temperature and the marginal contacts' states, address
+/// and data. A store is allocated with the first frame and widened when a new fault
+/// reaches further, the masks with the first frame at a temperature where cells
+/// decay, never in the steady state.
 #[derive(Clone, Default, PartialEq)]
 pub struct State {
     sdram: Sdram,
+    cells: Cells,
     contacts: Vec<ContactState>,
-    /// The faults acting at each readout line's write, bit `i` for fault `i`.
+    /// The address faults acting at each readout line's write, bit `i` for fault `i`.
     write_active: Vec<u32>,
-    /// The faults acting at each readout line's read.
+    /// The address faults acting at each readout line's read.
     read_active: Vec<u32>,
+    /// The data faults acting at each readout line's write, bit `i` for data fault `i`.
+    data_write_active: Vec<u32>,
+    /// The data faults acting at each readout line's read.
+    data_read_active: Vec<u32>,
+    /// The frame's black level of each image row, which the words' codes add back.
+    black: Vec<f32>,
 }
 
 impl Debug for State {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("State")
             .field("span", &self.sdram.span())
+            .field("decay_masks", &self.cells.masks.len())
             .field("contacts", &self.contacts.len())
             .finish_non_exhaustive()
     }
@@ -680,15 +1297,46 @@ impl State {
         self.sdram.span()
     }
 
-    /// Returns whether the contact on `pin` was faulted at each line's write and read of the last frame, for tests.
+    /// Returns the decayed cells the stage holds for the word at `address`, for tests.
     ///
-    /// Indexed by readout line; `None` if no marginal contact sits on `pin`.
+    /// `None` outside the store; the masks are those of the temperature of the last
+    /// frame, empty where no cell decays.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn decay(&self, address: u64) -> Option<Decay> {
+        self.sdram.span().contains(&address).then(|| {
+            self.cells
+                .masks()
+                .map_or(Decay::default(), |masks| masks[self.sdram.slot(address)])
+        })
+    }
+
+    /// Returns the samples of the address contact on `pin` in the last frame, for tests.
+    ///
+    /// Whether the contact was faulted at each line's write and at its read, indexed by
+    /// readout line; `None` if no marginal contact sits on address pin `pin`.
     #[cfg(feature = "test-util")]
     #[must_use]
     pub fn contact_lines(&self, pin: u8) -> Option<(&[bool], &[bool])> {
+        self.lines(Bus::Address, pin)
+    }
+
+    /// Returns the samples of the data contact on `pin` in the last frame, for tests.
+    ///
+    /// Whether the contact was faulted at each line's write and at its read, indexed by
+    /// readout line; `None` if no marginal contact sits on data pin `pin`.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn data_contact_lines(&self, pin: u8) -> Option<(&[bool], &[bool])> {
+        self.lines(Bus::Data, pin)
+    }
+
+    /// Returns the samples of the contact on `pin` of `bus`.
+    #[cfg(feature = "test-util")]
+    fn lines(&self, bus: Bus, pin: u8) -> Option<(&[bool], &[bool])> {
         self.contacts
             .iter()
-            .find(|contact| contact.pin == pin)
+            .find(|contact| contact.wiring.bus == bus && contact.wiring.pin == pin)
             .map(|contact| (contact.write.as_slice(), contact.read.as_slice()))
     }
 
@@ -701,20 +1349,16 @@ impl State {
         self.contacts.retain(|contact| {
             contact.read.len() == rows
                 && params
-                    .faults
-                    .iter()
-                    .any(|fault| fault.contact.is_some() && fault.same_wiring(contact))
+                    .marginal()
+                    .any(|(wiring, _)| wiring == contact.wiring)
         });
         let gap_s = params.frame_period_s - params.line_period_s * f64::from(params.rows - 1);
-        for fault in &params.faults {
-            let Some(contact) = fault.contact else {
-                continue;
-            };
-            let mut rng = Pcg32::new(params.contact_seed(fault.pin), index);
+        for (wiring, contact) in params.marginal() {
+            let mut rng = Pcg32::new(params.contact_seed(wiring), index);
             let at = if let Some(at) = self
                 .contacts
                 .iter()
-                .position(|state| fault.same_wiring(state))
+                .position(|state| state.wiring == wiring)
             {
                 let state = &mut self.contacts[at];
                 std::mem::swap(&mut state.write, &mut state.read);
@@ -728,9 +1372,7 @@ impl State {
                     write.push(on);
                 }
                 self.contacts.push(ContactState {
-                    pin: fault.pin,
-                    kind: fault.kind,
-                    with: fault.with,
+                    wiring,
                     write,
                     read: vec![false; rows],
                 });
@@ -749,25 +1391,57 @@ impl State {
             }
         }
 
-        self.write_active.resize(rows, 0);
-        self.read_active.resize(rows, 0);
-        self.write_active.fill(0);
-        self.read_active.fill(0);
-        for (i, fault) in params.faults.iter().enumerate() {
-            let bit = 1u32 << i;
-            let contact = self
-                .contacts
+        mark(
+            &self.contacts,
+            params
+                .faults
                 .iter()
-                .find(|state| fault.contact.is_some() && fault.same_wiring(state));
-            for line in 0..rows {
-                let (write, read) =
-                    contact.map_or((true, true), |state| (state.write[line], state.read[line]));
-                if write {
-                    self.write_active[line] |= bit;
-                }
-                if read {
-                    self.read_active[line] |= bit;
-                }
+                .map(|fault| (fault.wiring(), fault.contact.is_some())),
+            rows,
+            &mut self.write_active,
+            &mut self.read_active,
+        );
+        mark(
+            &self.contacts,
+            params
+                .data_faults
+                .iter()
+                .map(|fault| (fault.wiring(), fault.contact.is_some())),
+            rows,
+            &mut self.data_write_active,
+            &mut self.data_read_active,
+        );
+    }
+}
+
+/// Sets bit `i` of each of the `rows` lines' write and read masks where fault `i` acts.
+///
+/// `faults` gives each fault's wiring and whether it is a marginal contact, whose
+/// samples `contacts` holds; a solid fault acts at every line.
+fn mark(
+    contacts: &[ContactState],
+    faults: impl Iterator<Item = (Wiring, bool)>,
+    rows: usize,
+    write: &mut Vec<u32>,
+    read: &mut Vec<u32>,
+) {
+    write.clear();
+    read.clear();
+    write.resize(rows, 0);
+    read.resize(rows, 0);
+    for (i, (wiring, marginal)) in faults.enumerate() {
+        let bit = 1u32 << i;
+        let contact = marginal
+            .then(|| contacts.iter().find(|state| state.wiring == wiring))
+            .flatten();
+        for line in 0..rows {
+            let (on_write, on_read) =
+                contact.map_or((true, true), |state| (state.write[line], state.read[line]));
+            if on_write {
+                write[line] |= bit;
+            }
+            if on_read {
+                read[line] |= bit;
             }
         }
     }
@@ -781,11 +1455,13 @@ fn chance(rng: &mut Pcg32, probability: f64) -> bool {
 /// Rewrites `raw` with frame `index` as the processor reads it back from the SDRAM.
 ///
 /// Without a bend (`params` is `None`) it does nothing. With one, every image row the
-/// processor captured is stored in readout order, one row at a time, through the faults
-/// acting at its write, then the whole frame is read back a frame period later through
-/// the faults acting then; see the [module documentation](self). The rows from
+/// processor captured is stored in readout order, one row at a time, through the
+/// address and data faults acting at its write, then the whole frame is read back a
+/// frame period later through the cells at the SDRAM's temperature and the faults
+/// acting then; see the [module documentation](self). The rows from
 /// [`Raw::dropped_from`] on, in readout order, are not stored: their read finds the
-/// SDRAM's earlier content. Without faults or a brownout the raw comes back unchanged.
+/// SDRAM's earlier content. Without faults, decayed cells or a brownout the raw comes
+/// back unchanged.
 ///
 /// # Panics
 ///
@@ -804,10 +1480,19 @@ pub fn bend(params: Option<&Params>, state: &mut State, index: u64, raw: &mut Ra
         params.rows
     );
     state.sdram.cover(&params.span, &params.power_on);
+    state.cells.update(&params.retention, state.sdram.span());
     state.sample_contacts(params, index);
+    let bends_data = params.bends_data();
+    if bends_data || state.cells.masks().is_some() {
+        state.black.clear();
+        state.black.extend_from_slice(raw.black_levels());
+    }
 
     // From the first line the processor dropped on, nothing reaches the SDRAM.
     let captured = raw.dropped_from().map_or(params.rows, |y| params.line(y));
+    if bends_data {
+        fault_writes(params, state, captured, raw);
+    }
     let mut in_place = 0;
     for line in 0..captured {
         let y = params.line(line);
@@ -816,19 +1501,48 @@ pub fn bend(params: Option<&Params>, state: &mut State, index: u64, raw: &mut Ra
             in_place += 1;
         }
     }
+
     // When every row went to its own words, a row read through no fault reads itself;
     // a row that was never stored reads what its words hold.
-    let reread = in_place < params.rows;
+    let load = Load {
+        params,
+        sdram: &state.sdram,
+        masks: state.cells.masks(),
+        read_active: &state.read_active,
+        data_write_active: &state.data_write_active,
+        data_read_active: &state.data_read_active,
+        black: &state.black,
+        reread: in_place < params.rows,
+    };
+    raw.plane_mut()
+        .data_mut()
+        .par_chunks_mut(params.pitch as usize)
+        .enumerate()
+        .for_each(|(y, sites)| load_row(&load, y as u32, sites));
+}
 
-    let (sdram, read_active) = (&state.sdram, &state.read_active);
+/// Puts every captured row's samples through the data faults acting at its write, in place.
+///
+/// The raw then holds what its rows store.
+fn fault_writes(params: &Params, state: &State, captured: u32, raw: &mut Raw) {
+    let max_code = params.power_on.max_code;
     raw.plane_mut()
         .data_mut()
         .par_chunks_mut(params.pitch as usize)
         .enumerate()
         .for_each(|(y, sites)| {
-            let y = y as u32;
-            let active = read_active[params.line(y) as usize];
-            load_row(params, sdram, y, active, reread, sites);
+            let line = params.line(y as u32);
+            if line >= captured {
+                return;
+            }
+            let pins = Pins::new(&params.data_faults, state.data_write_active[line as usize]);
+            if pins.is_identity() {
+                return;
+            }
+            let black = state.black[y];
+            for site in sites {
+                *site = write_word(*site, black, &pins, max_code);
+            }
         });
 }
 
@@ -852,20 +1566,105 @@ fn store_row(params: &Params, state: &mut State, y: u32, active: u32, sites: &[f
     false
 }
 
-/// Reads image row `y` from the SDRAM through the faults in `active`.
+/// What the read of every row needs.
+struct Load<'a> {
+    params: &'a Params,
+    sdram: &'a Sdram,
+    /// The decayed cells of the store's words; `None` while no cell decays.
+    masks: Option<&'a [Decay]>,
+    read_active: &'a [u32],
+    data_write_active: &'a [u32],
+    data_read_active: &'a [u32],
+    /// Each image row's black level; filled while data faults or cells change words.
+    black: &'a [f32],
+    /// Whether a row read through no address fault is read again from its words.
+    reread: bool,
+}
+
+/// Reads image row `y` from the SDRAM through the cells and the faults acting at its read.
 ///
-/// A row read through no fault is read only if `reread`: otherwise it holds what it stored.
-fn load_row(params: &Params, sdram: &Sdram, y: u32, active: u32, reread: bool, sites: &mut [f32]) {
+/// A row read through no address fault is read only if `reread`: otherwise it holds
+/// what it stored, and passes the cells and the data pins in place.
+fn load_row(load: &Load<'_>, y: u32, sites: &mut [f32]) {
+    let (params, sdram) = (load.params, load.sdram);
+    let line = params.line(y) as usize;
     let first = params.address(0, y);
-    let decoder = Decoder::new(&params.faults, active);
+    let decoder = Decoder::new(&params.faults, load.read_active[line]);
+    // A row that holds what it stored crossed the same pins at its write, and a stuck
+    // or bridged pin changes nothing the second time unless a decayed cell came between.
+    let active = load.data_read_active[line];
+    let repeated = decoder.is_identity()
+        && !load.reread
+        && load.masks.is_none()
+        && active == load.data_write_active[line];
+    let pins = Pins::new(&params.data_faults, if repeated { 0 } else { active });
+    let bits = !pins.is_identity() || load.masks.is_some();
+    let black = if bits { load.black[y as usize] } else { 0.0 };
+    let max_code = params.power_on.max_code;
+    // Without data faults, a word whose cells all hold reads as it is.
+    let cells_only = pins.is_identity();
+    let read = |value: f32, decay: Decay| {
+        if cells_only && decay.is_empty() {
+            value
+        } else {
+            read_word(value, black, decay, &pins, max_code)
+        }
+    };
     if decoder.is_identity() {
-        if reread {
-            let at = sdram.slot(first);
-            sites.copy_from_slice(&sdram.words[at..at + sites.len()]);
+        let (at, len) = (sdram.slot(first), sites.len());
+        if load.reread {
+            sites.copy_from_slice(&sdram.words[at..at + len]);
+        }
+        match (bits, load.masks) {
+            (false, _) => {}
+            (true, Some(masks)) => {
+                for (site, &decay) in sites.iter_mut().zip(&masks[at..at + len]) {
+                    *site = read(*site, decay);
+                }
+            }
+            (true, None) => {
+                for site in sites {
+                    *site = read(*site, Decay::default());
+                }
+            }
         }
         return;
     }
     for (x, site) in (0u64..).zip(sites.iter_mut()) {
-        *site = sdram.words[sdram.slot(decoder.decode(first + x))];
+        let at = sdram.slot(decoder.decode(first + x));
+        let value = sdram.words[at];
+        *site = if bits {
+            read(
+                value,
+                load.masks.map_or(Decay::default(), |masks| masks[at]),
+            )
+        } else {
+            value
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normal_cdf;
+
+    #[test]
+    fn the_normal_distribution_function_keeps_its_relative_accuracy_in_the_tail() {
+        // Φ(x) from erfc to 15 digits.
+        for (x, expected) in [
+            (-15.2, 1.768_105_234_122_279e-52),
+            (-6.2, 2.823_158_037_043_268_7e-10),
+            (-4.8, 7.933_281_519_755_973e-7),
+            (-2.032, 0.021_076_827_973_313_69),
+            (-1.0, 0.158_655_253_931_457_07),
+            (0.0, 0.5),
+            (2.1, 0.982_135_579_437_183_4),
+        ] {
+            let got = normal_cdf(x);
+            assert!(
+                (got / expected - 1.0).abs() < 2e-7,
+                "Φ({x}) = {got}, expected {expected}"
+            );
+        }
     }
 }
