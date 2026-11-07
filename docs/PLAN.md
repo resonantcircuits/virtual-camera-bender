@@ -1035,3 +1035,56 @@ sample; the clean camera develops bright light in its last rows and first column
 with a few per cent of red and blue excess (found by stage 19d, not investigated).
 Stage 20a, the entropy coder cross-checked against libjpeg on 112 damaged scans, is
 merged; 20b is in progress; 20c follows, then milestone 5, the gallery.
+
+## Milestone 5: the preset gallery (direction from the user, 2026-11-07)
+
+Goal: the gallery the JavaScript version had, in the app: every shipped preset
+rendered live on the loaded image, picked by eye; the preset library completed with
+the physics presets the legacy gallery had and the chain already reaches; and an
+audit of what the remaining legacy looks still need
+(`docs/research/legacy-presets-audit.md`).
+
+### 3.13 The gallery
+
+A preset gains an optional top-level `description`, one line, kept by the app's
+writer and printed by `vcb presets`; every shipped preset gets one, the first
+sentence of its header. The app gains a gallery overlay (`G`, or a Gallery button
+beside the preset picker): a grid of every preset of `presets/` for the current
+camera, each a thumbnail of the loaded image (the chosen frame of a video) rendered
+through that preset at `GALLERY_LONG_EDGE` 300 pixels on the long edge, its name and
+description under it, a filter box that matches names, descriptions and bend
+section names, arrow keys moving the selection, Enter or a click applying the
+preset through the existing picker path and closing, Escape closing. Thumbnails are
+rendered by the render worker as low-priority jobs behind previews and full renders,
+each frame 0 of a fresh simulator at a match-input geometry of the reduced scene
+(byte for byte what `vcb render` gives at that size), so the gallery never touches
+the running camera's state; they are cached per preset file and scene generation,
+invalidated when the scene or the preset list changes, and rendered lazily when the
+overlay is open, in view order, so the grid fills in while it is shown. A thumbnail
+that fails to render shows the error in its tile.
+
+### Stage 21a: the gallery (medium, one agent)
+
+`description` in the preset schema and the CLI listing; the overlay, its jobs in the
+worker (`Job::Thumbnail`), the cache, the filter, the keys; headless tests (open and
+close, filter, thumbnails arrive in order and are cached, applying sets the preset and
+closes, previews keep priority); the guide section and the changelog.
+
+### Stage 21b: the missing physics presets (medium, one agent plus the orchestrator)
+
+Descriptions for every shipped preset, and seven new ones in the legacy gallery's
+spirit with goldens and tuning notes: `a520-cloud-solarizer` (the HPF bend from one
+MSB into the bit below), `a520-dc42-solarize` (every tapped pin on one common bus),
+`a520-ground-loop` (mains hum injected at the AFE), `a520-carrier-clash` (a square
+carrier against the pixel clock with gain modulation and phase skew),
+`a520-reset-ghost` (the CDS sampling late), `a520-a540-melt` (transfer loss and V
+stalls), `a520-a530-warp` (H register glitches).
+
+### Stage 22 (proposed, for approval): the small models the audit ranks first
+
+`[readout] jpeg` quality override; `[isp] cfa_phase`, the processor demosaicing at
+the wrong mosaic phase; `[lens] lateral_ca_frac` with a `[bend.optics]` decentring
+knob; `[sensor]` dead columns and clusters. One stage, one agent each or two in
+sequence, with presets `a520-zipper`, `a520-broken-panel`, `a520-tourist`.
+Direction decisions left open: the vertical roll, and the post stage's two
+justified candidates (generational recompression, the OSD datestamp).
