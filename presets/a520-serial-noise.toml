@@ -11,8 +11,8 @@
 # lost, and the register it was meant for keeps the last frame's content, so a fault can last
 # into the next frame.
 # A movie preset at heart: render it as a video. A still is frame 0 from power-on; with seed 17
-# it takes a flipped green pixel gain (green, the maze at 1:1). The golden test, which runs every
-# preset with seed 1, renders a clean frame: seed 1's first frame takes no flip that shows.
+# it takes a flipped green pixel gain (green, the maze at 1:1), which the golden shows; seed 1's
+# first frame takes no flip that shows and would render the clean camera's bytes.
 # Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
 seed = 17                           # also seeds the link's bit errors, frame by frame; 17's first frame shows a flipped green gain

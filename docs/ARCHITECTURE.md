@@ -531,9 +531,9 @@ last packet.
 The stage 19 bends add two streams, a hash and two pieces of state. The serial link
 draws its bit errors from a `Pcg32` seeded with its own stage seed (salt `serial`) and
 the frame index, write by write in address order, the address bits before the data
-bits, so which frames flash depends on the preset's seed: the golden test's seed 1
-renders `a520-serial-noise`'s first frame clean, the preset's own 17 with a flipped
-green gain. The AFE's state gains the seven registers, nominal at power-on. A marginal
+bits, so which frames flash depends on the preset's seed: `a520-serial-noise`'s seed 17
+renders its first frame with a flipped green gain, where seed 1 would render it
+clean. The AFE's state gains the seven registers, nominal at power-on. A marginal
 data contact runs from a stream of its own (salt `memory.data-contact`), so contacts on
 `d3` and `a3` differ. The cells' retention hashes the word, the bit and the camera's
 `unit_seed` (salt `memory.cells`), so the weak cells belong to the chip: the same in
@@ -679,12 +679,11 @@ without it.
 
 The golden tests guard against unintended change: a synthetic 160 by 120 scene (a
 gradient, a bright disc, a dark rectangle) goes through each preset in still mode at
-match-input resolution with seed 1, and the frame's FNV-1a hash must equal
+match-input resolution with the preset's own seed, and the frame's FNV-1a hash must equal
 `crates/vcb_core/tests/golden/<preset>.hash`, beside which lies the golden PNG.
-`VCB_UPDATE_GOLDEN=1` rewrites hashes and PNGs after an intended change. Seed 1 is
-forced, so a preset whose bend depends on its seed's draws can render the clean
-frame: `a520-serial-noise`'s golden equals `a520-clean`'s and guards the serial
-link's clean writes.
+`VCB_UPDATE_GOLDEN=1` rewrites hashes and PNGs after an intended change. Each preset
+renders with its own seed, so a preset whose bend depends on its seed's draws, such
+as `a520-serial-noise`, ships a seed whose first frame shows the bend.
 
 Validation is by eye. `scripts/validate-a520.sh` renders the reference sky through the
 clean, HPF, DIV and INV presets above the matching quadrants of a composite shot with a

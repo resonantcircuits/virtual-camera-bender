@@ -2,8 +2,8 @@
 //!
 //! Each test renders the same synthetic scene, 160 by 120 sRGB pixels generated here (a
 //! colour gradient with a bright disc and a dark rectangle, so every bend has edges to
-//! act on), through one preset in still mode at match-input resolution with seed 1, as
-//! frame 0 from power-on. It hashes the frame's RGB bytes with 64-bit FNV-1a and
+//! act on), through one preset in still mode at match-input resolution with the preset's own
+//! seed, as frame 0 from power-on. It hashes the frame's RGB bytes with 64-bit FNV-1a and
 //! compares the hash, 16 hexadecimal digits, with `tests/golden/<preset>.hash`. Beside
 //! each hash lies `tests/golden/<preset>.png`, the golden frame for human review; the
 //! PNGs are not compared. On a mismatch the new render is saved under Cargo's
@@ -117,7 +117,6 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// Renders the scene through preset `name` in still mode at match-input resolution.
 fn render(name: &str) -> Frame {
     let mut preset = preset(name);
-    preset.seed = 1;
     preset.readout.mode = Mode::Still;
     preset.readout.resolution = Resolution::MatchInput;
     let mut sim = Simulator::builder((camera(), preset))
@@ -288,9 +287,9 @@ fn the_hot_board_renders_its_golden_frame() {
     check("a520-hot-board");
 }
 
-/// Seed 1's first frame takes no flip that shows, so this golden equals the clean
-/// camera's: it guards the serial link's clean writes, which restore the camera's
-/// exact values. The preset's own seed, 17, shows a flipped green pixel gain.
+/// The preset's seed, 17, gives a first frame with a flipped green pixel gain, so the
+/// golden shows the bend; a seed whose first frame takes no flip that shows would
+/// render the clean camera's bytes, since clean writes restore its exact values.
 #[test]
 fn the_serial_noise_renders_its_golden_frame() {
     check("a520-serial-noise");
