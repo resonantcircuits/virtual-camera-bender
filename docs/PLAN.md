@@ -883,11 +883,103 @@ gun), `a520-serial-noise` (the AFE's link corrupted: flicker, tints, mazes),
 new steps; `docs/ARCHITECTURE.md`, `CHANGELOG.md`, README, the milestone 4 tuning
 note. The orchestrator judges each preset by eye on the samples and a clip.
 
-### Stage 20: the JPEG buffer
+### 3.12 The model of stage 20: the JPEG buffer
 
-The entropy coder in the codec stage, then address and data faults on the compressed
-buffer through the memory stage's faults at `[memory] jpeg_base`. Specified when
-stage 19 lands.
+**The entropy coder** (codec stage). The camera's encoder is baseline sequential
+JPEG. After quantisation each block's coefficients are coded: the DC as the
+difference to the previous block of the same component, in a size category with the
+category's extra bits; the ACs in zigzag order as (run, size) symbols with extra
+bits, with the end-of-block and zero-run-of-sixteen symbols; through the Huffman
+tables of the standard's Annex K.3 (PROVISIONAL: the A520's own tables were not read
+from its files; the sample on file and most compacts of the time use them); in MCU
+order (for 4:2:2 two luma blocks, then Cb and Cr; 4:2:0 four; 4:4:4 one of each);
+with byte stuffing (0xFF then 0x00); and, with `[jpeg] restart_interval` MCUs
+(PROVISIONAL 0, no restart markers: Canon's files are believed to carry none), an
+RSTn marker and a DC-predictor reset after each interval. The coded scan, headers
+aside, is the buffer the processor holds in the SDRAM until the card writer takes
+it. The coder is exact: without faults the decoder returns the quantised
+coefficients, the frame's bytes are those of the present round trip and the goldens
+stand. It runs only while the preset has `[bend.memory]`, since only then can the
+buffer be corrupted; a few tens of milliseconds at native size, measured by its bench.
+
+**The buffer in the SDRAM** (memory stage). The scan is written at `[memory]
+jpeg_base` (PROVISIONAL 4,194,304 words, 2^22, beyond the still raw buffer), two bytes
+per 16-bit word, low byte first (PROVISIONAL), in stream order, through the address
+faults and data faults of `[bend.memory]` exactly as the raw is. The encoder's DMA
+writes it after the frame's development, which follows the raw's read-back, and the
+card writer reads it a frame period later; the marginal contacts are sampled at the
+write and at the read of each burst of a readout line's worth of words, as for the
+raw's lines (PROVISIONAL timing). An address fault folds the scan onto itself, so the
+reader finds one chunk where two were written, and sends chunks into words the frame
+did not write, where the power-on content or a stale frame's scan lies; a data fault
+flips the same bit of every word, a bit of every other byte of the scan; the
+retention masks act on the buffer's words too. The pins are the same as the raw's, so
+a fault acts on both buffers, as it would in the camera; which addresses it reaches
+is the memory map's doing: on the A520 at native still size the raw occupies
+addresses below 2^22, so a fault on `a11` (row bit 22) stuck low folds the JPEG
+buffer down onto the raw's words after the raw has been read and leaves the raw
+alone, stuck high sends the raw into the JPEG buffer's words, where the scan
+overwrites it before the read-back; the movie raw ends below 2^19, so `a9` to `a11`
+leave it alone and reach only the scan. The fault's linear weights scale with the
+geometry as the raw's, and `jpeg_base` moves with the row bits as `raw_base` does.
+
+**The decoder** (codec stage). The file is read by a decoder of libjpeg's kind, and
+the model decodes the corrupted scan as libjpeg does, because that is what a bender
+sees. A corrupted bit mis-decodes a Huffman code, and from there the scan is read out
+of step: wrong sizes, wrong runs, blocks ending early or late, so the macroblocks after
+the fault shift sideways, and the DC differences accumulate wrongly, tinting and
+shading everything after it. The rules, libjpeg's: a code that matches no symbol
+within sixteen bits is a bad code, the symbol reads 0 (a zero DC difference, an
+end-of-block for an AC) and decoding goes on at the next bit; a run that overruns the
+block ends it; a 0xFF followed by anything but 0x00 or an RSTn is a marker: the rest
+of the scan decodes as zero coefficients, flat grey; a scan that ends early leaves
+the remaining blocks grey; an RSTn marker resynchronises, the decoder resets its DC
+predictors and continues with the interval the marker names, skipping or repeating
+intervals as libjpeg's `jpeg_resync_to_restart` does. The decoded blocks are
+dequantised, inverse-transformed and merged into the frame through the present
+decoder path; the frame's size stays the camera's. The look: a solid data pin
+destroys the scan from its first bytes, grey after a few blocks; the bend wants
+marginal contacts, a flip or two per frame, so the picture holds to the fault, then
+shifts, tints and runs grey, and heals at the next restart marker if the camera
+writes them; a marginal address pin repeats strips of the picture shifted sideways.
+In movie mode every frame is a Motion JPEG frame through the same coder at the
+mode's quality, so the faults flicker from frame to frame. Camera `[memory]` gains
+`jpeg_base` and `[jpeg]` gains `restart_interval`.
+
+### Stage 20a: the entropy coder and decoder (medium, one agent)
+
+`codec/huffman.rs`: the Annex K.3 tables, the encoder from quantised integer blocks
+to the scan's bytes, the decoder with the error rules above; `codec/mod.rs` split so
+that quantisation yields integer coefficients, `encode` keeps its present exact
+path, and `encode_scan` and `decode_scan` expose the scan as `Vec<u8>` in a reused
+buffer; tests (the round trip is bit-exact on every subsampling and quality; the scan
+of a flat frame is short and of a noisy one long; one flipped bit shifts every
+macroblock after it and leaves those before it; a marker emulated by a flip greys the
+rest; with a restart interval the damage ends at the next marker; a stream cut short
+greys the rest), a bench of the coder and the decoder. Owns `codec/`, a new
+`tests/huffman.rs`, the bench file's codec entries.
+
+### Stage 20b: the buffer in the SDRAM (medium, one agent, parallel with 20a)
+
+`memory::bend_scan(params, state, index, scan: &mut Vec<u8>)`: the scan written and
+read through the same faults, contacts and retention masks as the raw at
+`jpeg_base`, with the span widened to cover it, the write and read instants as
+specified, and the power-on content as bytes; `[memory] jpeg_base` in the camera;
+tests (a solid `a11` low on a still leaves the raw byte-identical and folds the scan;
+a data pin flips one bit of every other byte; a marginal contact leaves a stale
+frame's bytes; the span covers the scan; the state keeps the scan's words across
+frames and `set_preset`). Owns `memory.rs`, `tests/memory.rs`, the camera model's
+`[memory]` and `cameras/a520.toml`.
+
+### Stage 20c: wiring, presets, panels, docs (medium, one agent plus the orchestrator)
+
+`Simulator::frame` running `encode_scan`, `bend_scan`, `decode_scan` in place of
+`encode` while the preset has `[bend.memory]`; the Memory panel's note on the
+JPEG buffer and a readout of the scan's size; presets with goldens `a520-card-rot`
+(a marginal data pin at a few hertz: shifted macroblocks, tints, grey tails) and
+`a520-strip-repeat` (a marginal `a11`: repeated strips on a still, the raw
+untouched); `docs/ARCHITECTURE.md`, `CHANGELOG.md`, README, the user guide, the
+milestone 4 tuning note; the CLI's `inspect` printing the scan's size.
 
 ### Status (2026-11-07)
 
