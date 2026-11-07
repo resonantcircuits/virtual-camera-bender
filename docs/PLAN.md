@@ -914,8 +914,13 @@ reader finds one chunk where two were written, and sends chunks into words the f
 did not write, where the power-on content or a stale frame's scan lies; a data fault
 flips the same bit of every word, a bit of every other byte of the scan; the
 retention masks act on the buffer's words too. The pins are the same as the raw's, so
-a fault acts on both buffers, as it would in the camera; which addresses it reaches
-is the memory map's doing: on the A520 at native still size the raw occupies
+a fault acts on both buffers when the compressed buffer sits in the bent chip. Whether
+it does is the memory map's doing and unknown: the S9000's documented bend produced
+readable files with torn raws, so the compressed buffer there was out of the faults'
+reach. `[bend.memory] reaches_jpeg` (default false; decision 2026-11-07, after stage
+20b) says whether the faults reach it: the milestone 3 memory presets keep their looks
+and goldens, and the card-rot presets set it. Which addresses a fault reaches when it
+does is the memory map's doing: on the A520 at native still size the raw occupies
 addresses below 2^22, so a fault on `a11` (row bit 22) stuck low folds the JPEG
 buffer down onto the raw's words after the raw has been read and leaves the raw
 alone, stuck high sends the raw into the JPEG buffer's words, where the scan
@@ -973,13 +978,16 @@ frames and `set_preset`). Owns `memory.rs`, `tests/memory.rs`, the camera model'
 
 ### Stage 20c: wiring, presets, panels, docs (medium, one agent plus the orchestrator)
 
-`Simulator::frame` running `encode_scan`, `bend_scan`, `decode_scan` in place of
-`encode` while the preset has `[bend.memory]`; the Memory panel's note on the
-JPEG buffer and a readout of the scan's size; presets with goldens `a520-card-rot`
-(a marginal data pin at a few hertz: shifted macroblocks, tints, grey tails) and
-`a520-strip-repeat` (a marginal `a11`: repeated strips on a still, the raw
-untouched); `docs/ARCHITECTURE.md`, `CHANGELOG.md`, README, the user guide, the
-milestone 4 tuning note; the CLI's `inspect` printing the scan's size.
+`[bend.memory] reaches_jpeg` in the schema and `memory::Params`; `[jpeg]
+restart_interval` in the camera (0, PROVISIONAL) feeding the codec; `Simulator::frame`
+running `encode_scan`, `bend_scan`, `decode_scan` in place of `encode` while the
+preset's memory section reaches the compressed buffer, and `Simulator::scan_len` for
+the panels; a "Compressed buffer" switch on the Memory panel with a readout of the
+scan's size; presets with goldens `a520-card-rot` (a marginal data pin at a few
+hertz: shifted macroblocks, tints, grey tails) and `a520-strip-repeat` (a marginal
+`a11`: repeated strips on a still, the raw untouched); `docs/ARCHITECTURE.md`
+(the codec's entropy coder and decoding rules, the memory stage's compressed
+buffer), `CHANGELOG.md`, README, the user guide, the milestone 4 tuning note.
 
 ### Status (2026-11-07)
 
