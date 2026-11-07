@@ -23,6 +23,7 @@ fn params(tables: QuantTables, subsampling: Subsampling, chroma_upsample: Chroma
         tables,
         subsampling,
         chroma_upsample,
+        restart_interval: 0,
     }
 }
 
