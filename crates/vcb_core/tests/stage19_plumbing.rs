@@ -671,37 +671,50 @@ const BENT: [Section; 4] = [
     }),
 ];
 
-/// The stages do not read the new sections yet: each, and all together, render the
-/// clean camera's bytes.
+/// The inert settings of each section: a sound serial link, a leak without light, the
+/// SDRAM at its reference temperature with a fault on a data pin that carries no
+/// sample bit. Each renders the camera's bytes, and all together do.
+const INERT: [CopySection; 3] = [
+    ("serial", |p, _| {
+        p.bend.serial = Some(SerialBend { bit_error: 0.0 });
+    }),
+    ("leak", |p, _| {
+        p.bend.leak = Some(LeakBend {
+            radiance: 0.0,
+            ..LeakBend::default()
+        });
+    }),
+    ("memory", |p, _| {
+        p.bend.memory = Some(MemoryBend {
+            data_faults: vec![solid(12, FaultKind::High)],
+            temperature_c: Some(25.0),
+            ..MemoryBend::default()
+        });
+    }),
+];
+
+/// Every section's inert settings render the clean camera's bytes, alone and together.
 #[test]
-fn a_preset_with_every_new_section_resolves_and_renders_the_camera() {
+fn the_inert_settings_of_every_new_section_render_the_camera() {
     let scene = scene();
     for mode in [Mode::Still, Mode::Movie] {
         let plain = clean(mode);
         let expected = render(&mut build(plain.clone()), &scene);
-        for (name, set) in BENT {
+        let mut every = plain.clone();
+        for (name, set) in INERT {
             let mut alone = plain.clone();
-            set(&mut alone);
+            set(&mut alone, &plain);
             assert_eq!(
                 render(&mut build(alone), &scene),
                 expected,
-                "{mode}: the {name} section changed the frames"
+                "{mode}: the inert {name} section changed the frames"
             );
+            set(&mut every, &plain);
         }
-        // Every new key at once, without the address fault the stages do read.
-        let bent = stage19_preset();
-        let mut every = plain.clone();
-        every.bend.serial = bent.bend.serial;
-        every.bend.leak = bent.bend.leak;
-        every.bend.memory = bent.bend.memory.map(|memory| MemoryBend {
-            faults: Vec::new(),
-            ..memory
-        });
-        let mut sim = build(every);
         assert_eq!(
-            render(&mut sim, &scene),
+            render(&mut build(every), &scene),
             expected,
-            "{mode}: the new sections together changed the frames"
+            "{mode}: the inert sections together changed the frames"
         );
     }
 }
