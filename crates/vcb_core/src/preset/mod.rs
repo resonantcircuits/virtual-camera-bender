@@ -41,23 +41,34 @@
 //! [bend.clock]
 //! osc_mhz = 26.4              # the timing generator's replacement oscillator
 //! [bend.memory]
+//! temperature_c = 110.0       # a heat gun on the SDRAM
 //! [[bend.memory.faults]]
 //! pin = 3                     # SDRAM address pin a3
 //! kind = "high"               # or "low", "bridge" (with `with = <pin>`)
+//! [[bend.memory.data_faults]]
+//! pin = 5                     # SDRAM data pin d5
+//! kind = "high"
 //! [bend.reset]
 //! drop_hz = 2000.0            # missed reset-gate pulses per second of readout
+//! [bend.serial]
+//! bit_error = 0.001           # bits of the AFE's register writes flipped
+//! [bend.leak]
+//! edge = "left"               # or "right", "top", "bottom"
+//! radiance = 0.5              # light let in behind the lens
 //! ```
 //!
 //! The structs hold the file's values as written; each stage resolves the sections it
 //! consumes into its own `Params`.
 
 mod clock;
+mod leak;
 mod memory;
 pub(crate) mod model;
 mod optics;
 mod rail;
 mod reset;
 mod sensor_bend;
+mod serial;
 
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
@@ -70,7 +81,9 @@ use crate::isp::{AeMode, WbMode};
 #[doc(inline)]
 pub use clock::ReclockBend;
 #[doc(inline)]
-pub use memory::{AddressFault, FaultKind, MemoryBend};
+pub use leak::{Edge, LeakBend};
+#[doc(inline)]
+pub use memory::{AddressFault, DataFault, FaultKind, MemoryBend};
 #[doc(inline)]
 pub use optics::OpticsBend;
 #[doc(inline)]
@@ -79,6 +92,8 @@ pub use rail::RailBend;
 pub use reset::ResetBend;
 #[doc(inline)]
 pub use sensor_bend::SensorBend;
+#[doc(inline)]
+pub use serial::SerialBend;
 
 /// Which readout the sensor performs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -275,12 +290,18 @@ pub struct Bend {
     /// The timing generator reclocked from a replacement oscillator, `[bend.clock]`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub clock: Option<ReclockBend>,
-    /// Faulted address pins on the frame-buffer SDRAM, `[bend.memory]`.
+    /// Faulted address and data pins and the heat of the frame-buffer SDRAM, `[bend.memory]`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub memory: Option<MemoryBend>,
     /// Missed and weak pulses on the CCD's reset gate, `[bend.reset]`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub reset: Option<ResetBend>,
+    /// Bit errors on the AFE's serial programming link, `[bend.serial]`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub serial: Option<SerialBend>,
+    /// Light leaking onto the sensor from one edge, `[bend.leak]`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub leak: Option<LeakBend>,
 }
 
 /// The `[bend.bus]` section: the DIP-switch, capacitor and gate circuit on the data bus.

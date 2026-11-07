@@ -246,6 +246,36 @@ pub struct Afe {
     /// diffusion beyond `fd_swing_v / conv_gain` is lost to the output. With a sound
     /// reset gate a packet never reaches it. See [`afe`](crate::afe).
     pub fd_swing_v: f64,
+    /// Bits of the data field of a serial register write, 1 to 32.
+    ///
+    /// The processor programs the AFE over a three-wire serial interface: each write is
+    /// an 8-bit register address followed by this many data bits, a shorter register
+    /// padded. At least as wide as the widest register, `vga_bits`, `pxga_bits` and
+    /// `clamp_bits`.
+    pub serial_data_bits: u8,
+    /// Bits of the VGA gain register, 1 to 16.
+    pub vga_bits: u8,
+    /// Gain of the VGA at code 0, in decibels.
+    ///
+    /// Code `c` gives `vga_min_db + vga_db_per_code * c`; the camera's `pga_gain_db` is
+    /// the register's nominal content.
+    pub vga_min_db: f64,
+    /// Gain step of the VGA per code, in decibels; positive.
+    pub vga_db_per_code: f64,
+    /// Bits of each of the four pixel gain (`PxGA`) registers, 1 to 16.
+    pub pxga_bits: u8,
+    /// Gain of a pixel gain register at its largest code, in decibels; positive, from 0 dB.
+    pub pxga_max_db: f64,
+    /// Bits of the black clamp level register, 1 to 16, in codes of the converter's full width.
+    ///
+    /// The register's nominal content is the pedestal, `pedestal_v`.
+    pub clamp_bits: u8,
+    /// Nominal gains of the four pixel gain registers in decibels, each in `[0, pxga_max_db]`.
+    ///
+    /// In the order R, Gr, Gb, B: the red sites, the greens of the red rows, the greens
+    /// of the blue rows and the blue sites, on an RGGB mosaic its 2 x 2 quad in raster
+    /// order. Each multiplies the samples of its mosaic phase.
+    pub pxga_gain_db: [f64; 4],
 }
 
 /// The `[adc]` section: the converter and its parallel output bus.
@@ -347,8 +377,14 @@ pub struct Power {
 /// The SDRAM takes a multiplexed address: the row address, then the column address,
 /// on the same pins, with the bank on its own pins. The linear word address is
 /// `(bank, row, column)` from the most to the least significant bit; one raw sample
-/// occupies one word. See [`memory`](crate::memory).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// occupies one word, on the `data_pins` data lines.
+///
+/// A cell holds its bit as charge that leaks away; the controller refreshes every
+/// row every `refresh_ms`, and a cell whose retention is shorter loses its bit first.
+/// The retention is log-normal over the cells, with the median `retention_s` at
+/// `reference_temp_c` halving every `retention_halving_c` degrees. See
+/// [`memory`](crate::memory).
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Memory {
@@ -360,6 +396,23 @@ pub struct Memory {
     pub bank_bits: u8,
     /// Word address of the raw frame buffer's first sample; below the SDRAM's size.
     pub raw_base: u64,
+    /// Data pins of the SDRAM, `d0` upward, 1 to 16; a word holds the processor's sample.
+    ///
+    /// At least the processor's `[adc] dsp_bits`, whose sample a word holds in its low
+    /// bits; the pins above carry no sample bit.
+    pub data_pins: u8,
+    /// Temperature at which `retention_s` holds, in degrees Celsius, in `[-40, 150]`.
+    ///
+    /// The SDRAM runs at it unless `[bend.memory] temperature_c` heats or cools it.
+    pub reference_temp_c: f64,
+    /// Median retention of a cell at `reference_temp_c`, in seconds; positive.
+    pub retention_s: f64,
+    /// Temperature rise that halves the retention, in degrees Celsius; positive.
+    pub retention_halving_c: f64,
+    /// Spread of the cells' retention: the standard deviation of its natural log, at least 0.
+    pub retention_spread: f64,
+    /// Period in which the controller refreshes every row, in milliseconds; positive.
+    pub refresh_ms: f64,
 }
 
 impl Memory {

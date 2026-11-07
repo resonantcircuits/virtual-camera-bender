@@ -77,6 +77,16 @@ slew_v_per_us = 200.0               # PROVISIONAL
 noise_1f_corner_hz = 20_000.0       # PROVISIONAL: CCD output amplifier flicker corner, class typical
 oversample = 4
 fd_swing_v = 0.6                    # PROVISIONAL: the CCD's source follower runs out first, its 460 mV saturation signal (section 3) plus a margin; C: the AD9949's 1.0 V p-p CDS input before saturation (section 5) bounds it from above
+# The registers the processor programs over the AFE's three-wire serial interface
+# (SL, SCK, SDATA; AD9949 class, section 5): an 8-bit address, then a data field.
+serial_data_bits = 24               # PROVISIONAL: the AD9949 writes an 8-bit address then a data field, shorter registers padded; the field length is unverified
+vga_bits = 10                       # C: VGA 6 to 42 dB in 1024 steps, a 10-bit code (section 5)
+vga_min_db = 6.0                    # C: VGA gain at code 0, gain = 0.0351 * code + 6 dB (section 5)
+vga_db_per_code = 0.0351            # C: VGA 6 to 42 dB in 1024 steps (section 5)
+pxga_bits = 6                       # PROVISIONAL: width of each PxGA gain register, unverified
+pxga_max_db = 18.0                  # C: PxGA 0 to 18 dB (section 5)
+clamp_bits = 8                      # C: black clamp level code 0 to 255 (section 5)
+pxga_gain_db = [0.0, 0.0, 0.0, 0.0] # PROVISIONAL: the four pixel gains for R, Gr, Gb, B in the mosaic's order; Canon balances white in the processor
 
 [adc]
 bits = 12                           # C: AD9949 class AFE (section 5)
@@ -148,6 +158,12 @@ column_bits = 9                     # PROVISIONAL: 512 columns, multiplexed on p
 row_bits = 12                       # PROVISIONAL: 4096 rows, multiplexed on pins a0..a11
 bank_bits = 2                       # PROVISIONAL: four banks on their own pins, between column and row bits
 raw_base = 0                        # PROVISIONAL: word address of the raw buffer; DIGIC's memory map is unpublished
+data_pins = 16                      # C: the DQ lines of the x16 JEDEC part assumed above
+reference_temp_c = 25.0             # C: room temperature, where retention_s is given
+retention_s = 128.0                 # PROVISIONAL: median cell retention at 25 C, from a median of 2 s at the JEDEC limit of 85 C halving every 10 C (DRAM retention studies, e.g. Liu et al., ISCA 2013, "RAIDR")
+retention_halving_c = 10.0          # C: DRAM retention roughly halves per 10 C, an activation energy near 0.6 eV
+retention_spread = 0.5              # PROVISIONAL: natural-log sigma of the main population's log-normal retention
+refresh_ms = 64.0                   # C: JEDEC tREF of SDR SDRAM, every row refreshed within 64 ms
 
 [jpeg]
 subsampling = "4:2:2"               # A: measured (section 7)

@@ -178,6 +178,7 @@ impl MemoryPanel {
     pub fn bend(&self) -> Option<MemoryBend> {
         self.enabled.then(|| MemoryBend {
             faults: self.pins.iter().filter_map(PinSetting::fault).collect(),
+            ..MemoryBend::default()
         })
     }
 
