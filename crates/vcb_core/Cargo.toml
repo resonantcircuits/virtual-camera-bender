@@ -33,5 +33,11 @@ name = "stages"
 harness = false
 required-features = ["serde"]
 
+# The JPEG scan's entropy coder and decoder at native size: `cargo bench -p vcb_core --bench huffman`.
+[[bench]]
+name = "huffman"
+harness = false
+required-features = ["serde"]
+
 [lints]
 workspace = true
