@@ -1,0 +1,28 @@
+# Canon PowerShot A520 with a light leak in the body: a pink glow from one edge over a stopped-down scene.
+# A hole drilled in the body (or an opened seam) lets daylight in behind the lens, past the
+# aperture, the shutter and the IR-cut filter, at the sensor's left edge: the bottom of a portrait
+# still, the left of a landscape frame. Scattered by the cavity, the glow is half as bright as
+# reference white at the opening and falls by 1/e over a fifth of the sensor's width. Daylight's
+# near infrared reaches the dyes through the bypassed hot mirror, so the glow develops pink under
+# the daylight balance, washing the grass to pink-white and the water to pink and mauve. Scene
+# auto-exposure meters through the sensor, counts the leak and stops the scene down to its limit,
+# two stops: the sky deep blue and the hills dark above the glow, which still clips at the edge.
+# In still mode the mechanical shutter blocks the scene during the transfer but not the leak,
+# which smears down its columns by about 1 % of their mean, too little to see here.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone4-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[isp]
+ae_mode = "scene"                   # the camera meters what the sensor sees, the leak included
+
+[bend.leak]
+edge = "left"                       # the sensor's left edge, in its landscape orientation
+radiance = 0.5                      # PROVISIONAL, by eye: 0.3 a soft glow at the edge, 1.0 whites a quarter of the frame
+spread_frac = 0.2                   # PROVISIONAL, by eye: at 0.3 the glow veils the sky mauve as well
+colour = [1.0, 1.0, 1.0]            # daylight
+nir = 1.0                           # daylight's near infrared

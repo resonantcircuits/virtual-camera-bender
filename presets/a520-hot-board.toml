@@ -1,0 +1,30 @@
+# Canon PowerShot A520 with a heat gun on the board: the CCD's grain and the SDRAM's dead bits.
+# One heat gun warms the sensor and the frame-buffer SDRAM beside it to 120 C. The sensor is that
+# of a520-heat-gun: its dark current rises 2^15.8, about 58,000 times, to some 470 electrons in
+# the camera's own 1/125 s; the black clamp removes the mean, and its spread mottles the shadows
+# with hot crosses among them. The SDRAM's cells leak faster: their median retention halves every
+# 10 C from 128 s at 25 C to 0.18 s, so the weakest 2 % of the cells lose their bit before the
+# 64 ms refresh comes, and about a fifth of the sites hold a decayed cell. True cells fall to 0 and
+# anti cells rise to 1, alternating by SDRAM row (0.9 of a readout line), so the speckle runs in
+# fine dark and bright stripes along the readout lines (vertical in a portrait still), coloured
+# crosses after the demosaic. The weak cells belong to the chip: the same sites in every frame.
+# Scene auto-exposure meters the scene as the camera would.
+# Cooler, the SDRAM shows first: at 110 C single specks on 0.3 % of the sites, at 115 C a
+# sprinkling on 3 % while the sensor's grain shows only at 1:1; at 125 C the speckle buries the
+# scene.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[isp]
+ae_mode = "scene"                   # as a520-heat-gun
+
+[bend.sensor]
+temperature_c = 120.0               # PROVISIONAL, by eye: as a520-heat-gun, the heat at which the sensor's grain shows on a daylight frame
+
+[bend.memory]
+temperature_c = 120.0               # PROVISIONAL, by eye: the heat gun's; the SDRAM shows from about 110 C, so both heats show here

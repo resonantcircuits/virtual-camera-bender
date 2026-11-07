@@ -7,8 +7,10 @@ All notable changes to this project are recorded here. The format follows
 
 ### Milestone 4: the rest of the bender's reach
 
-The bends a bender makes on the sensor itself and on its reset gate, each modelled in
-the stage whose hardware it changes, with presets tuned by eye.
+The bends a bender makes on the sensor itself and on its reset gate, on the
+frame-buffer SDRAM's data pins and its heat, on the AFE's serial programming link and
+on the body's seal against light, each modelled in the stage whose hardware it
+changes, with presets tuned by eye.
 
 #### Added
 
@@ -27,27 +29,84 @@ the stage whose hardware it changes, with presets tuned by eye.
   across pixels, lines and frames; the CDS cancels what is left until it uses up the
   output stage's swing, after which packets read black, so bright runs end in black
   and a weak reset solarises a bright sky.
+- The SDRAM's data pins and heat, in the memory stage's `[bend.memory]`:
+  `[[bend.memory.data_faults]]` on the data lines `d0` upward, stuck `low` or `high`,
+  `bridge`d, or marginal like the address contacts. A word holds the processor's
+  integer sample with its black level, so a stuck line acts on one bit of every
+  sample after the black clamp: stuck high it lifts black by the bit's weight and
+  posterises, stuck low it folds the highlights down; a marginal contact leaves its
+  bit in the word until the next write, so a stale word read back clean still shows
+  it. The A520's pins `d10` to `d15` carry no sample bit and change nothing. The
+  SDRAM's `temperature_c` shortens its cells' retention, log-normal around a median
+  that halves every `retention_halving_c`; a cell that cannot outlast the refresh
+  period reads its leakage state, true cells falling to 0 and anti cells rising to 1
+  by the SDRAM row, the same cells in every frame: a hot board shows single bright and
+  dark sites from about 105 °C and loses a fifth of its samples at 120 °C.
+- The serial bend, `[bend.serial]`, in the AFE: a noisy contact on the SDATA line over
+  which the processor rewrites the AFE's registers in every vertical blanking (the
+  control word, the VGA gain, the four `PxGA` pixel gains, the clamp level), each bit
+  flipping with probability `bit_error`. A flipped data bit sets a wrong gain, tint or
+  pedestal for the frame, or tristates the outputs; a flipped address bit lands the
+  write on another register or loses it, and the intended register keeps the last
+  frame's content until a clean write. The registers are AFE state, carried across
+  frames; a clean write restores the camera's exact values.
+- The light leak, `[bend.leak]`, in the sensor stage: light entering behind the lens
+  from one `edge`, `radiance` times reference white at the opening and falling by
+  `1/e` over `spread_frac` of the frame, with its `colour` and its near infrared
+  `nir`, which reaches the dyes through `[sensor] nir_response` since the IR-cut filter
+  is bypassed. Its charge joins the scene's before the well, so it clips, blooms and
+  smears like scene light, and in still mode it smears alone, the mechanical shutter
+  blocking the scene but not the leak. Scene auto-exposure meters it and stops the
+  scene down for it within its two stops.
 - Camera values in `cameras/a520.toml`: `[sensor]` `reference_temp_c` 25 °C,
   `dark_doubling_c` 6, `read_noise_per_c` 0.003, `amp_glow_e_per_s` 1.0,
   `amp_glow_radius_frac` 0.15, `substrate_v` 12 V, `full_well_frac_per_v` 0.25,
   `drain_loss_v` 2 V and `dark_nonuniformity` 0.3, and `[afe] fd_swing_v` 0.6 V,
   graded by confidence, most of them PROVISIONAL.
+- Camera values for the stage 19 bends: `[memory] data_pins` 16, `reference_temp_c`
+  25 °C, `retention_s` 128 s, `retention_halving_c` 10, `retention_spread` 0.5 and
+  `refresh_ms` 64, and `[afe] serial_data_bits` 24, `vga_bits` 10, `vga_min_db` 6,
+  `vga_db_per_code` 0.0351, `pxga_bits` 6, `pxga_max_db` 18, `clamp_bits` 8 and
+  `pxga_gain_db` [0, 0, 0, 0], with their confidence letters; the camera's gains and
+  pedestal must fit their registers.
 - In the app, a "Sensor bend" block on the Sensor panel (temperature in °C and
   substrate bias in V, dimmed at the camera's values, with readouts of the dark
   current's multiple and the full well) and a "Reset gate" block on the AFE panel
   (missed pulses per second, run length in pixels, reset strength in per cent, with
   the swing and the packet size a weak reset shows on); the strip lights Sensor and
   AFE for them; every knob keeps the circuit running. Guide sections for both.
+- In the app, a data-pin grid (d0 to d15, the pins without a sample bit dimmed) and a
+  retention temperature on the Memory panel, with readouts of the median retention
+  and the share of cells and samples that leak; a "Serial link" block on the AFE
+  panel (bit error per thousand bits, with the bits a frame, the corrupted writes a
+  frame and the share of frames that take one); a "Light leak" block on the Sensor
+  panel (edge, radiance, spread, colour and near infrared, with the glow's reach in
+  photosites and what is left at the far edge). The strip lights the stages they
+  bend; every knob keeps the circuit running. Guide sections for all three.
 - Four presets: `a520-heat-gun` (mottled shadows and hot crosses in daylight, the
   readout corner's glow on a dark, long exposure), `a520-substrate` (highlights that
   bloom along their columns), `a520-reset-drag` (bright runs ending in black streaks,
   a solarised sky) and `a520-hot-reclock` (the loose-sync oscillator on a hot, grainy
   sensor).
+- Five presets for the stage 19 bends: `a520-stuck-bit` (data line d6 stuck high:
+  posterised, black lifted), `a520-hot-board` (the sensor and the SDRAM under one heat
+  gun at 120 °C: grain, hot crosses and a fifth of the samples' bits lost),
+  `a520-serial-noise` (one bit in a hundred of the AFE's serial link flipped: a frame
+  in five flashes a gain, a tint, a green maze or a dropped output; seed 17's still
+  shows a green maze), `a520-light-leak` (a daylight leak glowing pink from one edge
+  over a scene auto-exposure stops down) and `a520-open-body` (the full-spectrum
+  optics with daylight through red plastic under grey-world balance: a peach glow
+  under a teal sky).
 - Tests of both bends' physics, replay and reconfiguration (`sensor_bend`, `reset`),
   golden frames of the four presets, and benchmarks of the sensor with a hot and a
   drainless CCD and of the AFE with a weak, flaky reset gate.
+- Tests of the stage 19 bends' physics, replay and reconfiguration (`memory`, `serial`,
+  `leak`, `stage19_plumbing`), golden frames of their five presets, and benchmarks of
+  the frame buffer with stuck and marginal data pins and a hot SDRAM, of the AFE with
+  bit errors on its serial link at 0.003 and 0.03, and of the sensor with a light leak.
 - `docs/research/milestone4-tuning-notes.md`, how the presets were chosen and what
-  the sample could not show.
+  the sample could not show, with a stage 19 section on the five new presets and the
+  SDRAM's retention spread.
 
 #### Changed
 
@@ -55,11 +114,12 @@ the stage whose hardware it changes, with presets tuned by eye.
   beside `dsnu_e`, which stays the readout chain's fixed offset pattern; at the
   reference temperature it moves eleven goldens by at most 4 codes. The simulator
   applies the sensor's read-noise rise to the AFE's read noise.
-- `vcb presets` names the sensor and reset bends.
-- `docs/ARCHITECTURE.md` describes both bends, the reset stream and the diffusion's
-  state, the new configuration, their cost and their limits; the README lists the
-  presets.
-- The fourteen existing golden frames are unchanged by the new presets.
+- `vcb presets` names the sensor, reset, serial and leak bends.
+- `docs/ARCHITECTURE.md` describes the five bends, the reset and serial streams, the
+  diffusion's charge, the AFE's registers and the SDRAM's cell masks, the new
+  configuration, their cost and their limits; the README lists the presets.
+- The existing golden frames are unchanged by the new presets: fourteen by stage 18's
+  four, eighteen by stage 19's five.
 
 ### Milestone 3: the bends from the old presets' spirit
 

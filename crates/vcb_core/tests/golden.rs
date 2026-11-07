@@ -277,3 +277,31 @@ fn the_reset_drag_renders_its_golden_frame() {
 fn the_hot_reclock_renders_its_golden_frame() {
     check("a520-hot-reclock");
 }
+
+#[test]
+fn the_stuck_bit_memory_renders_its_golden_frame() {
+    check("a520-stuck-bit");
+}
+
+#[test]
+fn the_hot_board_renders_its_golden_frame() {
+    check("a520-hot-board");
+}
+
+/// Seed 1's first frame takes no flip that shows, so this golden equals the clean
+/// camera's: it guards the serial link's clean writes, which restore the camera's
+/// exact values. The preset's own seed, 17, shows a flipped green pixel gain.
+#[test]
+fn the_serial_noise_renders_its_golden_frame() {
+    check("a520-serial-noise");
+}
+
+#[test]
+fn the_light_leak_renders_its_golden_frame() {
+    check("a520-light-leak");
+}
+
+#[test]
+fn the_open_body_renders_its_golden_frame() {
+    check("a520-open-body");
+}

@@ -153,10 +153,12 @@ register address and 24 data bits on the A520. *Bit error* (per 1000 bits, 0.01 
 1000, logarithmic): the share of those bits a noisy contact on the data line flips.
 A flipped data bit lands a wrong value for one frame: a VGA bit makes the frame a
 stop or three brighter or darker, a pixel-gain bit tints it or, between the two
-greens, lays a fine maze over it, a clamp bit shifts black by a code or more, a
-control bit cuts the output so the bus holds its last word. A flipped address bit
-sends the write to another register or loses it, and the intended register keeps
-the last frame's value until a clean write, so a fault can last several frames.
+greens, lays a fine maze over it, a clamp bit moves the AFE's black level, which the
+processor's own black clamp takes back, so it hardly shows, and a control bit cuts
+the output so the bus holds its last word: one flat code, black where the processor's
+clamp covers it. A flipped address bit sends the write to another register or loses
+it, and the intended register keeps the last frame's value until a clean write, so a
+fault can last several frames.
 Below, the bits sent a frame (224 on the A520), the corrupted writes a frame on
 average and the share of frames that take at least one: at the default 1 per 1000,
 0.22 writes a frame and one frame in five, many of them in padding or low bits that
@@ -341,7 +343,8 @@ The other bends start from the clean camera (`a520-clean`):
    coloured specks and the corner where the readout starts glows faintly, more with
    a longer exposure or more heat. Back at 25 °C (↺) the same exposure is clean
    again, so what showed was the heat. On the daylight sample 500 ms is six stops
-   over and clips white. `a520-heat-gun` holds a heat gun with a long exposure, and
+   over and clips white. `a520-heat-gun` holds the sensor at 120 °C at the camera's
+   own exposure, hot enough for a daylight frame to show grain and hot crosses, and
    `a520-hot-reclock` puts a heated sensor behind a loose master clock. The block's
    other knob, *Substrate bias*, 2 V below nominal leaves no overflow drain, and
    overexposed highlights bloom along the sensor's columns (`a520-substrate`);
@@ -371,13 +374,15 @@ The other bends start from the clean camera (`a520-clean`):
     1000: most frames stay clean, and now and then one comes out a stop or more
     brighter or darker, tinted, or crossed by a fine maze where the two greens'
     gains part. Open a video to see it flicker. At 10 per 1000 bits nine frames in
-    ten take a fault, and a lost write keeps one frame's fault into the next
-    (`a520-serial-noise`).
+    ten take a flipped bit and about one in five shows it, and a lost write keeps one
+    frame's fault into the next (`a520-serial-noise`).
 13. **A light leak.** Switch on Sensor → *Light leak*, a daylight leak half as bright
     as white from the sensor's left edge, the bottom of the upright sample: a soft
     glow, pink where the leak's infrared reaches the sensor past the filter. Set
     Processor → Auto-exposure to scene and the scene darkens to make room for the
     leak, which the aperture cannot stop (`a520-light-leak`). Set *Near infrared* to
     0 and the glow turns white; set the colour to about 1, 0.5 and 0.3 for light
-    through red plastic, and pull the IR-cut filter under Optics for the full
-    picture of an opened body (`a520-open-body`).
+    through red plastic, and pull the IR-cut filter under Optics, with Processor →
+    White balance on Auto as for the full-spectrum look, for the full picture of an
+    opened body (`a520-open-body`): grey world takes back the leak's red with the
+    infrared's cast, and a peach glow rises under a teal sky.

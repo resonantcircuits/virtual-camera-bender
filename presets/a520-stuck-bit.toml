@@ -1,0 +1,23 @@
+# Canon PowerShot A520 with one SDRAM data pin stuck high: posterised, black lifted.
+# Data line d6 of the frame-buffer SDRAM bridged to the 3.3 V rail: bit 6 (64 codes) of every
+# stored sample reads 1. A word holds the processor's 10-bit code with the black level (31) added
+# back, so black reads 95, lifted by 64 codes, and in every 128 codes the lower 64 fold onto the
+# upper 64: tones 64 codes apart read alike, each colour of the mosaic in its own contours. The
+# sky breaks into cyan and pink bands, the hills into flat magenta, green and brown patches, the
+# water runs from cyan to brick red, and the lifted shadows develop magenta. A solid fault: the
+# same in every frame, in movie mode too.
+# The other pins: d5 posterises softly (32 codes); d7 lifts black 128 codes and washes the frame
+# pink; d8 and d9 high wash it out. Stuck low, a pin folds the highlights down instead: d8 low
+# turns the sky red, d9 low only marks the brightest specular highlights magenta. d10 to d15 carry
+# no sample bit on the A520 and change nothing.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone4-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[[bend.memory.data_faults]]
+pin = 6                             # PROVISIONAL, by eye: the clearest posterisation that keeps the scene readable
+kind = "high"                       # a solder bridge to the 3.3 V rail

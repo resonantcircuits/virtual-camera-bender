@@ -142,6 +142,11 @@ fn presets_lists_every_preset_file() {
         ("a520-substrate", "sensor"),
         ("a520-reset-drag", "reset"),
         ("a520-hot-reclock", "sensor,clock"),
+        ("a520-stuck-bit", "memory"),
+        ("a520-hot-board", "sensor,memory"),
+        ("a520-serial-noise", "serial"),
+        ("a520-light-leak", "leak"),
+        ("a520-open-body", "optics,leak"),
     ];
     for (name, bends) in shipped {
         let line = stdout

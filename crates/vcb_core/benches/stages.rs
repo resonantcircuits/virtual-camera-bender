@@ -6,9 +6,11 @@
 //! unmodified camera, and `hpf`, the bus bend with the bypass function. The stages that
 //! milestones 3 and 4 bent also run a bent case: the scene with `full-spectrum` (the
 //! IR-cut filter removed), the sensor with `heat-gun` (a hot CCD: its dark current,
-//! the current's spread and the amplifier's glow) and `substrate` (no overflow drain,
-//! an overexposure that blooms), the supply rail and the AFE on it with `brownout` (a sagging, rippling rail),
-//! the AFE with `reset-drag` (a weak, flaky reset gate), the processor's capture with
+//! the current's spread and the amplifier's glow), `substrate` (no overflow drain, an
+//! overexposure that blooms) and `light-leak` (a daylight leak from one edge, which
+//! also smears in a still), the supply rail and the AFE on it with `brownout` (a
+//! sagging, rippling rail), the AFE with `reset-drag` (a weak, flaky reset gate) and
+//! with bit errors on its serial link at 0.003 and 0.03, the processor's capture with
 //! `reclock-roll` (a detuned, wandering oscillator) and the frame buffer with
 //! `s9000-tear` (two marginal address contacts), an empty `[bend.memory]` section (the
 //! store and the read alone), a stuck and a marginal data pin, and the SDRAM at 110 and
@@ -21,7 +23,9 @@
 //! made outside the timed region. The bus, capture and frame-buffer benches time one
 //! iteration per sample: their pass-through case takes nanoseconds, and divan would
 //! otherwise copy a frame-sized input for each of hundreds of iterations at once. The
-//! `frame` bench times [`Simulator::frame`], the whole chain.
+//! AFE bench advances the frame index every iteration, so the serial link draws new
+//! bit errors as in a video. The `frame` bench times [`Simulator::frame`], the whole
+//! chain.
 //!
 //! Run with `cargo bench -p vcb_core`.
 
@@ -33,7 +37,7 @@ use vcb_core::adc::{self, Codes};
 use vcb_core::afe::{self, Analog};
 use vcb_core::isp::{self, Raw};
 use vcb_core::power::{self, Rail};
-use vcb_core::preset::{DataFault, FaultKind, MemoryBend, Mode, Resolution};
+use vcb_core::preset::{DataFault, FaultKind, MemoryBend, Mode, Resolution, SerialBend};
 use vcb_core::readout::{self, Stream};
 use vcb_core::sensor::{self, Charge};
 use vcb_core::{
@@ -50,11 +54,20 @@ const PRESETS: [&str; 2] = ["clean", "hpf"];
 /// Presets of the scene bench: the two of every stage and the IR-cut filter removed.
 const SCENE_PRESETS: [&str; 3] = ["clean", "hpf", "full-spectrum"];
 
-/// Presets of the sensor bench: the two of every stage, a hot CCD and a drainless one.
-const SENSOR_PRESETS: [&str; 4] = ["clean", "hpf", "heat-gun", "substrate"];
+/// Presets of the sensor bench: the two of every stage, a hot CCD, a drainless one and a
+/// light leak.
+const SENSOR_PRESETS: [&str; 5] = ["clean", "hpf", "heat-gun", "substrate", "light-leak"];
 
-/// Presets of the AFE bench: the two of every stage, a sagging rail and a weak reset gate.
-const AFE_PRESETS: [&str; 4] = ["clean", "hpf", "brownout", "reset-drag"];
+/// Cases of the AFE bench: the two presets of every stage, a sagging rail, a weak reset
+/// gate and bit errors on the serial link; see [`afe_case`].
+const AFE_CASES: [&str; 6] = [
+    "clean",
+    "hpf",
+    "brownout",
+    "reset-drag",
+    "serial-0.003",
+    "serial-0.03",
+];
 
 /// Presets of the supply-rail bench: no rail bend, and a loaded, rippling rail.
 const POWER_PRESETS: [&str; 2] = ["clean", "brownout"];
@@ -76,15 +89,18 @@ const MEMORY_CASES: [&str; 8] = [
 ];
 
 /// Presets of the whole-chain bench: the two of every stage and one per bent stage.
-const FRAME_PRESETS: [&str; 8] = [
+const FRAME_PRESETS: [&str; 11] = [
     "clean",
     "hpf",
     "full-spectrum",
     "heat-gun",
+    "light-leak",
     "brownout",
     "reset-drag",
+    "serial-noise",
     "reclock-roll",
     "s9000-tear",
+    "hot-board",
 ];
 
 /// Width of the scene: the A520's native still width.
@@ -379,9 +395,36 @@ fn power_track(bencher: Bencher, preset: &str) {
     bencher.bench_local(|| power::track(power.as_ref(), power_state, bus_state, 0, rail));
 }
 
-#[divan::bench(args = AFE_PRESETS, sample_count = 20)]
-fn afe_process(bencher: Bencher, preset: &str) {
-    let mut chain = Chain::new(preset);
+/// Returns an AFE bench case: its preset file and the serial section it sets.
+///
+/// `None` keeps the file's sections. `serial-0.003` and `serial-0.03` corrupt the
+/// serial link of the clean camera at those bit error rates: a frame now and then, and
+/// most frames.
+fn afe_case(name: &str) -> (&'static str, Option<SerialBend>) {
+    let serial = |bit_error| Some(SerialBend { bit_error });
+    match name {
+        "clean" => ("clean", None),
+        "hpf" => ("hpf", None),
+        "brownout" => ("brownout", None),
+        "reset-drag" => ("reset-drag", None),
+        "serial-0.003" => ("clean", serial(0.003)),
+        "serial-0.03" => ("clean", serial(0.03)),
+        _ => panic!("no AFE bench case {name}"),
+    }
+}
+
+#[divan::bench(args = AFE_CASES, sample_count = 20)]
+fn afe_process(bencher: Bencher, case: &str) {
+    let (file, section) = afe_case(case);
+    let mut chain = Chain::new(file);
+    if let Some(section) = section {
+        let (camera, mut preset) = load(file);
+        preset.bend.serial = Some(section);
+        let timing = Timing::derive(&camera, &preset, WIDTH, HEIGHT)
+            .unwrap_or_else(|error| panic!("cannot derive the timing: {error}"));
+        chain.afe = afe::Params::resolve(&camera, &preset, &timing)
+            .unwrap_or_else(|e| unresolved("afe", &e));
+    }
     let Chain {
         afe,
         afe_state,
@@ -390,7 +433,11 @@ fn afe_process(bencher: Bencher, preset: &str) {
         analog,
         ..
     } = &mut chain;
-    bencher.bench_local(|| afe::process(afe, afe_state, stream, rail, 0, analog));
+    let mut index = 0;
+    bencher.bench_local(|| {
+        index += 1;
+        afe::process(afe, afe_state, stream, rail, index, analog);
+    });
 }
 
 #[divan::bench(args = PRESETS, sample_count = 20)]

@@ -1,0 +1,33 @@
+# Canon PowerShot A520 with the body opened and the IR-cut filter pulled: full spectrum through red plastic.
+# The optics of a520-full-spectrum (the hot mirror slid off the sensor, the scene's near infrared
+# reaching all three dyes, foliage raised) in a body left open: daylight enters behind the lens
+# through the red plastic of the shell at the sensor's left edge (the bottom of a portrait still),
+# half as bright as reference white at the opening and falling by 1/e over 0.3 of the width. The
+# plastic passes red and cuts green and blue, and is clear in the near infrared, so the leak
+# carries daylight's infrared, which the open sensor takes on all three dyes. Scene
+# auto-exposure stops the scene down for the leak and the infrared, and grey-world white balance
+# balances the frame's mean, the leak's red with it: a teal sky and slate water over a peach-white
+# glow rising from the grass. Under the daylight balance the whole frame turns magenta-pink.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone4-tuning-notes.md.
+camera = "a520"
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[isp]
+ae_mode = "scene"                   # the camera meters what the sensor now sees, the leak and the near infrared included
+wb = "auto"                         # PROVISIONAL, by eye: grey world, as a520-full-spectrum; daylight gains turn the frame one pink
+
+[bend.optics]
+ir_cut_pulled_frac = 1.0            # as a520-full-spectrum: the filter fully off the sensor
+foliage_nir = 3.0                   # as a520-full-spectrum
+nir_scale = 1.3                     # as a520-full-spectrum
+
+[bend.leak]
+edge = "left"                       # the sensor's left edge, in its landscape orientation
+radiance = 0.5                      # PROVISIONAL, by eye: 0.3 a brownish haze at the edge, 1.0 whites a third of the frame
+spread_frac = 0.3                   # PROVISIONAL, by eye: the glow reaches the water
+colour = [1.0, 0.4, 0.25]           # PROVISIONAL: red plastic passes red and cuts green and blue
+nir = 1.0                           # PROVISIONAL: the plastic is clear in the near infrared, so daylight's passes; 1.5 changes little under grey world

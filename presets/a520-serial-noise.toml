@@ -1,0 +1,25 @@
+# Canon PowerShot A520 with a noisy contact on the AFE's serial link: flicker, tints and mazes.
+# The SDATA wire of the three-wire link over which the processor programs the AFE, through a poor
+# contact: one bit in a hundred reads wrong at the chip. The processor rewrites the seven
+# modelled registers (control, the VGA gain, the four PxGA pixel gains, the clamp level) in every
+# vertical blanking, 224 bits a frame, so nine frames in ten take a flip, most of them in padding,
+# low bits or the clamp level, which the processor's black clamp takes back; about one frame in
+# five is visibly off. A VGA bit over- or underexposes it; a PxGA bit tints it, and a flipped Gr
+# or Gb gain sets the two greens of the mosaic apart, which the demosaic turns into a green cast
+# with a fine maze; a control bit tristates the outputs, the frame one held code, black where the
+# processor's clamp takes it back. A write whose address flips lands on another register or is
+# lost, and the register it was meant for keeps the last frame's content, so a fault can last
+# into the next frame.
+# A movie preset at heart: render it as a video. A still is frame 0 from power-on; with seed 17
+# it takes a flipped green pixel gain (green, the maze at 1:1). The golden test, which runs every
+# preset with seed 1, renders a clean frame: seed 1's first frame takes no flip that shows.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
+camera = "a520"
+seed = 17                           # also seeds the link's bit errors, frame by frame; 17's first frame shows a flipped green gain
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.serial]
+bit_error = 0.01                    # PROVISIONAL, by eye: a glitch every few frames; 0.003 flashes a frame now and then, 0.03 corrupts most frames
