@@ -407,8 +407,10 @@ impl Simulator {
     /// # Determinism
     ///
     /// The hardware's memory persists from one call to the next, as in the camera: the
-    /// phases of the injected and gain-modulating oscillators, the AFE's low-pass node
-    /// and flicker-noise level, the bus bend's capacitor voltages, protection-diode and
+    /// phases of the injected and gain-modulating oscillators, the AFE's low-pass node,
+    /// flicker-noise level and serially programmed registers (which a write lost to
+    /// `[bend.serial]` leaves as the last frame had them), the bus bend's capacitor
+    /// voltages, protection-diode and
     /// gate states, clock faults that straddle the frame boundary, and the exposure and
     /// white balance that the servos (`ae_mode` and `wb` set to `"servo"`) metered on
     /// the previous frame. Nothing else carries over: scene auto-exposure meters each
@@ -522,7 +524,8 @@ impl Simulator {
     ///   power-on state.
     /// - The AFE keeps its low-pass node, flicker level and oscillator phases whatever
     ///   the injection or gain modulation becomes, so a new waveform continues from the
-    ///   old one's phase.
+    ///   old one's phase, and its serial registers whatever `[bend.serial]` becomes,
+    ///   until the next frame's writes.
     /// - Running clock faults run on, and the exposure and white-balance servos keep
     ///   their values; a servo that the preset turns off forgets its value at once.
     /// - The supply rail, the processor's capture and the frame-buffer SDRAM keep their
