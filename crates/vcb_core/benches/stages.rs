@@ -12,7 +12,10 @@
 //! `reclock-roll` (a detuned, wandering oscillator) and the frame buffer with
 //! `s9000-tear` (two marginal address contacts), an empty `[bend.memory]` section (the
 //! store and the read alone), a stuck and a marginal data pin, and the SDRAM at 110 and
-//! 120 °C, steady and with the temperature turned every frame.
+//! 120 °C, steady and with the temperature turned every frame. The frame buffer's
+//! compressed scan, the codec's scan of the developed frame, runs through an empty
+//! section, a stuck data pin, `s9000-tear`'s contacts, `a11` stuck low (the scan laid
+//! on the raw's words) and the SDRAM at 120 °C.
 //!
 //! Each stage bench times one public stage function on the signal that the stages
 //! before it produced. Persistent state carries on from one iteration to the next, as
@@ -21,6 +24,7 @@
 //! made outside the timed region. The bus, capture and frame-buffer benches time one
 //! iteration per sample: their pass-through case takes nanoseconds, and divan would
 //! otherwise copy a frame-sized input for each of hundreds of iterations at once. The
+//! scan's bench gets a fresh copy of the scan likewise and counts its bytes. The
 //! `frame` bench times [`Simulator::frame`], the whole chain.
 //!
 //! Run with `cargo bench -p vcb_core`.
@@ -29,11 +33,12 @@ use std::fs;
 use std::path::Path;
 
 use divan::Bencher;
+use divan::counter::BytesCount;
 use vcb_core::adc::{self, Codes};
 use vcb_core::afe::{self, Analog};
 use vcb_core::isp::{self, Raw};
 use vcb_core::power::{self, Rail};
-use vcb_core::preset::{DataFault, FaultKind, MemoryBend, Mode, Resolution};
+use vcb_core::preset::{AddressFault, DataFault, FaultKind, MemoryBend, Mode, Resolution};
 use vcb_core::readout::{self, Stream};
 use vcb_core::sensor::{self, Charge};
 use vcb_core::{
@@ -74,6 +79,9 @@ const MEMORY_CASES: [&str; 8] = [
     "hot-120",
     "hot-120-turning",
 ];
+
+/// Cases of the JPEG-buffer bench: the scan through the SDRAM; see [`scan_case`].
+const SCAN_CASES: [&str; 5] = ["empty", "d3-high", "s9000-tear", "a11-low", "hot-120"];
 
 /// Presets of the whole-chain bench: the two of every stage and one per bent stage.
 const FRAME_PRESETS: [&str; 8] = [
@@ -522,6 +530,84 @@ fn memory_bend(bencher: Bencher, case: &str) {
         let params = turned.as_ref().filter(|_| flip).or(memory.as_ref());
         memory::bend(params, memory_state, 0, raw);
     });
+}
+
+/// Returns a JPEG-buffer bench case: its preset file and the memory section it sets.
+///
+/// `None` keeps the file's section: `s9000-tear`'s two marginal address contacts.
+/// `empty` stores and reads the scan through no fault, `d3-high` sticks bit 3 of every
+/// low byte high, `a11-low` folds the scan onto the raw's words, and `hot-120` heats
+/// the SDRAM.
+fn scan_case(name: &str) -> (&'static str, Option<MemoryBend>) {
+    let fault = |pin, kind| AddressFault {
+        pin,
+        kind,
+        with: None,
+        on_frac: None,
+        switch_hz: None,
+    };
+    match name {
+        "empty" => ("clean", Some(MemoryBend::default())),
+        "d3-high" => (
+            "clean",
+            Some(MemoryBend {
+                data_faults: vec![DataFault {
+                    pin: 3,
+                    kind: FaultKind::High,
+                    with: None,
+                    on_frac: None,
+                    switch_hz: None,
+                }],
+                ..MemoryBend::default()
+            }),
+        ),
+        "s9000-tear" => ("s9000-tear", None),
+        "a11-low" => (
+            "clean",
+            Some(MemoryBend {
+                faults: vec![fault(11, FaultKind::Low)],
+                ..MemoryBend::default()
+            }),
+        ),
+        "hot-120" => (
+            "clean",
+            Some(MemoryBend {
+                temperature_c: Some(120.0),
+                ..MemoryBend::default()
+            }),
+        ),
+        _ => panic!("no JPEG-buffer bench case {name}"),
+    }
+}
+
+#[divan::bench(args = SCAN_CASES, sample_count = 20, sample_size = 1)]
+fn memory_bend_scan(bencher: Bencher, case: &str) {
+    let (file, section) = scan_case(case);
+    let mut chain = Chain::new(file);
+    let params = match section {
+        Some(section) => memory_params(file, section),
+        None => chain
+            .memory
+            .clone()
+            .unwrap_or_else(|| panic!("{file} has a memory section")),
+    };
+    let mut scan = Vec::new();
+    codec::encode_scan(
+        &chain.codec,
+        &mut chain.codec_state,
+        &chain.developed,
+        &mut scan,
+    );
+    // The first frame allocates the stores and computes the cells' masks.
+    let mut raw = chain.raw.clone();
+    memory::bend(Some(&params), &mut chain.memory_state, 0, &mut raw);
+    let mut primed = scan.clone();
+    memory::bend_scan(Some(&params), &mut chain.memory_state, 0, &mut primed);
+    let state = &mut chain.memory_state;
+    bencher
+        .counter(BytesCount::of_slice(&scan))
+        .with_inputs(|| scan.clone())
+        .bench_local_refs(|scan| memory::bend_scan(Some(&params), state, 0, scan));
 }
 
 #[divan::bench(args = PRESETS, sample_count = 20)]

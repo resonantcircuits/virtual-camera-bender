@@ -377,7 +377,8 @@ pub struct Power {
 /// The SDRAM takes a multiplexed address: the row address, then the column address,
 /// on the same pins, with the bank on its own pins. The linear word address is
 /// `(bank, row, column)` from the most to the least significant bit; one raw sample
-/// occupies one word, on the `data_pins` data lines.
+/// occupies one word, on the `data_pins` data lines, and the compressed scan two bytes
+/// a word.
 ///
 /// A cell holds its bit as charge that leaks away; the controller refreshes every
 /// row every `refresh_ms`, and a cell whose retention is shorter loses its bit first.
@@ -396,6 +397,11 @@ pub struct Memory {
     pub bank_bits: u8,
     /// Word address of the raw frame buffer's first sample; below the SDRAM's size.
     pub raw_base: u64,
+    /// Word address of the compressed JPEG buffer's first word; below the SDRAM's size.
+    ///
+    /// The encoder's entropy-coded scan lies there, two bytes per word, until the card
+    /// writer reads it.
+    pub jpeg_base: u64,
     /// Data pins of the SDRAM, `d0` upward, 1 to 16; a word holds the processor's sample.
     ///
     /// At least the processor's `[adc] dsp_bits`, whose sample a word holds in its low
