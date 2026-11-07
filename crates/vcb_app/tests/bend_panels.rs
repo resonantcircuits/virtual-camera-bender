@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use vcb_app::panels::memory::{self, MemoryPanel, PinSetting};
+use vcb_app::panels::memory::{self, MemoryPanel, PinGrid, PinSetting};
 use vcb_app::panels::optics::{self, OpticsPanel};
 use vcb_app::panels::rail::{self, RailPanel, Sag};
 use vcb_app::panels::reclock::{self, ReclockPanel};
@@ -87,17 +87,18 @@ fn rail_panel() -> RailPanel {
 fn memory_panel() -> MemoryPanel {
     let mut panel = MemoryPanel {
         enabled: true,
-        pins: Vec::new(),
+        address: PinGrid::default(),
+        ..MemoryPanel::default()
     };
-    assert!(panel.set_kind(9, Some(FaultKind::High), PINS));
-    assert!(panel.set_kind(2, Some(FaultKind::Low), PINS));
-    assert!(panel.set_marginal(2, true));
-    assert!(panel.set_kind(5, Some(FaultKind::Bridge), PINS));
-    assert!(panel.set_partner(5, 11, PINS));
-    assert!(panel.set_marginal(5, true));
-    assert_eq!(panel.pins[1].pin, 2);
-    panel.pins[1].on_frac = 0.6;
-    panel.pins[1].switch_hz = 12.0;
+    assert!(panel.address.set_kind(9, Some(FaultKind::High), PINS));
+    assert!(panel.address.set_kind(2, Some(FaultKind::Low), PINS));
+    assert!(panel.address.set_marginal(2, true));
+    assert!(panel.address.set_kind(5, Some(FaultKind::Bridge), PINS));
+    assert!(panel.address.set_partner(5, 11, PINS));
+    assert!(panel.address.set_marginal(5, true));
+    assert_eq!(panel.address.pins[1].pin, 2);
+    panel.address.pins[1].on_frac = 0.6;
+    panel.address.pins[1].switch_hz = 12.0;
     panel
 }
 
@@ -142,7 +143,7 @@ fn each_panel_round_trips_a_full_section_through_toml() {
     let fresh = MemoryPanel::from_preset(&preset);
     assert_eq!(fresh.bend(), panel.bend());
     assert_eq!(
-        fresh.setting(memory::DEFAULT_PIN).kind,
+        fresh.address.setting(memory::DEFAULT_PIN).kind,
         None,
         "a fresh panel's default fault is set back to sound by a preset without it"
     );
@@ -248,7 +249,7 @@ fn the_pin_grid_writes_exactly_the_faults_set() {
     );
 
     let mut panel = panel;
-    assert!(panel.set_kind(2, None, PINS), "a2 back to sound");
+    assert!(panel.address.set_kind(2, None, PINS), "a2 back to sound");
     let faults: Vec<u8> = panel
         .bend()
         .expect("on")
@@ -258,15 +259,15 @@ fn the_pin_grid_writes_exactly_the_faults_set() {
         .collect();
     assert_eq!(faults, [9, 5], "a sound pin writes no fault");
     assert_eq!(
-        panel.setting(2),
+        panel.address.setting(2),
         PinSetting {
             kind: None,
-            ..panel.pins[1]
+            ..panel.address.pins[1]
         },
         "a sound pin keeps its settings"
     );
-    assert!(panel.set_kind(2, Some(FaultKind::High), PINS));
-    let back = panel.setting(2);
+    assert!(panel.address.set_kind(2, Some(FaultKind::High), PINS));
+    let back = panel.address.setting(2);
     assert!(
         back.marginal && (back.on_frac - 0.6).abs() < 1e-12,
         "faulted again, it is the same marginal contact: {back:?}"
@@ -276,7 +277,7 @@ fn the_pin_grid_writes_exactly_the_faults_set() {
         enabled: true,
         ..MemoryPanel::default()
     };
-    assert!(cleared.set_kind(memory::DEFAULT_PIN, None, PINS));
+    assert!(cleared.address.set_kind(memory::DEFAULT_PIN, None, PINS));
     let preset = written(|preset| cleared.apply(preset));
     assert_eq!(
         preset.bend.memory,
@@ -290,38 +291,42 @@ fn the_pin_grid_writes_exactly_the_faults_set() {
 fn a_bridge_joins_only_another_free_pin() {
     let mut panel = memory_panel();
     assert!(
-        !panel.set_partner(5, 5, PINS),
+        !panel.address.set_partner(5, 5, PINS),
         "a bridge to its own pin is refused"
     );
-    assert!(!panel.partners(5, PINS).contains(&5));
+    assert!(!panel.address.partners(5, PINS).contains(&5));
     assert!(
-        !panel.set_partner(5, 9, PINS),
+        !panel.address.set_partner(5, 9, PINS),
         "a9 carries a fault of its own"
     );
-    assert!(!panel.set_partner(5, PINS, PINS), "a12 is beyond the SDRAM");
-    assert_eq!(panel.bridged_by(11), Some(5));
     assert!(
-        !panel.set_kind(11, Some(FaultKind::Low), PINS),
+        !panel.address.set_partner(5, PINS, PINS),
+        "a12 is beyond the SDRAM"
+    );
+    assert_eq!(panel.address.bridged_by(11), Some(5));
+    assert!(
+        !panel.address.set_kind(11, Some(FaultKind::Low), PINS),
         "the other end of a bridge carries that bridge"
     );
-    let partners = panel.partners(5, PINS);
+    let partners = panel.address.partners(5, PINS);
     assert!(partners.contains(&11), "its present partner stays on offer");
     assert!(
         !partners.contains(&9) && !partners.contains(&2),
         "faulted pins are not: {partners:?}"
     );
-    assert!(panel.set_partner(5, 6, PINS));
-    assert_eq!(panel.bridged_by(11), None, "a11 is free again");
-    assert!(panel.is_free(11));
+    assert!(panel.address.set_partner(5, 6, PINS));
+    assert_eq!(panel.address.bridged_by(11), None, "a11 is free again");
+    assert!(panel.address.is_free(11));
 
     let mut fresh = MemoryPanel {
         enabled: true,
-        pins: Vec::new(),
+        address: PinGrid::default(),
+        ..MemoryPanel::default()
     };
-    assert!(fresh.set_kind(4, Some(FaultKind::High), PINS));
-    assert!(fresh.set_kind(3, Some(FaultKind::Bridge), PINS));
+    assert!(fresh.address.set_kind(4, Some(FaultKind::High), PINS));
+    assert!(fresh.address.set_kind(3, Some(FaultKind::Bridge), PINS));
     assert_eq!(
-        fresh.setting(3).with,
+        fresh.address.setting(3).with,
         2,
         "a new bridge joins the nearest free pin, a4 being faulted"
     );
@@ -336,14 +341,15 @@ fn a_bridge_joins_only_another_free_pin() {
 
     let mut crowded = MemoryPanel {
         enabled: true,
-        pins: Vec::new(),
+        address: PinGrid::default(),
+        ..MemoryPanel::default()
     };
-    assert!(crowded.set_kind(0, Some(FaultKind::High), 2));
+    assert!(crowded.address.set_kind(0, Some(FaultKind::High), 2));
     assert!(
-        !crowded.set_kind(1, Some(FaultKind::Bridge), 2),
+        !crowded.address.set_kind(1, Some(FaultKind::Bridge), 2),
         "no free pin is left to bridge to"
     );
-    assert_eq!(crowded.setting(1).kind, None);
+    assert_eq!(crowded.address.setting(1).kind, None);
 }
 
 #[test]

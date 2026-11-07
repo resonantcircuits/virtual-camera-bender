@@ -9,9 +9,10 @@
 //!
 //! Panels of bends ([`optics`], [`clocks`], [`afe`], [`bus`], [`reclock`], [`memory`],
 //! [`rail`]) and the bend blocks inside the sensor and AFE panels (the sensor bend and
-//! the reset gate) hold their switch positions and values even while the bend is
-//! switched off, which the preset cannot store, and write their section of the preset
-//! with `apply`; [`Panels`] holds the nine. The other panels edit the preset directly.
+//! the light leak, the reset gate and the serial link) hold their switch positions and
+//! values even while the bend is switched off, which the preset cannot store, and write
+//! their section of the preset with `apply`; [`Panels`] holds the eleven. The other
+//! panels edit the preset directly.
 //! Every control shows a physical value with its unit; [`Knob`] describes how a stored
 //! value is shown.
 
@@ -138,19 +139,23 @@ impl PanelId {
     }
 }
 
-/// The panels that hold state the preset cannot: the nine bends.
+/// The panels that hold state the preset cannot: the eleven bends.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Panels {
     /// The IR-cut filter bend.
     pub optics: optics::OpticsPanel,
     /// The sensor bend, a block in the sensor panel.
     pub sensor: sensor::SensorBendPanel,
+    /// The light leak, a block in the sensor panel.
+    pub leak: sensor::LeakPanel,
     /// The CCD transfer clock bend.
     pub clocks: clocks::ClocksPanel,
     /// The analog front end bend.
     pub afe: afe::AfePanel,
     /// The reset-gate bend, a block in the AFE panel.
     pub reset: afe::ResetPanel,
+    /// The serial-link bend, a block in the AFE panel.
+    pub serial: afe::SerialPanel,
     /// The bus bend.
     pub bus: bus::BusPanel,
     /// The master-clock reclock bend.
@@ -174,9 +179,11 @@ impl Panels {
     pub fn load(&mut self, preset: &Preset) {
         self.optics.load(preset);
         self.sensor.load(preset);
+        self.leak.load(preset);
         self.clocks.load(preset);
         self.afe.load(preset);
         self.reset.load(preset);
+        self.serial.load(preset);
         self.bus.load(preset);
         self.reclock.load(preset);
         self.memory.load(preset);
@@ -187,9 +194,11 @@ impl Panels {
     pub fn apply(&self, preset: &mut Preset) {
         self.optics.apply(preset);
         self.sensor.apply(preset);
+        self.leak.apply(preset);
         self.clocks.apply(preset);
         self.afe.apply(preset);
         self.reset.apply(preset);
+        self.serial.apply(preset);
         self.bus.apply(preset);
         self.reclock.apply(preset);
         self.memory.apply(preset);

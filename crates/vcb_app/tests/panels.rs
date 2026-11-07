@@ -1,28 +1,28 @@
 //! The scene, sensor, clock, AFE and processor panels write presets that survive TOML,
 //! keep only what the user touched, and with the bus panel, the four panels of
-//! milestone 3 and the sensor and reset blocks reproduce every shipped preset; the
-//! strip leads to every bend's panel.
+//! milestone 3, the sensor and reset blocks and the light leak and serial link blocks
+//! reproduce every shipped preset; the strip leads to every bend's panel.
 
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use vcb_app::panels::afe::{self, AfePanel, ResetPanel};
+use vcb_app::panels::afe::{self, AfePanel, ResetPanel, SerialPanel};
 use vcb_app::panels::clocks::{self, ClocksPanel};
 use vcb_app::panels::isp::{self, Field};
 use vcb_app::panels::memory::MemoryPanel;
 use vcb_app::panels::optics::OpticsPanel;
 use vcb_app::panels::rail::RailPanel;
 use vcb_app::panels::reclock::ReclockPanel;
-use vcb_app::panels::sensor::SensorBendPanel;
+use vcb_app::panels::sensor::{LeakPanel, SensorBendPanel};
 use vcb_app::panels::strip::Stage;
 use vcb_app::panels::{PanelId, Panels, Scale, sensor};
 use vcb_app::presets;
 use vcb_core::afe::{GainMod, Inject, Wave};
 use vcb_core::isp::{AeMode, WbMode};
 use vcb_core::preset::{
-    ClockBend, FaultKind, IspOverride, MemoryBend, Mode, OpticsBend, RailBend, ReclockBend,
-    ResetBend, Resolution, SensorBend,
+    ClockBend, Edge, FaultKind, IspOverride, LeakBend, MemoryBend, Mode, OpticsBend, RailBend,
+    ReclockBend, ResetBend, Resolution, SensorBend, SerialBend,
 };
 use vcb_core::{Camera, Preset, Timing};
 
@@ -57,6 +57,30 @@ fn through_toml(preset: &Preset) -> Preset {
     let parsed = presets::from_toml(&text).expect("the written preset parses and validates");
     assert_eq!(&parsed, preset, "the preset survives TOML:\n{text}");
     parsed
+}
+
+/// Switches on the controls of stage 19: data pins and heat on the memory, a light leak
+/// and a noisy serial link.
+fn stage19(panels: &mut Panels) {
+    let data = &mut panels.memory.data;
+    assert!(data.set_kind(5, Some(FaultKind::High), 16));
+    assert!(data.set_kind(8, Some(FaultKind::Bridge), 16));
+    assert!(data.set_marginal(8, true));
+    panels.memory.temperature_c = Some(100.0);
+    panels.leak = LeakPanel {
+        enabled: true,
+        bend: LeakBend {
+            edge: Edge::Bottom,
+            radiance: 0.8,
+            spread_frac: 0.2,
+            colour: [1.0, 0.5, 0.3],
+            nir: 1.5,
+        },
+    };
+    panels.serial = SerialPanel {
+        enabled: true,
+        bend: SerialBend { bit_error: 0.002 },
+    };
 }
 
 /// A preset that uses every panel.
@@ -111,9 +135,15 @@ fn everything() -> (Preset, Panels) {
         },
     };
     panels.memory.enabled = true;
-    assert!(panels.memory.set_kind(3, Some(FaultKind::Low), 12));
-    assert!(panels.memory.set_kind(7, Some(FaultKind::Bridge), 12));
-    assert!(panels.memory.set_marginal(7, true));
+    assert!(panels.memory.address.set_kind(3, Some(FaultKind::Low), 12));
+    assert!(
+        panels
+            .memory
+            .address
+            .set_kind(7, Some(FaultKind::Bridge), 12)
+    );
+    assert!(panels.memory.address.set_marginal(7, true));
+    stage19(&mut panels);
     panels.rail = RailPanel {
         enabled: true,
         bend: RailBend {
@@ -167,9 +197,11 @@ fn every_shipped_preset_survives_the_panels() {
         RailPanel::from_preset(&preset).apply(&mut alone);
         SensorBendPanel::from_preset(&preset).apply(&mut alone);
         ResetPanel::from_preset(&preset).apply(&mut alone);
+        LeakPanel::from_preset(&preset).apply(&mut alone);
+        SerialPanel::from_preset(&preset).apply(&mut alone);
         assert_eq!(
             alone, preset,
-            "{name} survives the optics, master clock, memory and power panels and the sensor and reset blocks"
+            "{name} survives the optics, master clock, memory and power panels and the sensor, reset, leak and serial blocks"
         );
         through_toml(&rebuilt);
     }
@@ -195,12 +227,27 @@ fn a_preset_using_every_panel_round_trips_through_toml() {
     let bend = &parsed.bend;
     assert!(bend.optics.is_some() && bend.clock.is_some() && bend.rail.is_some());
     assert!(bend.sensor.is_some() && bend.reset.is_some());
-    let faults = &bend.memory.as_ref().expect("the memory bend").faults;
+    assert!(bend.leak.is_some() && bend.serial.is_some());
+    let memory = bend.memory.as_ref().expect("the memory bend");
     assert_eq!(
-        faults.iter().map(|fault| fault.pin).collect::<Vec<_>>(),
+        memory
+            .faults
+            .iter()
+            .map(|fault| fault.pin)
+            .collect::<Vec<_>>(),
         [10, 3, 7],
         "the default a10 first, then the pins in the order they were set"
     );
+    assert_eq!(
+        memory
+            .data_faults
+            .iter()
+            .map(|fault| fault.pin)
+            .collect::<Vec<_>>(),
+        [5, 8],
+        "the data pins in the order they were set"
+    );
+    assert_eq!(memory.temperature_c, Some(100.0));
 }
 
 #[test]
@@ -214,6 +261,8 @@ fn a_switched_off_bend_leaves_the_preset_but_keeps_its_values() {
     panels.rail.enabled = false;
     panels.sensor.enabled = false;
     panels.reset.enabled = false;
+    panels.leak.enabled = false;
+    panels.serial.enabled = false;
     let mut off = preset.clone();
     panels.apply(&mut off);
     assert!(off.bend.clocks.is_none() && off.bend.afe.is_none());
@@ -224,7 +273,9 @@ fn a_switched_off_bend_leaves_the_preset_but_keeps_its_values() {
             && bend.memory.is_none()
             && bend.rail.is_none()
             && bend.sensor.is_none()
-            && bend.reset.is_none(),
+            && bend.reset.is_none()
+            && bend.leak.is_none()
+            && bend.serial.is_none(),
         "a switched-off bend writes no section"
     );
     through_toml(&off);
@@ -250,6 +301,8 @@ fn a_switched_off_bend_leaves_the_preset_but_keeps_its_values() {
     reloaded.rail.enabled = true;
     reloaded.sensor.enabled = true;
     reloaded.reset.enabled = true;
+    reloaded.leak.enabled = true;
+    reloaded.serial.enabled = true;
     let mut on = off.clone();
     reloaded.apply(&mut on);
     assert_eq!(
@@ -618,11 +671,15 @@ fn every_bend_panel_is_reachable_from_the_strip() {
     let memory = with(|p| p.bend.memory = Some(MemoryBend::default()));
     let sensor = with(|p| p.bend.sensor = Some(SensorBend::default()));
     let reset = with(|p| p.bend.reset = Some(ResetBend::default()));
+    let leak = with(|p| p.bend.leak = Some(LeakBend::default()));
+    let serial = with(|p| p.bend.serial = Some(SerialBend::default()));
     assert_eq!(Stage::Scene.panel(&optics), PanelId::Optics);
     assert_eq!(Stage::Clock.panel(&clock), PanelId::Clock);
     assert_eq!(Stage::Memory.panel(&memory), PanelId::Memory);
     assert_eq!(Stage::Sensor.panel(&sensor), PanelId::Sensor);
     assert_eq!(Stage::Afe.panel(&reset), PanelId::Afe);
+    assert_eq!(Stage::Sensor.panel(&leak), PanelId::Sensor);
+    assert_eq!(Stage::Afe.panel(&serial), PanelId::Afe);
     for stage in [Stage::Afe, Stage::Bus, Stage::Processor] {
         assert_eq!(
             stage.panel(&rail),
@@ -652,6 +709,8 @@ fn every_bend_panel_is_reachable_from_the_strip() {
         memory,
         sensor,
         reset,
+        leak,
+        serial,
         everything,
     ]
     .iter()

@@ -17,10 +17,19 @@
 //! electrons, `fd_swing_v / conv_gain`, and the packet above which a weak reset shows,
 //! `reset_frac` times the swing. [`ResetPanel`] keeps the values while the pulses are
 //! sound.
+//!
+//! Last, the "Serial link" block sets the preset's `[bend.serial]` section with its own
+//! power switch, the SDATA contact sound or noisy: the probability that a bit of the
+//! processor's register writes reads wrong at the AFE, shown in bits per thousand on a
+//! logarithmic knob. The processor rewrites the AFE's seven modelled registers in every
+//! vertical blanking, each write an 8-bit address and `[afe] serial_data_bits` of
+//! data, and a readout shows those bits per frame with the expected corrupted writes
+//! per frame, `7 (1 - (1 - p)^(8 + serial_data_bits))`, and the share of frames that
+//! take at least one. [`SerialPanel`] keeps the value while the contact is sound.
 
 use eframe::egui::Ui;
 use vcb_core::afe::{GainMod, Inject, Wave};
-use vcb_core::preset::{AfeBend, ResetBend};
+use vcb_core::preset::{AfeBend, ResetBend, SerialBend};
 use vcb_core::{Camera, Preset, Timing};
 
 use crate::panels::{self, Edit, Knob, Scale};
@@ -54,6 +63,19 @@ pub const STRENGTH: Knob = Knob::linear(0.0..=100.0, " %", 0).scaled(Scale::Time
 
 /// The missed-pulse rate of a fresh reset-gate bend, in runs a second.
 pub const DEFAULT_DROP_HZ: f64 = 2000.0;
+
+/// The bit-error knob: one bit in 100 000 to every bit, logarithmic, shown per thousand bits.
+pub const BIT_ERROR: Knob =
+    Knob::log(0.01..=1000.0, 0.01, " per 1000 bits").scaled(Scale::Times(1000.0));
+
+/// The register writes the processor sends the AFE in every vertical blanking.
+///
+/// The modelled registers, rewritten as a set before each frame: the control word, the
+/// VGA gain, the four pixel gains and the clamp level.
+pub const SERIAL_WRITES: u32 = 7;
+
+/// Bits of a serial write's register address, sent before its data field.
+pub const SERIAL_ADDRESS_BITS: u32 = 8;
 
 /// The waveform choices, in panel order.
 const WAVES: [(Wave, &str); 4] = [
@@ -446,4 +468,119 @@ pub fn reset_readout(camera: &Camera, bend: &ResetBend) -> String {
             bend.reset_frac * swing
         )
     }
+}
+
+/// The serial link's switch and bit error, a block at the end of the AFE panel.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SerialPanel {
+    /// Whether the SDATA contact is noisy: the section is written.
+    pub enabled: bool,
+    /// The value, kept while the contact is sound.
+    pub bend: SerialBend,
+}
+
+impl SerialPanel {
+    /// The panel showing `preset`'s serial bend, or the default value, sound.
+    #[must_use]
+    pub fn from_preset(preset: &Preset) -> Self {
+        let mut panel = Self::default();
+        panel.load(preset);
+        panel
+    }
+
+    /// Sets the panel from `preset`; without a serial bend only the switch moves.
+    pub fn load(&mut self, preset: &Preset) {
+        match preset.bend.serial {
+            Some(bend) => {
+                self.enabled = true;
+                self.bend = bend;
+            }
+            None => self.enabled = false,
+        }
+    }
+
+    /// The preset's `[bend.serial]` section; `None` while the contact is sound.
+    #[must_use]
+    pub fn bend(&self) -> Option<SerialBend> {
+        self.enabled.then_some(self.bend)
+    }
+
+    /// Writes the panel into `preset`.
+    pub fn apply(&self, preset: &mut Preset) {
+        preset.bend.serial = self.bend();
+    }
+
+    /// Draws the block for `camera`, whose `[afe]` section sets the length of a write.
+    pub fn show(&mut self, ui: &mut Ui, camera: &Camera) -> Edit {
+        let mut edit = Edit::default();
+        edit.record(&panels::block_header(
+            ui,
+            "Serial link",
+            &mut self.enabled,
+            "SDATA contact",
+            ["sound", "noisy"],
+        ));
+        ui.scope(|ui| {
+            if !self.enabled {
+                ui.multiply_opacity(panels::OFF_OPACITY);
+            }
+            panels::grid(ui, "afe-serial", |ui| {
+                panels::knob_row(
+                    ui,
+                    &mut edit,
+                    "Bit error",
+                    "Bits that read wrong at the AFE, per thousand sent: a noisy contact on the data line of the serial link over which the processor rewrites the VGA gain, the four pixel gains, the black clamp and the power controls before every frame. A flipped data bit lands a wrong value for the frame; a flipped address bit lands it on another register, or loses it, and the register keeps the last frame's value",
+                    &mut self.bend.bit_error,
+                    &BIT_ERROR,
+                );
+            });
+            panels::hint(ui, &serial_readout(camera, &self.bend));
+        });
+        edit
+    }
+}
+
+/// Bits of one serial write: the register address and the data field, `8 + serial_data_bits`.
+#[must_use]
+pub fn write_bits(camera: &Camera) -> u32 {
+    SERIAL_ADDRESS_BITS + u32::from(camera.afe.serial_data_bits)
+}
+
+/// Bits the processor sends the AFE in every vertical blanking: [`SERIAL_WRITES`] writes.
+#[must_use]
+pub fn serial_bits_per_frame(camera: &Camera) -> u32 {
+    SERIAL_WRITES * write_bits(camera)
+}
+
+/// The expected writes per frame with at least one bit in error, `7 (1 - (1 - p)^(8 + n))`.
+///
+/// `p` is the bend's `bit_error` and `n` the camera's `serial_data_bits`.
+#[must_use]
+pub fn corrupted_writes(camera: &Camera, bend: &SerialBend) -> f64 {
+    let clean = (1.0 - bend.bit_error).powf(f64::from(write_bits(camera)));
+    f64::from(SERIAL_WRITES) * (1.0 - clean)
+}
+
+/// The share of frames whose writes take at least one bit in error, `1 - (1 - p)^bits`.
+#[must_use]
+pub fn corrupted_frames(camera: &Camera, bend: &SerialBend) -> f64 {
+    1.0 - (1.0 - bend.bit_error).powf(f64::from(serial_bits_per_frame(camera)))
+}
+
+/// The readout under the bit-error knob: the bits sent a frame and how many writes they corrupt.
+#[must_use]
+pub fn serial_readout(camera: &Camera, bend: &SerialBend) -> String {
+    let sent = format!(
+        "{} bits a frame in {SERIAL_WRITES} writes of {SERIAL_ADDRESS_BITS} + {}",
+        serial_bits_per_frame(camera),
+        camera.afe.serial_data_bits
+    );
+    if bend.bit_error <= 0.0 {
+        return format!("{sent}; none is corrupted.");
+    }
+    format!(
+        "{sent}; on average {} writes corrupted a frame, at least one in {} % of the frames.",
+        panels::significant(corrupted_writes(camera, bend), 3),
+        panels::significant(corrupted_frames(camera, bend) * 100.0, 3),
+    )
 }
