@@ -728,14 +728,166 @@ panel (app agent, with the guide); presets `a520-heat-gun`, `a520-substrate`,
 `a520-reset-drag` and one combination with goldens, benches, architecture, changelog,
 README and tuning note (docs agent). The strip lights Sensor and AFE for them.
 
-### Stage 19: memory data pins and refresh, AFE serial, light leaks
+### 3.11 The models of stage 19
 
-Specified after stage 15's findings; models per section 7 item 4.
+**Memory data pins and retention, `[bend.memory]`** (memory stage, stage 19b). Two
+more things a bender reaches on the frame-buffer SDRAM. The data pins:
+`[[bend.memory.data_faults]]` with `pin` (`d0` upward, the SDRAM's `[memory]
+data_pins` DQ lines, 16 on the x16 part), `kind` (`low`, `high`, `bridge` with
+`with`, the OR of the two as the address faults) and the optional marginal contact
+(`on_frac`, `switch_hz`, the same telegraph process, sampled per line at the burst). A
+word holds the clamped sample as the integer the DMA wrote, the processor's
+`dsp_bits`-bit code with the row's black level added back and rounded, in the word's
+low bits (the packed layout stays unmodelled, one sample per word, so on the A520 the
+pins `d10` to `d15` carry no sample bit: a fault on them is accepted and inert, and the
+panel says so). A fault acts at the write, so the stored word takes the faulted bit,
+and at the read, through the contact as it then is: a solid fault reads stuck whatever
+was stored; a marginal one leaves a corrupted bit in the word until the next write, so
+a clean read of a stale word shows it. The black clamp has run before the store, so a
+stuck bit shifts the black with the signal: `d9` high puts every sample in the top
+half, `d9` low folds the highlights down, `d5` high lifts black by 32 codes. Data
+faults are per sample and need no scaling with the geometry; they apply to the movie
+raw as to the still. The retention: `temperature_c` (default the camera's `[memory]
+reference_temp_c`), a heat gun on the board. A DRAM cell's charge leaks, and the
+controller refreshes every row every `refresh_ms` (C, JEDEC, 64 ms); the cell's
+retention `τ = retention_s * 2^(-(T - T_ref) / retention_halving_c) * e^(retention_spread * N)`,
+`N` a unit normal hashed from the word address, the bit and the camera's `unit_seed`
+(the chip's own map of weak cells), halves every `retention_halving_c` degrees (C,
+about 10 °C for DRAM) around a median `retention_s` at the reference (PROVISIONAL
+128 s at 25 °C: a median of 2 s at the JEDEC limit of 85 °C) with a log-normal spread
+`retention_spread` (PROVISIONAL 0.5). A cell with `τ` below the refresh period loses
+its bit before the refresh comes, and the refresh then latches what it finds, so at
+the read a frame period later the cell reads its leakage state whatever and whenever
+the write was; a cell with `τ` above the refresh period is refreshed in time, every
+time, and never decays (the sliver between the frame period and the refresh period is
+ignored). True cells fall to 0 and anti cells rise to 1, by the parity of the SDRAM
+row (PROVISIONAL: the folded bit-line layout alternates them). The stage keeps, per
+word of the span, the masks of the bits that fall and rise at the current
+temperature, recomputed when the temperature or the span changes (a kept
+reconfiguration), and applies them to every word read, stale words included. At the
+reference temperature no cell of the chip reaches the refresh period (the hashed
+tail does not reach seven sigma), so the default is byte-identical; heating the
+board shows isolated bit errors first, bright and dark single sites whose weight is
+the bit's, then a frame eaten by them: with the numbers above about a thousandth of
+the sites at 110 °C and a fifth at 120 °C. A section with `temperature_c` alone runs
+the store and the load without faults and renders the camera's bytes.
+
+**AFE serial corruption, `[bend.serial]`** (AFE stage, stage 19c). The processor
+programs the AFE over its three-wire serial interface (SL, SCK, SDATA; AD9949 class,
+research section 5): each write an 8-bit register address (C) followed by a data
+field of `[afe] serial_data_bits` (PROVISIONAL 24, shorter registers padded) that the
+chip latches into the register and applies at the next VD (C for the family, whose
+registers are VD-updated unless held; PROVISIONAL for the A520's use of it). Modelled
+registers, with PROVISIONAL addresses: control at 0x00 (bit 0 power-down, bit 1
+output disable), the VGA gain at 0x01 (C; `vga_bits` 10, `vga_min_db + vga_db_per_code
+* code`, C: 6 dB and 0.0351 dB per code), the four PxGA gains at 0x02 to 0x05 (R, Gr,
+Gb, B in the mosaic's order; `pxga_bits` 6 over 0 to `pxga_max_db` 18 dB, C for the
+range, PROVISIONAL for the width), the clamp level at 0x06 (`clamp_bits` 8, codes of
+the converter's full width, C). Their nominal contents are the camera's: `pga_gain_db`,
+`pxga_gain_db` (new, PROVISIONAL `[0, 0, 0, 0]`: Canon balances white in the
+processor) and `pedestal_v` through `code_v`. The processor rewrites the whole set in
+every vertical blanking, before the frame's first line (PROVISIONAL: a firmware that
+writes only changes would make a corrupted register stick until the next change).
+The bend is a noisy contact on SDATA: `bit_error`, the probability that a bit of a
+write, address or data, reads wrong at the chip, drawn per bit from a [`Pcg32`] seeded
+with the bend's stage seed (salt `"serial"`) and the frame index. A write whose
+address survives lands its data, flips and all, truncated to the register's width;
+a write whose address flips lands on the register at the flipped address if it is
+one of the seven and is lost otherwise, and the intended register keeps its content,
+the last frame's, corrupted or not, until a clean write: the registers are [`State`],
+carried across frames and kept on reconfiguration, nominal at reset. A clean write
+restores the camera's exact value, not its quantised code, so `bit_error = 0` renders
+the camera's bytes. At VD the registers take effect for the frame: the VGA gain
+replaces `pga_gain_db`; each PxGA gain multiplies the samples of its mosaic phase
+(the AFE learns each sample's colour from the readout line's image row and the
+sample's column, the optical-black columns taking the phase of their position) in
+the PGA step; the clamp level sets the pedestal; a power-down or output-disable bit
+tristates the outputs for the frame, so the bus holds its last word (the lockout
+path). The timing-core registers are not modelled: a write that lands on them is
+lost here, where the chip would lose the frame. The look: with `bit_error` around
+a thousandth most frames are clean and now and then one is a stop or three bright or
+dark (a VGA bit), tinted or checkered (a PxGA bit, the two greens apart give the
+demosaic a fine maze), or one code (a control bit); higher error rates corrupt every
+frame, and a lost write makes the previous frame's fault persist.
+
+**Light leak, `[bend.leak]`** (sensor stage, stage 19d). A hole drilled in the body,
+an opened seam, a loosened lens mount: light enters behind the lens, bypassing the
+aperture, the shutter and the IR-cut filter, and falls on the sensor from one edge.
+Unfocused and scattered by the cavity, it is a soft glow brightest at the opening:
+irradiance `E = radiance * e^(-d / spread_frac)`, `d` the distance from `edge`
+(`"left"`, `"right"`, `"top"`, `"bottom"` in the sensor's landscape orientation, like
+the glow's corner; the simulator turns a portrait frame back afterwards) as a
+fraction of the frame's extent along that axis (PROVISIONAL shape: a diffuse opening;
+a point hole's `h x / (h² + x²)²` is not modelled), `radiance` in multiples of
+reference white's visible radiance, `colour = [r, g, b]` the light's linear sRGB
+relative to white (default `[1, 1, 1]`, daylight; a plastic wall passes red), `nir`
+the light's near infrared relative to its visible (default 1, daylight), added
+through `[sensor] nir_response` since the hot mirror is bypassed, so a daylight leak
+develops pink under the daylight balance like the full-spectrum look. The charge
+`E[channel] * white_fraction * full_well_e * exposure_s / nominal_exposure_s`, in
+sensor primaries through the camera's matrix and the inverse daylight gains as the
+scene is, is not scaled by `exposure_scale`, which stands for the aperture; it joins
+the photo-charge before PRNU, dark, shot noise, the well and the smear, so it blooms,
+clips and smears like scene light. In movie mode it smears through the electronic
+shutter with the scene; in still mode the mechanical shutter blocks the scene during
+readout but not the leak, so the leak alone smears, the smear formula on its column
+means (PROVISIONAL: the leak's light reaches the vertical register as the scene's
+does). Scene auto-exposure meters through the sensor, so it sees the leak: the
+exposure scale becomes `(target - leak) / scene` within its two stops and at its
+minimum where the leak alone exceeds the target; the servo meters the bent raw and
+needs nothing. No state, no randomness; every value is a kept knob. Camera: nothing
+new.
+
+### Stage 19a: schema and plumbing (small, one agent)
+
+`preset/serial.rs` (`SerialBend`, `[bend.serial]`), `preset/leak.rs` (`LeakBend`,
+`[bend.leak]`, with an `Edge` enum), `data_faults` and `temperature_c` in
+`preset/memory.rs` (a `DataFault` sharing the contact validation, pins unique
+among the data faults), the `Bend` fields, validation, serde round trips; the camera
+keys `[memory] data_pins`, `reference_temp_c`, `retention_s`, `retention_halving_c`,
+`retention_spread`, `refresh_ms` and `[afe] serial_data_bits`, `vga_bits`,
+`vga_min_db`, `vga_db_per_code`, `pxga_bits`, `pxga_max_db`, `clamp_bits`,
+`pxga_gain_db` with letters and citations in `cameras/a520.toml` and the camera
+model; `vcb inspect` naming the sections; config tests. The stages' `Params` are not
+touched: each physics agent reads its section. Acceptance: every gate green,
+goldens unchanged.
+
+### Stage 19b, 19c, 19d: the three bends (medium, small, small; three agents in parallel)
+
+19b owns `memory.rs`, `tests/memory.rs` and the memory bench; 19c owns `afe.rs`,
+`simulator.rs` where the AFE's parameters are resolved, and a new `tests/serial.rs`;
+19d owns `sensor.rs` and a new `tests/leak.rs`. Each delivers the physics in the
+module header with formulas and units, tests of physical properties (a solid `d9`
+high puts every sample at or above 512; a marginal data contact leaves its bit in a
+stale word; the chip at the reference temperature is byte-identical and at 120 °C
+loses about a fifth of its sites, the dead cells the same in every frame and preset;
+`bit_error` 0 is byte-identical; a flipped VGA MSB brightens a frame by 18 dB; a lost
+write keeps the last frame's register; a leak from the left is brightest in column 0
+and falls to `1/e` at `spread_frac`; a leak smears in still mode and the scene does
+not; scene auto-exposure takes the leak back), replay from reset, `set_preset`
+keeping state, a contact sheet on `samples/sample-01.jpg`, and a note on cost.
+
+### Stage 19e: panels and guide (medium, one agent)
+
+A data-pin grid and a temperature knob on the Memory panel, a "Serial link" block
+on the AFE panel, a "Light leak" block on the Sensor panel, the strip lighting the
+stages for the new sections, headless tests, `docs/USER-GUIDE.md` sections.
+
+### Stage 19f: presets, goldens, benches, docs (medium, one agent plus the orchestrator)
+
+Presets with schematic-style headers and goldens: `a520-stuck-bit` (a solid data pin:
+posterised, black lifted), `a520-hot-board` (the SDRAM and the sensor under one heat
+gun), `a520-serial-noise` (the AFE's link corrupted: flicker, tints, mazes),
+`a520-light-leak` (a daylight leak from the left on a stopped-down scene) and
+`a520-open-body` (a red plastic leak with the full-spectrum optics); benches for the
+new steps; `docs/ARCHITECTURE.md`, `CHANGELOG.md`, README, the milestone 4 tuning
+note. The orchestrator judges each preset by eye on the samples and a clip.
 
 ### Stage 20: the JPEG buffer
 
 The entropy coder in the codec stage, then address and data faults on the compressed
-buffer. Specified when stage 19 lands.
+buffer through the memory stage's faults at `[memory] jpeg_base`. Specified when
+stage 19 lands.
 
 ### Status (2026-11-07)
 
@@ -755,3 +907,11 @@ the fix round: a weak reset needs about 20 to 25 % on daylight scenes, blooming 
 clipped highlights, the glow needs a dark long exposure, and movie frames of the
 heat-gun presets are now worth re-checking. Stages 19 and 20 wait for the user's
 stage 15 findings.
+
+### Status (2026-11-07, later)
+
+Stage 15 is closed: the user tested the app across both milestones and found
+nothing to fix; `v0.3.0` is tagged. Stage 19 is specified above (section 3.11) and
+started; stage 20 follows it; after stage 20, a preset gallery in the app in the
+spirit of the legacy version's and an audit of what the legacy presets' looks still
+need (the user's direction, 2026-11-07).
