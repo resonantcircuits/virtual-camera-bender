@@ -444,11 +444,15 @@ impl Camera {
             bits_within(field, bits, 1, MAX_ADDRESS_FIELD_BITS)?;
         }
         let words = 1u64 << memory.address_bits();
-        if memory.raw_base >= words {
-            return Err(Error::config(format!(
-                "memory.raw_base {} lies beyond the SDRAM's {words} words",
-                memory.raw_base
-            )));
+        for (field, base) in [
+            ("memory.raw_base", memory.raw_base),
+            ("memory.jpeg_base", memory.jpeg_base),
+        ] {
+            if base >= words {
+                return Err(Error::config(format!(
+                    "{field} {base} lies beyond the SDRAM's {words} words"
+                )));
+            }
         }
         bits_within("memory.data_pins", memory.data_pins, 1, MAX_DATA_PINS)?;
         if memory.data_pins < self.adc.dsp_bits {

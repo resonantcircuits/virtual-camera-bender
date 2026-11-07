@@ -153,11 +153,13 @@ demosaic = "malvar"                 # PROVISIONAL: DIGIC's algorithm is unpublis
 # The frame-buffer SDRAM. The A520's part is unidentified; the bits are the JEDEC
 # organisation of a 128 Mbit x16 SDR SDRAM (4 banks of 4096 rows of 512 columns,
 # 2^23 words, 16 MiB), which holds a 2272 x 1704 raw at one sample per word. The
-# controller maps the linear word address row-bank-column (a modelling choice).
+# controller maps the linear word address row-bank-column (a modelling choice). The
+# encoder's compressed scan lies above the raw, two bytes per word.
 column_bits = 9                     # PROVISIONAL: 512 columns, multiplexed on pins a0..a8
 row_bits = 12                       # PROVISIONAL: 4096 rows, multiplexed on pins a0..a11
 bank_bits = 2                       # PROVISIONAL: four banks on their own pins, between column and row bits
 raw_base = 0                        # PROVISIONAL: word address of the raw buffer; DIGIC's memory map is unpublished
+jpeg_base = 4_194_304               # PROVISIONAL: word address of the compressed buffer, 2^22, beyond the still raw buffer; DIGIC's memory map is unpublished
 data_pins = 16                      # C: the DQ lines of the x16 JEDEC part assumed above
 reference_temp_c = 25.0             # C: room temperature, where retention_s is given
 retention_s = 128.0                 # PROVISIONAL: median cell retention at 25 C, from a median of 2 s at the JEDEC limit of 85 C halving every 10 C (DRAM retention studies, e.g. Liu et al., ISCA 2013, "RAIDR")
