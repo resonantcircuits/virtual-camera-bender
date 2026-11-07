@@ -1353,6 +1353,7 @@ impl App {
                 edit |= section(ui, target, PanelId::Sensor, |ui| {
                     let mut edit = panels::sensor::show(ui, &mut self.preset, &base);
                     edit |= self.panels.sensor.show(ui, &base);
+                    edit |= self.panels.leak.show(ui, &base);
                     edit
                 });
                 edit |= section(ui, target, PanelId::Readout, |ui| {
@@ -1364,6 +1365,7 @@ impl App {
                 edit |= section(ui, target, PanelId::Afe, |ui| {
                     let mut edit = self.panels.afe.show(ui, timing.as_ref());
                     edit |= self.panels.reset.show(ui, &base);
+                    edit |= self.panels.serial.show(ui, &base);
                     edit
                 });
                 edit |= section(ui, target, PanelId::Bus, |ui| self.panels.bus.show(ui));

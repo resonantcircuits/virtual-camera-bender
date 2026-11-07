@@ -28,21 +28,23 @@ The camera keeps running between renders, as a real one does: oscillator phases,
 the bus capacitor's charge, the servos and running clock faults carry over, and each
 render is the next frame. Rewiring the bus bend resets the bend alone ("circuit
 reset" in the status line); moving the filter, the sensor's temperature or bias, the
-reset gate, the oscillator, the rail's loads or an address fault keeps everything
-running. Readout → "Reset circuit" powers the camera off and on; the next full render
-is exactly what `vcb render` writes.
+light leak, the reset gate, the serial link's bit error, the oscillator, the rail's
+loads, an address or data fault or the SDRAM's temperature keeps everything running.
+Readout → "Reset circuit" powers the camera off and on; the next full render is
+exactly what `vcb render` writes.
 
 ## The panels
 
 The strip at the top of the inspector shows the signal path, Scene → Sensor →
 Readout → AFE → ADC → Bus → Clock → Processor → Memory → JPEG. Stages with a bend
 switched on, or with processor overrides, are lit: the scene by the optics, the
-sensor by the sensor bend, the readout by the clocks, the AFE by its bend or the
-reset gate, and the AFE, the bus and the processor also by a loaded supply rail,
-which feeds all three. Click a stage to scroll to the panel of what bends it, or to
-its own panel when nothing does. Bend panels have an on/off switch in their title,
-with its position named beside it, and remember their settings while off; the
-sensor bend and the reset gate, blocks in the Sensor and AFE panels, have theirs
+sensor by the sensor bend or a light leak, the readout by the clocks, the AFE by its
+bend, the reset gate or the serial link, the memory by its bend, and the AFE, the
+bus and the processor also by a loaded supply rail, which feeds all three. Click a
+stage to scroll to the panel of what bends it, or to its own panel when nothing
+does. Bend panels have an on/off switch in their title, with its position named
+beside it, and remember their settings while off; the sensor bend, the light leak,
+the reset gate and the serial link, blocks in the Sensor and AFE panels, have theirs
 beside the block's name.
 
 **Scene.** *Headroom* (×, 1 to 16): how much brighter than reference white the
@@ -78,6 +80,31 @@ below it the well deepens but the drain takes less and nothing at all 2 V below,
 highlights bloom along their columns and the movie mode's smear grows. Below, the
 dark current as a multiple of the camera's at 25 °C, and the full well in electrons
 at the set bias, with what is left of the drain below nominal.
+
+*Light leak* (a block at the end of the panel with its own switch; the body sealed or
+open). Light that gets in behind the lens, through a drilled hole, an opened seam or
+a loosened lens mount, passes the aperture, the shutter and the IR-cut filter and
+falls on the sensor as a soft glow from one edge, brightest at the opening. *Edge*
+(left, right, top or bottom): the side it enters from, in the sensor's landscape
+orientation, so in a portrait frame the leak turns with the picture. *Radiance*
+(× white, 0.01 to 10): its brightness at the opening in multiples of reference
+white; it is not stopped down with the scene, and scene auto-exposure darkens the
+scene to make room for it. *Spread* (% of width for a leak from the left or right,
+of height from the top or bottom, 1 to 200): how far in the glow falls to 1/e of
+its brightness at the opening; at 200 % it is a veil over the whole frame. *Red*,
+*Green* and *Blue* (× white, 0 to 2): the light's colour in linear sRGB, 1, 1, 1 for
+daylight; light through red plastic keeps its red and little else. *Near infrared*
+(× daylight, 0 to 5): the light's infrared against its visible, 1 for daylight; it
+enters behind the IR-cut filter, so the sensor takes all of it and a daylight leak
+develops pink under the daylight balance, as with the filter pulled. The leak's
+charge joins the scene's before the well, so a bright leak clips, blooms and smears
+like scene light; in still mode it smears on its own, since the mechanical shutter
+blocks the scene during readout but not the leak. Below, the brightness at the
+opening, the distance to 1/e in the sensor's columns or rows and what is left at the
+far edge: the default, half of white with a spread of 30 %, reaches 1/e after 682
+of the A520's 2272 columns and keeps 3.6 % at the far edge. In the preset it is
+`[bend.leak]` with `edge`, `radiance`, `spread_frac` (a fraction, 0.3 for 30 %),
+`colour = [r, g, b]` and `nir`.
 
 **Readout.** *Mode*: still reads every row; movie reads one row pair in four and
 bins columns into the 640 × 480 movie frame, with smear. *Resolution*: native uses
@@ -117,6 +144,25 @@ dimmed at the sound 100 %; what a weak pulse leaves builds up over bright stretc
 which darken and, the brightest, end in black. Below, the swing and the pixel charge
 above which a weak reset shows; on daylight scenes it takes about 20 to 25 % to see.
 
+*Serial link* (a block after the reset gate with its own switch; the SDATA contact
+sound or noisy). The processor programs the AFE over a three-wire serial link and
+rewrites seven of its registers in every vertical blanking, before the frame: the
+control word, the VGA gain, the four pixel gains (one per colour site of the Bayer
+mosaic, the two greens apart) and the black clamp level, each write an 8-bit
+register address and 24 data bits on the A520. *Bit error* (per 1000 bits, 0.01 to
+1000, logarithmic): the share of those bits a noisy contact on the data line flips.
+A flipped data bit lands a wrong value for one frame: a VGA bit makes the frame a
+stop or three brighter or darker, a pixel-gain bit tints it or, between the two
+greens, lays a fine maze over it, a clamp bit shifts black by a code or more, a
+control bit cuts the output so the bus holds its last word. A flipped address bit
+sends the write to another register or loses it, and the intended register keeps
+the last frame's value until a clean write, so a fault can last several frames.
+Below, the bits sent a frame (224 on the A520), the corrupted writes a frame on
+average and the share of frames that take at least one: at the default 1 per 1000,
+0.22 writes a frame and one frame in five, many of them in padding or low bits that
+show nothing. In the preset it is `[bend.serial] bit_error`, a probability (0.001
+for 1 per 1000 bits).
+
 **Bus bend** (bend). The A520's data-bus mod as a front panel: the DIP switches pick
 the source lines D11 to D2, the *Capacitor* (µF, 0.01 to 10) and *Pot* (kΩ, 0 to 1)
 form the variable high-pass, *Pot node* puts the pot after the capacitor (F) or on
@@ -147,16 +193,49 @@ each frame) or servo (lags, as in movie mode), with *Target* (% of white, 10 to
 30) and *Servo lag* (s). The JPEG encoder's quality and chroma subsampling are shown
 read-only.
 
-**Memory** (bend; the switch leaves the SDRAM's address pins sound or faults them).
-The processor stores the raw frame in its SDRAM and reads it back a frame later. One
-row per address pin, a0 to a11 on the A520: *Fault* sound, low, high or bridge, with
-*With* the bridge's other pin among the sound ones (both read the OR of the two);
-*Contact* solid or marginal. Pins a0 to a8 carry a column and a row bit of the word
-address, a9 to a11 a row bit, so a solid fault folds the frame in powers of two. A
-marginal contact, which tears the frame into bands and lets old frames through, has
-two knobs under *Marginal contacts*: *faulted* (% of time, 1 to 100) and *switching*
-(Hz, 0 to 1000), its mean on-off cycles a second. A pin set back to sound keeps its
-settings.
+**Memory** (bend; the switch leaves the SDRAM stock or bends it). The processor
+stores the raw frame in its SDRAM and reads it back a frame later. Three things a
+bender does to the chip sit under the one switch: its heat, its address pins and its
+data pins. A pin set back to sound keeps its settings, and the panel writes back a
+preset's faults and temperature as it found them.
+
+*Retention* comes first. *Temperature* (°C, −20 to 120): a heat gun on the board or
+freeze spray on the chip, dimmed at the camera's 25 °C until moved and returned
+there by ↺. A cell holds its bit as charge that leaks away, and the controller
+refreshes every row every 64 ms; the cells' retention spreads log-normally around a
+median of 128 s at 25 °C and halves every 10 °C. A cell that leaks before the
+refresh comes loses its bit, falling to 0 or rising to 1 by its row, and the same
+cells do so in every frame and every preset: the chip's own map of weak cells.
+Below, the median retention and the share of cells that leak, with the share of
+samples that hold such a cell: none of the 134 million cells at 25 °C, a handful at
+95 °C, 0.03 % of the cells (a third of a percent of the samples) at 110 °C, scattered
+bright and dark single sites, and 2.1 % (a fifth of the samples) at 120 °C, a frame
+eaten by them.
+
+*Address pins*: one row per address pin, a0 to a11 on the A520: *Fault* sound, low,
+high or bridge, with *With* the bridge's other pin among the sound ones (both read
+the OR of the two); *Contact* solid or marginal. Pins a0 to a8 carry a column and a
+row bit of the word address, a9 to a11 a row bit, so a solid fault folds the frame in
+powers of two. A marginal contact, which tears the frame into bands and lets old
+frames through, has two knobs under *Marginal address contacts*: *faulted* (% of
+time, 1 to 100) and *switching* (Hz, 0 to 1000), its mean on-off cycles a second.
+
+*Data pins*: one row per data line, d0 to d15 on the A520's 16-bit SDRAM, with the
+same *Fault*, *With* and *Contact*, a bridge's partner among the sound data pins. A
+word holds the processor's 10-bit sample in its low bits, so pin d*n* carries bit *n*
+of the sample, worth 2^*n* codes, and d10 to d15 carry none on the A520: their rows
+are dimmed and their faults change nothing. The fault acts as the word is written
+and as it is read, after the black clamp, so a stuck pin shifts black with the
+signal: d9 high puts every sample in the top half of the range, d9 low folds the
+highlights down, d5 high lifts black by 32 codes. A marginal data contact, with its
+knobs under *Marginal data contacts*, leaves a wrong bit in the word until the next
+write, so a stale word read back clean still shows it.
+
+In the preset it is `[bend.memory]` with `temperature_c` (left out at the camera's
+temperature), `[[bend.memory.faults]]` for the address pins and
+`[[bend.memory.data_faults]]` for the data pins, each fault with `pin` (the number,
+3 for a3 or d3), `kind` (`"low"`, `"high"` or `"bridge"`), `with` for a bridge's
+other pin, and `on_frac` and `switch_hz` for a marginal contact.
 
 **Power** (bend; the switch leaves the 3.3 V supply rail regulated or loads it). The
 rail feeds the AFE, the bus with the bend's logic, and the processor. *Steady load*
@@ -276,3 +355,29 @@ The other bends start from the clean camera (`a520-clean`):
    electrons. The bright sky towards the horizon solarises, yellow and orange, with
    the brightest clouds green and black, while the hills and the water read as
    before. `a520-reset-drag` is a weak reset with long runs of missed pulses.
+10. **A stuck data pin.** Switch on Memory, set a10 back to sound and set d9, the
+    sample's top bit, to high: every sample lacking the bit gains half the range, so
+    black lifts to the middle and the picture turns flat and pale, its shadows and
+    highlights in the same top half. Low instead folds the highlights down into the
+    shadows; a lower pin such as d6 or d5 breaks smooth gradients into steps and
+    lifts black by its weight, 64 or 32 codes (`a520-stuck-bit`). Pins d10 to d15 are
+    dimmed: the A520's sample has no bit there, and their faults change nothing.
+11. **A hot board.** Switch on Memory, set a10 back to sound and raise *Temperature*:
+    nothing shows until the readout under it leaves "no cell", past 90 °C. At 110 °C
+    a third of a percent of the samples hold a leaking cell, scattered bright and
+    dark single sites, the same in every frame; at 120 °C a fifth, and the frame is
+    eaten by them. `a520-hot-board` puts the SDRAM and the sensor under one heat gun.
+12. **A noisy serial link.** Switch on AFE → *Serial link*, which starts at 1 bit in
+    1000: most frames stay clean, and now and then one comes out a stop or more
+    brighter or darker, tinted, or crossed by a fine maze where the two greens'
+    gains part. Open a video to see it flicker. At 10 per 1000 bits nine frames in
+    ten take a fault, and a lost write keeps one frame's fault into the next
+    (`a520-serial-noise`).
+13. **A light leak.** Switch on Sensor → *Light leak*, a daylight leak half as bright
+    as white from the sensor's left edge, the bottom of the upright sample: a soft
+    glow, pink where the leak's infrared reaches the sensor past the filter. Set
+    Processor → Auto-exposure to scene and the scene darkens to make room for the
+    leak, which the aperture cannot stop (`a520-light-leak`). Set *Near infrared* to
+    0 and the glow turns white; set the colour to about 1, 0.5 and 0.3 for light
+    through red plastic, and pull the IR-cut filter under Optics for the full
+    picture of an opened body (`a520-open-body`).

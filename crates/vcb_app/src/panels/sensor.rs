@@ -22,12 +22,24 @@
 //! dark_doubling_c)`, and the full well at the set bias, with the overflow drain's
 //! remaining capacity below nominal. [`SensorBendPanel`] keeps both values while the
 //! sensor is stock.
+//!
+//! Last, the "Light leak" block sets the preset's `[bend.leak]` section with its own
+//! power switch, the body sealed or open: light entering behind the lens from one edge
+//! of the sensor, past the aperture, the shutter and the IR-cut filter. The edge is a
+//! choice of the four in the sensor's landscape orientation; the radiance at the
+//! opening is in multiples of reference white's, the spread over which the glow falls
+//! by `1/e` a percentage of the frame across the edge, the colour three multiples of
+//! white's red, green and blue in linear sRGB, and the near infrared a multiple of
+//! daylight's share. A readout shows the glow's `1/e` distance in the sensor's columns
+//! or rows and what of it reaches the far edge, `e^(-1 / spread_frac)`. [`LeakPanel`]
+//! keeps the values while the body is sealed.
 
 use eframe::egui::Ui;
-use vcb_core::preset::{Mode, SensorBend, SensorOverride};
+use vcb_core::preset::{Edge, LeakBend, Mode, SensorBend, SensorOverride};
 use vcb_core::{Camera, Preset, Timing};
 
 use crate::panels::{self, Edit, Knob, Scale};
+use crate::theme;
 
 /// The exposure knob: 0.1 ms to 1 s, logarithmic, stored in seconds.
 pub const EXPOSURE: Knob = Knob::log(0.1..=1000.0, 0.1, " ms").scaled(Scale::Times(1e3));
@@ -40,6 +52,56 @@ pub const BIAS_SPAN_V: f64 = 4.0;
 
 /// The temperature of a fresh sensor bend: a heat gun on the sensor, in degrees Celsius.
 pub const DEFAULT_TEMPERATURE_C: f64 = 70.0;
+
+/// The leak's radiance knob: a hundredth to ten times reference white, logarithmic.
+pub const RADIANCE: Knob = Knob::log(0.01..=10.0, 0.01, " × white");
+
+/// The spread knob of a leak from the left or right: 1 to 200 % of the frame's width, logarithmic.
+pub const SPREAD_WIDTH: Knob =
+    Knob::log(1.0..=200.0, 1.0, " % of width").scaled(Scale::Times(100.0));
+
+/// The spread knob of a leak from the top or bottom: 1 to 200 % of the frame's height, logarithmic.
+pub const SPREAD_HEIGHT: Knob =
+    Knob::log(1.0..=200.0, 1.0, " % of height").scaled(Scale::Times(100.0));
+
+/// The knob of each of the leak's colour channels: 0 to twice white's, linear.
+pub const COLOUR: Knob = Knob::linear(0.0..=2.0, " × white", 2);
+
+/// The leak's near-infrared knob: 0 to five times daylight's share, linear.
+pub const NIR: Knob = Knob::linear(0.0..=5.0, " × daylight", 2);
+
+/// The edge choices in panel order, each read as the preset writes it.
+pub const EDGES: [(Edge, &str); 4] = [
+    (Edge::Left, "left"),
+    (Edge::Right, "right"),
+    (Edge::Top, "top"),
+    (Edge::Bottom, "bottom"),
+];
+
+/// Width of the edge choice, in points.
+const EDGE_WIDTH: f32 = theme::GRID * 9.0;
+
+/// The tooltip of the leak's edge.
+const EDGE_HOVER: &str = "The side of the sensor the light gets in from, through a drilled hole, an opened seam or a loose lens mount; in the sensor's landscape orientation, so a portrait frame shows the leak turned with the picture";
+
+/// The colour channels in panel order: the label, the index into `colour` and the tooltip.
+const CHANNELS: [(&str, usize, &str); 3] = [
+    (
+        "Red",
+        0,
+        "The leak's red in linear sRGB relative to white's, 1 for daylight; light through red plastic keeps its red",
+    ),
+    (
+        "Green",
+        1,
+        "The leak's green in linear sRGB relative to white's, 1 for daylight; red plastic passes little of it",
+    ),
+    (
+        "Blue",
+        2,
+        "The leak's blue in linear sRGB relative to white's, 1 for daylight; red plastic passes almost none",
+    ),
+];
 
 /// The substrate-bias knob for `camera`: nominal ± [`BIAS_SPAN_V`], to a hundredth of a volt.
 #[must_use]
@@ -305,4 +367,165 @@ pub fn bend_readout(camera: &Camera, bend: &SensorBend) -> String {
         Some((well_e, _)) => format!("{dark}; full well {well_e:.0} e."),
         None => format!("{dark}."),
     }
+}
+
+/// The light leak's switch and values, a block at the end of the sensor panel.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LeakPanel {
+    /// Whether the body is open: the section is written.
+    pub enabled: bool,
+    /// The values, kept while the body is sealed.
+    pub bend: LeakBend,
+}
+
+impl LeakPanel {
+    /// The panel showing `preset`'s light leak, or the default values, sealed.
+    #[must_use]
+    pub fn from_preset(preset: &Preset) -> Self {
+        let mut panel = Self::default();
+        panel.load(preset);
+        panel
+    }
+
+    /// Sets the panel from `preset`; without a light leak only the switch moves.
+    pub fn load(&mut self, preset: &Preset) {
+        match preset.bend.leak {
+            Some(bend) => {
+                self.enabled = true;
+                self.bend = bend;
+            }
+            None => self.enabled = false,
+        }
+    }
+
+    /// The preset's `[bend.leak]` section; `None` while the body is sealed.
+    #[must_use]
+    pub fn bend(&self) -> Option<LeakBend> {
+        self.enabled.then_some(self.bend)
+    }
+
+    /// Writes the panel into `preset`.
+    pub fn apply(&self, preset: &mut Preset) {
+        preset.bend.leak = self.bend();
+    }
+
+    /// Draws the block for `camera`, whose sensor's columns and rows the readout counts.
+    pub fn show(&mut self, ui: &mut Ui, camera: &Camera) -> Edit {
+        let mut edit = Edit::default();
+        edit.record(&panels::block_header(
+            ui,
+            "Light leak",
+            &mut self.enabled,
+            "Body",
+            ["sealed", "open"],
+        ));
+        ui.scope(|ui| {
+            if !self.enabled {
+                ui.multiply_opacity(panels::OFF_OPACITY);
+            }
+            let bend = &mut self.bend;
+            panels::grid(ui, "sensor-leak", |ui| {
+                panels::row_label(ui, "Edge").on_hover_text(EDGE_HOVER);
+                edit.record(
+                    &panels::dropdown(ui, "sensor-leak-edge", &mut bend.edge, &EDGES, EDGE_WIDTH)
+                        .on_hover_text(EDGE_HOVER),
+                );
+                ui.label("");
+                ui.end_row();
+                panels::knob_row(
+                    ui,
+                    &mut edit,
+                    "Radiance",
+                    "Brightness of the leak where it enters, in multiples of reference white's radiance: it comes in behind the aperture, so it is not stopped down with the scene, and auto-exposure metering through the sensor darkens the scene to make room for it",
+                    &mut bend.radiance,
+                    &RADIANCE,
+                );
+                panels::knob_row(
+                    ui,
+                    &mut edit,
+                    "Spread",
+                    "How far into the frame the glow falls to 1/e of its brightness at the opening, as a share of the frame across the leak: a soft glow scattered by the cavity, tight from a small hole, a veil from a wide seam",
+                    &mut bend.spread_frac,
+                    spread_knob(bend.edge),
+                );
+                for (label, channel, hover) in CHANNELS {
+                    panels::knob_row(
+                        ui,
+                        &mut edit,
+                        label,
+                        hover,
+                        &mut bend.colour[channel],
+                        &COLOUR,
+                    );
+                }
+                panels::knob_row(
+                    ui,
+                    &mut edit,
+                    "Near infrared",
+                    "The leak's near infrared against its visible light, 1 for daylight: it enters behind the IR-cut filter, so the sensor takes all of it, and a daylight leak develops pink under the daylight balance, as a full-spectrum camera does; 0 for a light without infrared",
+                    &mut bend.nir,
+                    &NIR,
+                );
+            });
+            panels::hint(ui, &leak_readout(camera, bend));
+        });
+        edit
+    }
+}
+
+/// The spread knob for a leak from `edge`: in percent of the frame's width or height.
+#[must_use]
+pub fn spread_knob(edge: Edge) -> &'static Knob {
+    match edge {
+        Edge::Left | Edge::Right => &SPREAD_WIDTH,
+        Edge::Top | Edge::Bottom => &SPREAD_HEIGHT,
+    }
+}
+
+/// The edge across the sensor from `edge`.
+#[must_use]
+pub fn opposite(edge: Edge) -> Edge {
+    match edge {
+        Edge::Left => Edge::Right,
+        Edge::Right => Edge::Left,
+        Edge::Top => Edge::Bottom,
+        Edge::Bottom => Edge::Top,
+    }
+}
+
+/// The share of the leak's brightness at the opening left at the far edge, `e^(-1 / spread_frac)`.
+#[must_use]
+pub fn far_edge_share(bend: &LeakBend) -> f64 {
+    (-1.0 / bend.spread_frac).exp()
+}
+
+/// The readout under the leak's knobs: the brightness at the opening, the glow's reach, the far edge.
+///
+/// The `1/e` distance is counted in the sensor's columns for a leak from the left or
+/// right and in its rows for one from the top or bottom.
+#[must_use]
+pub fn leak_readout(camera: &Camera, bend: &LeakBend) -> String {
+    if bend.radiance <= 0.0 {
+        return "No light gets in.".to_owned();
+    }
+    let sensor = &camera.sensor;
+    let (extent, lines) = match bend.edge {
+        Edge::Left | Edge::Right => (sensor.native_width, "columns"),
+        Edge::Top | Edge::Bottom => (sensor.native_height, "rows"),
+    };
+    let reach = if bend.spread_frac >= 1.0 {
+        format!("1/e beyond the sensor's {extent} {lines}")
+    } else {
+        format!(
+            "1/e after {:.0} of the sensor's {extent} {lines}",
+            bend.spread_frac * f64::from(extent)
+        )
+    };
+    format!(
+        "{} × white at the {} edge, {reach}, {} % at the {} edge.",
+        panels::significant(bend.radiance, 3),
+        bend.edge,
+        panels::significant(far_edge_share(bend) * 100.0, 3),
+        opposite(bend.edge),
+    )
 }

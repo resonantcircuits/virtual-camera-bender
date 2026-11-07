@@ -1,7 +1,8 @@
-//! The inspector draws the panels of the four bends of milestone 3 and the sensor and
-//! reset blocks of milestone 4 in a headless ui pass, a click on a lit stage of the
-//! strip scrolls their panel into view, and a wrapped strip breaks before an arrow,
-//! never after one.
+//! The inspector draws the panels of the four bends of milestone 3, the sensor and
+//! reset blocks of milestone 4 and the light leak, serial link, data pins and retention
+//! of stage 19 in a headless ui pass, a click on a lit stage of the strip scrolls their
+//! panel into view, the wheel scrolls on to the rest, and a wrapped strip breaks
+//! before an arrow, never after one.
 //!
 //! The passes run the app's real `ui` on an `egui::Context` without a renderer; the
 //! painted text shapes tell what is on screen and where.
@@ -11,8 +12,8 @@ use std::sync::Arc;
 
 use eframe::App as _;
 use eframe::egui::{
-    self, DroppedFile, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Shape,
-    ViewportCommand,
+    self, DroppedFile, Event, Modifiers, MouseWheelSource, MouseWheelUnit, PointerButton, Pos2,
+    RawInput, Rect, Shape, TouchPhase, ViewportCommand,
 };
 use vcb_app::app::{App, Setup};
 use vcb_app::panels::Panels;
@@ -22,7 +23,7 @@ use vcb_app::panels::rail::RailPanel;
 use vcb_app::panels::reclock::ReclockPanel;
 use vcb_app::panels::strip::{self, Stage};
 use vcb_app::{presets, theme};
-use vcb_core::preset::{FaultKind, RailBend};
+use vcb_core::preset::{Edge, FaultKind, RailBend};
 use vcb_core::{Frame, Preset};
 
 fn root() -> &'static Path {
@@ -68,8 +69,13 @@ fn every_bend() -> PathBuf {
         enabled: true,
         ..MemoryPanel::default()
     };
-    assert!(panels.memory.set_kind(4, Some(FaultKind::Bridge), 12));
-    assert!(panels.memory.set_marginal(4, true));
+    assert!(
+        panels
+            .memory
+            .address
+            .set_kind(4, Some(FaultKind::Bridge), 12)
+    );
+    assert!(panels.memory.address.set_marginal(4, true));
     panels.rail = RailPanel {
         enabled: true,
         ..RailPanel::default()
@@ -90,6 +96,31 @@ fn sensor_and_reset() -> PathBuf {
     panels.reset.bend.reset_frac = 0.25;
     panels.apply(&mut preset);
     let path = scratch().join("sensor-reset.toml");
+    std::fs::write(&path, presets::to_toml(&preset).expect("serialises")).expect("written");
+    path
+}
+
+/// The clean camera with a light leak from the top, a noisy serial link and stuck data pins
+/// on a hot SDRAM, saved as `leak-serial-memory.toml`.
+fn leak_serial_memory() -> PathBuf {
+    let mut preset =
+        presets::load_preset(&root().join("presets/a520-clean.toml")).expect("shipped");
+    let mut panels = Panels::from_preset(&preset);
+    panels.leak.enabled = true;
+    panels.leak.bend.edge = Edge::Top;
+    panels.serial.enabled = true;
+    panels.memory = MemoryPanel {
+        enabled: true,
+        temperature_c: Some(120.0),
+        ..MemoryPanel::default()
+    };
+    let data = &mut panels.memory.data;
+    assert!(data.set_kind(9, Some(FaultKind::High), 16));
+    assert!(data.set_kind(3, Some(FaultKind::Bridge), 16));
+    assert!(data.set_marginal(3, true));
+    assert!(data.set_kind(12, Some(FaultKind::Low), 16));
+    panels.apply(&mut preset);
+    let path = scratch().join("leak-serial-memory.toml");
     std::fs::write(&path, presets::to_toml(&preset).expect("serialises")).expect("written");
     path
 }
@@ -207,6 +238,23 @@ impl Window {
         self.pass(vec![Event::PointerMoved(pos), press(true)], Vec::new());
         self.pass(vec![press(false)], Vec::new());
     }
+
+    /// Turns the wheel `points` down over the visible text `text`; returns what then shows.
+    fn scroll(&mut self, painted: &[Painted], text: &str, points: f32) -> Vec<Painted> {
+        let target = painted
+            .iter()
+            .find(|shape| shape.visible && shape.text == text)
+            .unwrap_or_else(|| panic!("\"{text}\" is on screen"));
+        let wheel = Event::MouseWheel {
+            unit: MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -points),
+            phase: TouchPhase::Move,
+            source: MouseWheelSource::Wheel,
+            modifiers: Modifiers::NONE,
+        };
+        self.pass(vec![Event::PointerMoved(target.centre), wheel], Vec::new());
+        self.settle()
+    }
 }
 
 impl Drop for Window {
@@ -276,13 +324,13 @@ fn the_new_panels_draw_and_the_strip_scrolls_to_them() {
         "the optics panel sits near the top with the filter pulled"
     );
     assert!(
-        !shows(&painted, "SDRAM address pins faulted"),
+        !shows(&painted, "SDRAM bent"),
         "the memory panel starts below the fold"
     );
 
     for (stage, header) in [
         ("Clock", "Master clock replaced"),
-        ("Memory", "SDRAM address pins faulted"),
+        ("Memory", "SDRAM bent"),
         ("AFE", "Supply rail loaded"),
         ("Scene", "IR-cut filter pulled"),
     ] {
@@ -353,6 +401,100 @@ fn the_sensor_and_reset_blocks_draw_and_the_strip_reaches_them() {
                     .collect::<Vec<_>>()
             );
         }
+    }
+}
+
+/// The visible texts of `painted` with their positions, for a failure message.
+fn on_screen(painted: &[Painted]) -> Vec<String> {
+    painted
+        .iter()
+        .filter(|shape| shape.visible)
+        .map(|shape| format!("{} @ {:.0},{:.0}", shape.text, shape.pos.x, shape.pos.y))
+        .collect()
+}
+
+#[test]
+fn the_stage19_blocks_draw_and_every_new_control_is_reachable() {
+    let mut window = Window::new();
+    window.pass(Vec::new(), vec![leak_serial_memory()]);
+    let pages: [(&str, &[&str]); 3] = [
+        (
+            "Sensor",
+            &[
+                "Light leak",
+                "Body open",
+                "Edge",
+                "top",
+                "Radiance",
+                "Spread",
+                "Red",
+                "Green",
+                "Blue",
+                "Near infrared",
+                "0.500 × white at the top edge, 1/e after 511 of the sensor's 1704 rows, 3.57 % at the bottom edge.",
+            ],
+        ),
+        (
+            "AFE",
+            &[
+                "Serial link",
+                "SDATA contact noisy",
+                "Bit error",
+                "224 bits a frame in 7 writes of 8 + 24; on average 0.221 writes corrupted a frame, at least one in 20.1 % of the frames.",
+            ],
+        ),
+        (
+            "Memory",
+            &[
+                "SDRAM bent",
+                "Retention",
+                "Temperature",
+                "Median retention 177 ms against the 64 ms refresh: 2.11 % of the cells leak before it comes, in 19.2 % of the samples.",
+                "Address pins",
+                "a0",
+            ],
+        ),
+    ];
+    let mut painted = Vec::new();
+    for (stage, texts) in pages {
+        let before = window.settle();
+        window.click(&before, stage);
+        painted = window.settle();
+        for text in texts {
+            assert!(
+                shows(&painted, text),
+                "a click on the lit {stage} stage shows \"{text}\": {:?}",
+                on_screen(&painted)
+            );
+        }
+    }
+
+    // The data pins sit below the address pins: the wheel brings them up.
+    assert!(
+        !shows(&painted, "d15") && !shows(&painted, "d3 switching"),
+        "the data pins start below the fold"
+    );
+    let painted = window.scroll(&painted, "Retention", 520.0);
+    for text in [
+        "Data pins",
+        "Pins d0 to d9 hold the 10-bit sample, d9 its top bit; a stuck pin shifts black with the signal. Pins d10 to d15 carry no sample bit on this camera: dimmed, their faults change nothing.",
+        "d0",
+        "d9",
+        "d12",
+        "d15",
+        "high",
+        "low",
+        "bridge",
+        "bridged",
+        "Marginal data contacts",
+        "d3 faulted",
+        "d3 switching",
+    ] {
+        assert!(
+            shows(&painted, text),
+            "the wheel scrolls the data pins into view with \"{text}\": {:?}",
+            on_screen(&painted)
+        );
     }
 }
 

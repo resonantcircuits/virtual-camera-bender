@@ -2,9 +2,9 @@
 //!
 //! Scene → Sensor → Readout → AFE → ADC → Bus → Clock → Processor → Memory → JPEG. A
 //! stage with a bend patched in (the IR-cut filter pulled off the sensor, the sensor
-//! bend, the clocks on the readout, the AFE bend or the faulted reset gate, the bus
-//! bend, the master-clock reclock, the memory's address faults) or with processor
-//! overrides is lit in the accent colour. The supply rail has no stage of its own: it
+//! bend or a light leak, the clocks on the readout, the AFE bend, the faulted reset
+//! gate or the noisy serial link, the bus bend, the master-clock reclock, the memory's
+//! pin faults or heat) or with processor overrides is lit in the accent colour. The supply rail has no stage of its own: it
 //! feeds the AFE, the bus and the processor, so a rail bend lights those three.
 //!
 //! Clicking a stage asks the inspector to scroll to the panel of what bends it: a lit
@@ -95,17 +95,20 @@ impl Stage {
     ///
     /// The stage's own bend comes first; a rail bend (`[bend.rail]`) bends the AFE, the
     /// bus and the processor, which the rail feeds, and leads to the Power panel. The
-    /// sensor bend (`[bend.sensor]`) lights the sensor, and the reset gate
-    /// (`[bend.reset]`), whose block sits in the AFE panel, lights the AFE as its bend does.
+    /// sensor bend (`[bend.sensor]`) and the light leak (`[bend.leak]`), blocks in the
+    /// sensor panel, light the sensor; the reset gate (`[bend.reset]`) and the serial
+    /// link (`[bend.serial]`), blocks in the AFE panel, light the AFE as its bend does.
     #[must_use]
     pub fn bent_by(self, preset: &Preset) -> Option<PanelId> {
         let bend = &preset.bend;
         let rail = bend.rail.is_some().then_some(PanelId::Power);
         match self {
             Self::Scene => bend.optics.is_some().then_some(PanelId::Optics),
-            Self::Sensor => bend.sensor.is_some().then_some(PanelId::Sensor),
+            Self::Sensor => {
+                (bend.sensor.is_some() || bend.leak.is_some()).then_some(PanelId::Sensor)
+            }
             Self::Readout => bend.clocks.is_some().then_some(PanelId::Clocks),
-            Self::Afe => (bend.afe.is_some() || bend.reset.is_some())
+            Self::Afe => (bend.afe.is_some() || bend.reset.is_some() || bend.serial.is_some())
                 .then_some(PanelId::Afe)
                 .or(rail),
             Self::Bus => bend.bus.is_some().then_some(PanelId::Bus).or(rail),
