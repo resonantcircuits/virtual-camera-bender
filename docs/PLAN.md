@@ -1007,3 +1007,23 @@ nothing to fix; `v0.3.0` is tagged. Stage 19 is specified above (section 3.11) a
 started; stage 20 follows it; after stage 20, a preset gallery in the app in the
 spirit of the legacy version's and an audit of what the legacy presets' looks still
 need (the user's direction, 2026-11-07).
+
+### Status (2026-11-07, evening)
+
+Stage 19 is complete and merged on `rust-rewrite`: 19a schema and plumbing, 19b data
+pins and retention, 19c the serial link, 19d the light leak, 19e panels and guide,
+19f the presets `a520-stuck-bit`, `a520-hot-board`, `a520-serial-noise`,
+`a520-light-leak` and `a520-open-body` with goldens, benches and docs. Values settled:
+`retention_spread` stays 0.5, since the SDRAM's specks and the sensor's grain then
+share one window, 105 to 125 °C (0.8 would lead the sensor by 15 °C and grey the
+frame at 120 °C); the serial link's useful range is 0 to 0.05 (near 1 every address
+inverts out of range and every write is lost); the golden harness now renders each
+preset with its own seed, so the serial golden shows its flipped green gain. Known
+limits for the fix round: a visibly red leak is out of reach, its near infrared
+outweighing its red under any balance; any visible leak stops the sample down to
+auto-exposure's two-stop limit; a clamp-register flip is absorbed by the processor's
+black clamp; the leak's still-mode smear, 1 % of its column means, is invisible on the
+sample; the clean camera develops bright light in its last rows and first columns
+with a few per cent of red and blue excess (found by stage 19d, not investigated).
+Stage 20a, the entropy coder cross-checked against libjpeg on 112 damaged scans, is
+merged; 20b is in progress; 20c follows, then milestone 5, the gallery.
