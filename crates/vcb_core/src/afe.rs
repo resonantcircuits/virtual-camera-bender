@@ -24,18 +24,20 @@
 //! 3. **Injection** ([`Inject`]). An oscillator adds its waveform at the input node. It
 //!    runs in real time over active samples and blanking; `phase_skew` adds a fixed
 //!    phase step per line, which tilts the bands.
-//! 4. **Programmable gain** of `pga_gain_db`, optionally modulated multiplicatively by
-//!    a second oscillator ([`GainMod`]) with its own phase.
+//! 4. **Programmable gain** of `pga_gain_db`, the VGA register's setting, times the
+//!    pixel gain of the sample's mosaic phase (the `PxGA` registers, 0 dB on the A520),
+//!    optionally modulated multiplicatively by a second oscillator ([`GainMod`]) with
+//!    its own phase. See "Serial interface".
 //! 5. **Bandwidth and slew.** The amplified sum drives a first-order low-pass of cutoff
 //!    `bandwidth_hz` whose output moves at most `slew_v_per_us`. Each sub-step holds
 //!    its input constant, so the exponential response is exact within it; the slew
 //!    limit then clamps the step. The ADC samples the node at the end of each pixel
 //!    period.
-//! 6. **Pedestal and reference.** The black-level clamp adds the pedestal, so zero
-//!    charge lands on the nominal black code. The output is referred to the nominal
-//!    ADC reference [`Params::vref_v`]: the voltage the converter sees, measured
-//!    against the reference the supply delivers ([`State::rail_v`]), as the code
-//!    that voltage would give at the nominal reference.
+//! 6. **Pedestal and reference.** The black-level clamp adds the pedestal, the clamp
+//!    register's level, so zero charge lands on the nominal black code. The output is
+//!    referred to the nominal ADC reference [`Params::vref_v`]: the voltage the
+//!    converter sees, measured against the reference the supply delivers
+//!    ([`State::rail_v`]), as the code that voltage would give at the nominal reference.
 //!
 //! Without noise, bends, bandwidth limits or a sagging supply the chain reduces to
 //! `volts = pedestal_v + electrons * conv_gain * 10^(pga_gain_db / 20)`.
@@ -136,6 +138,72 @@
 //! `drop_hz = 0` and `reset_frac = 1` the step is skipped and every packet reads as
 //! itself, which gives the bytes of a camera without the section.
 //!
+//! # Serial interface
+//!
+//! The processor programs the chip over its three-wire serial interface (SL, SCK,
+//! SDATA; AD9949 class, `docs/research/a520-technical.md`, section 5). Each write is
+//! an [`ADDRESS_BITS`]-bit register address (C) followed by a data field of
+//! `[afe] serial_data_bits` (PROVISIONAL 24), a register narrower than the field
+//! taking its low bits and the rest padding. The chip latches the data and applies it
+//! at the next VD (C for the family, whose registers are VD-updated unless held;
+//! PROVISIONAL for the A520's use of it). The modelled registers, their addresses
+//! PROVISIONAL:
+//!
+//! | Address | Register | Bits | Setting of code `c` | Nominal content |
+//! |---|---|---|---|---|
+//! | 0x00 | control | 2 | bit 0 power-down, bit 1 output disable | 0 |
+//! | 0x01 | VGA gain | `vga_bits` (C: 10) | `vga_min_db + vga_db_per_code * c` dB (C: 6 dB, 0.0351 dB) | `pga_gain_db` |
+//! | 0x02 to 0x05 | `PxGA` gain R, Gr, Gb, B | `pxga_bits` (PROVISIONAL 6) | `pxga_max_db * c / (2^pxga_bits - 1)` dB (C: 18 dB) | `pxga_gain_db` |
+//! | 0x06 | clamp level | `clamp_bits` (C: 8) | pedestal `c * code_v`, codes of the converter's full width | `pedestal_v` |
+//!
+//! The camera's values become codes by the nearest step, `round((pga_gain_db -
+//! vga_min_db) / vga_db_per_code)` and so on, and [`Params::resolve`] refuses a camera
+//! whose value does not fit its register; the A520's 6.2 dB is VGA code 6, its
+//! 0.0303 V pedestal clamp code 124, its `PxGA` gains code 0. A register holding its
+//! nominal code applies the camera's exact value, not the code's quantised one, so a
+//! clean write leaves the camera as it is.
+//!
+//! **Writes.** In every vertical blanking, before the frame's first line, the
+//! processor rewrites the whole set in address order, each register with its nominal
+//! code (PROVISIONAL: a firmware that wrote only changes would let a corrupted register
+//! stick until the next change). `[bend.serial] bit_error` is a noisy contact on
+//! SDATA: each bit of each write, the address bits A0 to A7 and then the data bits D0
+//! upwards, padding included, reads wrong at the chip with probability `bit_error`,
+//! drawn in that order from a [`Pcg32`] seeded with the bend's own stage seed (salt
+//! `"serial"`) and the frame index. A write whose address survives lands its data,
+//! flips and all, truncated to the register's width; a write whose address flips
+//! lands on the register at the flipped address if it is one of the seven, truncated
+//! to that register's width, and is lost otherwise. A register no write reaches keeps
+//! its content, the last frame's, corrupted or not, until a clean write. The registers
+//! are [`State`], carried from frame to frame and kept on reconfiguration, nominal at
+//! power-on. With `bit_error = 0`, or without the section, every write is clean and
+//! the registers hold the camera's values. At `bit_error = 1` every bit flips, so every
+//! address turns into one at 0xF9 or above and every write is lost: the registers keep
+//! what they held.
+//!
+//! **Effect.** At VD the registers take effect for the frame. The VGA gain replaces
+//! `pga_gain_db`. Each `PxGA` gain multiplies the samples of its mosaic phase in the
+//! gain step: the AFE learns each sample's colour from the readout line's image row
+//! and the sample's column in the line, which on the RGGB mosaic is a red row (R, Gr)
+//! on even image rows and a blue row (Gb, B) on odd ones; the movie readout keeps row
+//! pairs and so the phase, and the optical-black columns take the phase of their
+//! position, continuing the active columns' alternation to the left. At 0 dB the
+//! factors are exactly 1 and the step is skipped. Over blanking, where no sample has
+//! a colour, the node relaxes with the VGA gain alone. The clamp level sets the pedestal.
+//! A set power-down or output-disable bit tristates the outputs for the whole frame:
+//! as under the undervoltage lockout (see "Supply") the bus holds the last word of the
+//! frame before, rounded to its code, and every sample of the frame, optical black
+//! included, carries it, while the analog chain runs on behind the outputs.
+//!
+//! **Not modelled.** The timing core's registers: on the chip a misdirected write
+//! that reached them would upset the frame's clocks, here it is lost. Also the
+//! registers the chip updates on SL rather than VD, the AD9949's actual register
+//! addresses and field layout, and the clamp's settling after a power-down.
+//!
+//! **Cost.** Seven writes of 32 bits a frame: a few hundred draws and a register
+//! decode per frame, negligible beside the chain's per-sample work. A pixel gain off
+//! 0 dB adds a multiply per sample.
+//!
 //! # Blanking
 //!
 //! During horizontal and vertical blanking the CCD delivers no charge. Over each
@@ -188,6 +256,8 @@ use std::ops::Range;
 use crate::noise::{self, Pcg32};
 use crate::power::Rail;
 use crate::readout::{Layout, Stream};
+use crate::scene::Channel;
+use crate::sensor::Cfa;
 use crate::{Camera, Error, Preset, Timing};
 
 /// Salt of the analog front end's noise sources.
@@ -201,6 +271,53 @@ const GAIN_SALT: u32 = noise::salt("afe.gain_mod");
 
 /// Salt of the reset gate's missed pulses, which have their own stage seed.
 const RESET_SALT: u32 = noise::salt("reset");
+
+/// Salt of the serial link's bit errors, which have their own stage seed.
+const SERIAL_SALT: u32 = noise::salt("serial");
+
+/// Bits of the register address that starts every serial write.
+///
+/// C: the AD9949 class sends an 8-bit address before each data field
+/// (`docs/research/a520-technical.md`, section 5). An address that a flip moves past
+/// the modelled registers lands nowhere.
+pub const ADDRESS_BITS: u8 = 8;
+
+/// Number of modelled serial registers, at the addresses `0` to `REGISTERS - 1`.
+pub const REGISTERS: usize = 7;
+
+/// Address of the control register: power-down and output disable.
+///
+/// PROVISIONAL, as every address of the register map: the model's own, not the
+/// AD9949's (see the [module documentation](self), "Serial interface").
+pub const CONTROL_ADDRESS: u8 = 0x00;
+
+/// Address of the VGA gain register.
+///
+/// PROVISIONAL, as [`CONTROL_ADDRESS`].
+pub const VGA_ADDRESS: u8 = 0x01;
+
+/// Addresses of the four pixel gain registers, in the order R, Gr, Gb, B.
+///
+/// PROVISIONAL, as [`CONTROL_ADDRESS`]. The order is that of `[afe] pxga_gain_db`.
+pub const PXGA_ADDRESSES: [u8; 4] = [0x02, 0x03, 0x04, 0x05];
+
+/// Address of the black clamp level register.
+///
+/// PROVISIONAL, as [`CONTROL_ADDRESS`].
+pub const CLAMP_ADDRESS: u8 = 0x06;
+
+/// Bit of the control register that powers the chip down; its outputs tristate.
+pub const POWER_DOWN: u32 = 1 << 0;
+
+/// Bit of the control register that disables the chip's outputs; they tristate.
+pub const OUTPUT_DISABLE: u32 = 1 << 1;
+
+/// Width of the control register in bits: the two modelled control bits.
+///
+/// PROVISIONAL: the AD9949's control registers hold more fields (standby modes, test
+/// modes, the timing core's enables), which the model does not hold; a data bit above
+/// these two is truncated like any bit beyond a register's width.
+const CONTROL_BITS: u8 = 2;
 
 /// Scale that maps a 32-bit integer onto `[0, 2)`.
 const TWO_OVER_2_32: f64 = 2.0 / 4_294_967_296.0;
@@ -278,6 +395,219 @@ pub struct ResetGate {
     pub seed: u64,
 }
 
+/// The chip's serially programmed registers and the bit errors of their link.
+///
+/// Registers are indexed by address. See the [module documentation](self), "Serial
+/// interface".
+#[derive(Debug, Clone, PartialEq)]
+pub struct Serial {
+    /// Bits of the data field of a write, after its [`ADDRESS_BITS`]-bit address.
+    pub data_bits: u8,
+    /// Width of each register in bits.
+    pub widths: [u8; REGISTERS],
+    /// The camera's content of each register as a code.
+    ///
+    /// A register holding its nominal code applies the camera's exact value.
+    pub nominal: [u32; REGISTERS],
+    /// Gain of the VGA at code 0, in decibels.
+    pub vga_min_db: f64,
+    /// Gain step of the VGA per code, in decibels.
+    pub vga_db_per_code: f64,
+    /// Gain of a pixel gain register at its largest code, in decibels.
+    pub pxga_max_db: f64,
+    /// Probability that a bit of a write reads wrong at the chip; 0 on a sound link.
+    pub bit_error: f64,
+    /// Seed of the bit errors, the bend's own stage seed.
+    pub seed: u64,
+}
+
+impl Serial {
+    /// Resolves the register map from the camera and the bend's error rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error if a nominal value does not fit its register.
+    fn resolve(camera: &Camera, bit_error: f64, seed: u64) -> Result<Self, Error> {
+        let afe = &camera.afe;
+        let pxga_top = f64::from(low_mask(afe.pxga_bits));
+        let mut widths = [afe.pxga_bits; REGISTERS];
+        widths[usize::from(CONTROL_ADDRESS)] = CONTROL_BITS;
+        widths[usize::from(VGA_ADDRESS)] = afe.vga_bits;
+        widths[usize::from(CLAMP_ADDRESS)] = afe.clamp_bits;
+        let mut nominal = [0; REGISTERS];
+        nominal[usize::from(VGA_ADDRESS)] = register_code(
+            &format!("afe.pga_gain_db {} dB on the VGA", afe.pga_gain_db),
+            (afe.pga_gain_db - afe.vga_min_db) / afe.vga_db_per_code,
+            afe.vga_bits,
+        )?;
+        for ((address, gain_db), phase) in PXGA_ADDRESSES
+            .into_iter()
+            .zip(afe.pxga_gain_db)
+            .zip(["r", "gr", "gb", "b"])
+        {
+            nominal[usize::from(address)] = register_code(
+                &format!("afe.pxga_gain_db ({phase}) {gain_db} dB on a pixel gain register"),
+                gain_db / afe.pxga_max_db * pxga_top,
+                afe.pxga_bits,
+            )?;
+        }
+        let code_v = camera.adc.full_scale_v / f64::from(camera.max_code());
+        nominal[usize::from(CLAMP_ADDRESS)] = register_code(
+            &format!("afe.pedestal_v {} V on the clamp", afe.pedestal_v),
+            afe.pedestal_v / code_v,
+            afe.clamp_bits,
+        )?;
+        Ok(Self {
+            data_bits: afe.serial_data_bits,
+            widths,
+            nominal,
+            vga_min_db: afe.vga_min_db,
+            vga_db_per_code: afe.vga_db_per_code,
+            pxga_max_db: afe.pxga_max_db,
+            bit_error,
+            seed,
+        })
+    }
+
+    /// Returns the bits that read wrong in frame `index`'s writes, by intended address.
+    ///
+    /// Each entry holds the flipped address bits and the flipped data bits of one write.
+    fn flips(&self, index: u64) -> [(u8, u32); REGISTERS] {
+        let mut rng = Pcg32::new(self.seed, index);
+        let mut field = |bits: u8| {
+            let mut mask = 0u32;
+            for bit in 0..bits.min(32) {
+                if f64::from(rng.next_u32()) * ONE_OVER_2_32 < self.bit_error {
+                    mask |= 1 << bit;
+                }
+            }
+            mask
+        };
+        let mut flips = [(0, 0); REGISTERS];
+        for flip in &mut flips {
+            let address = field(ADDRESS_BITS) as u8;
+            *flip = (address, field(self.data_bits));
+        }
+        flips
+    }
+
+    /// Returns the registers after frame `index`'s writes onto `held`, the last frame's.
+    ///
+    /// `None` stands for every register at its nominal code, as at power-on.
+    fn program(&self, held: Option<[u32; REGISTERS]>, index: u64) -> Option<[u32; REGISTERS]> {
+        if self.bit_error <= 0.0 {
+            // A sound link: every write lands clean and restores the camera's value.
+            return None;
+        }
+        let mut codes = held.unwrap_or(self.nominal);
+        for (sent, (address_flips, data_flips)) in self.flips(index).into_iter().enumerate() {
+            let landed = usize::from(sent as u8 ^ address_flips);
+            if let Some(code) = codes.get_mut(landed) {
+                *code = (self.nominal[sent] ^ data_flips) & low_mask(self.widths[landed]);
+            }
+        }
+        (codes != self.nominal).then_some(codes)
+    }
+}
+
+/// Returns a mask of the low `bits` bits.
+fn low_mask(bits: u8) -> u32 {
+    u32::MAX
+        .checked_shr(32u32.saturating_sub(u32::from(bits)))
+        .unwrap_or(0)
+}
+
+/// Returns the code nearest `code` if a register of `bits` bits holds it.
+///
+/// # Errors
+///
+/// Returns a configuration error naming `what` otherwise.
+fn register_code(what: &str, code: f64, bits: u8) -> Result<u32, Error> {
+    let top = low_mask(bits);
+    let nearest = code.round();
+    if (0.0..=f64::from(top)).contains(&nearest) {
+        Ok(nearest as u32)
+    } else {
+        Err(Error::config(format!(
+            "{what} needs code {nearest}, beyond the {bits}-bit register's 0 to {top}"
+        )))
+    }
+}
+
+/// Returns the linear gain of `gain_db` decibels.
+fn db_gain(gain_db: f64) -> f64 {
+    10f64.powf(gain_db / 20.0)
+}
+
+/// Returns the pixel gain register, 0 to 3 for R, Gr, Gb, B, of the photosite at `x`, `y`.
+fn pxga_phase(cfa: Cfa, x: u32, y: u32) -> usize {
+    match cfa.channel(x, y) {
+        Channel::Red => 0,
+        Channel::Green if cfa.channel(x ^ 1, y) == Channel::Red => 1,
+        Channel::Green => 2,
+        Channel::Blue => 3,
+    }
+}
+
+/// What the registers set for one frame.
+#[derive(Debug, Clone, Copy)]
+struct Setting {
+    /// Linear gain of the VGA.
+    gain: f64,
+    /// Pixel gain factors by image-row parity and column parity; `None` when all are 1.
+    pxga: Option<[[f64; 2]; 2]>,
+    /// The clamp's pedestal at the nominal rail, in volts.
+    pedestal_v: f64,
+    /// Whether the outputs are tristated for the frame.
+    tristated: bool,
+}
+
+impl Setting {
+    /// Decodes the registers, `None` for every one at its nominal code.
+    fn new(params: &Params, registers: Option<&[u32; REGISTERS]>) -> Self {
+        let serial = &params.serial;
+        let codes = registers.unwrap_or(&serial.nominal);
+        let code = |address: u8| codes[usize::from(address)];
+        let exact = |address: u8| code(address) == serial.nominal[usize::from(address)];
+        let vga_db = if exact(VGA_ADDRESS) {
+            params.pga_gain_db
+        } else {
+            serial.vga_min_db + serial.vga_db_per_code * f64::from(code(VGA_ADDRESS))
+        };
+        let pxga_top = f64::from(low_mask(serial.widths[usize::from(PXGA_ADDRESSES[0])]));
+        let mut factors = [1.0; 4];
+        for ((factor, address), camera_db) in factors
+            .iter_mut()
+            .zip(PXGA_ADDRESSES)
+            .zip(params.pxga_gain_db)
+        {
+            let gain_db = if exact(address) {
+                camera_db
+            } else {
+                serial.pxga_max_db * f64::from(code(address)) / pxga_top
+            };
+            *factor = db_gain(gain_db);
+        }
+        // At 0 dB a factor is exactly 1, and the step is skipped.
+        let unity = factors.iter().all(|f| f.to_bits() == 1f64.to_bits());
+        let pxga = (!unity).then(|| {
+            let at = |x: u32, y: u32| factors[pxga_phase(params.cfa, x, y)];
+            [[at(0, 0), at(1, 0)], [at(0, 1), at(1, 1)]]
+        });
+        let pedestal_v = if exact(CLAMP_ADDRESS) {
+            params.pedestal_v
+        } else {
+            f64::from(code(CLAMP_ADDRESS)) * params.code_v
+        };
+        Self {
+            gain: db_gain(vga_db),
+            pxga,
+            pedestal_v,
+            tristated: code(CONTROL_ADDRESS) & (POWER_DOWN | OUTPUT_DISABLE) != 0,
+        }
+    }
+}
+
 /// Voltages at the ADC input in readout order.
 #[derive(Clone, PartialEq)]
 pub struct Analog {
@@ -353,9 +683,15 @@ pub struct Params {
     pub read_noise_e: f64,
     /// Read-noise corner in hertz, below which flicker exceeds the white floor; 0 disables it.
     pub noise_1f_corner_hz: f64,
-    /// Programmable gain amplifier gain in decibels.
+    /// Programmable gain amplifier gain in decibels: the camera's VGA setting.
     pub pga_gain_db: f64,
-    /// Voltage at the ADC input for zero charge.
+    /// Gains of the four pixel gain amplifiers in decibels, in the order R, Gr, Gb, B.
+    ///
+    /// The camera's `PxGA` settings; each multiplies the samples of its mosaic phase.
+    pub pxga_gain_db: [f64; 4],
+    /// Layout of the colour filter array, which gives each sample its pixel gain.
+    pub cfa: Cfa,
+    /// Voltage at the ADC input for zero charge: the camera's clamp level.
     pub pedestal_v: f64,
     /// Small-signal bandwidth at the native resolution in hertz.
     pub bandwidth_hz: f64,
@@ -393,6 +729,8 @@ pub struct Params {
     pub fd_swing_v: f64,
     /// Missed and weak reset pulses, if the preset has a `[bend.reset]` that is not inert.
     pub reset: Option<ResetGate>,
+    /// The serially programmed registers and the `[bend.serial]` bit errors on their link.
+    pub serial: Serial,
     /// Injected oscillator, if the preset patches one in.
     pub inject: Option<Inject>,
     /// Gain-modulating oscillator, if the preset patches one in.
@@ -407,11 +745,14 @@ impl Params {
     /// The restart time constant is the camera's `afe_restart_lines` in native lines
     /// of the readout mode, converted to seconds with the camera's own pixel clock.
     /// An inert `[bend.reset]` resolves to no [`ResetGate`]; a live one's run length
-    /// becomes seconds on the camera's own clock.
+    /// becomes seconds on the camera's own clock. The camera's VGA gain, pixel gains
+    /// and pedestal become the nominal codes of their registers ([`Serial`]); without
+    /// `[bend.serial]` the link is sound.
     ///
     /// # Errors
     ///
-    /// Returns a configuration error if a value is out of range.
+    /// Returns a configuration error if a value is out of range, or if the camera's
+    /// VGA gain, a pixel gain or its pedestal does not fit its serial register.
     pub fn resolve(camera: &Camera, preset: &Preset, timing: &Timing) -> Result<Self, Error> {
         let afe = &camera.afe;
         let bend = preset.bend.afe.clone().unwrap_or_default();
@@ -428,11 +769,18 @@ impl Params {
                 reset_frac: bend.reset_frac,
                 seed: noise::stage_seed(preset.seed, RESET_SALT),
             });
+        let serial = Serial::resolve(
+            camera,
+            preset.bend.serial.map_or(0.0, |bend| bend.bit_error),
+            noise::stage_seed(preset.seed, SERIAL_SALT),
+        )?;
         Ok(Self {
             conv_gain_uv_per_e: camera.sensor.conv_gain_uv_per_e,
             read_noise_e: camera.sensor.read_noise_e,
             noise_1f_corner_hz: afe.noise_1f_corner_hz,
             pga_gain_db: afe.pga_gain_db,
+            pxga_gain_db: afe.pxga_gain_db,
+            cfa: camera.sensor.cfa,
             pedestal_v: afe.pedestal_v,
             bandwidth_hz: afe.bandwidth_hz,
             slew_v_per_us: afe.slew_v_per_us,
@@ -448,6 +796,7 @@ impl Params {
             cds_mix: bend.cds_mix,
             fd_swing_v: afe.fd_swing_v,
             reset,
+            serial,
             inject: bend.inject,
             gain_mod: bend.gain_mod,
             seed: noise::stage_seed(preset.seed, SALT),
@@ -457,7 +806,7 @@ impl Params {
     /// Returns the linear gain of the programmable gain amplifier.
     #[must_use]
     pub fn pga_gain(&self) -> f64 {
-        10f64.powf(self.pga_gain_db / 20.0)
+        db_gain(self.pga_gain_db)
     }
 
     /// Returns the total gain from electrons to volts at the ADC input.
@@ -495,9 +844,10 @@ impl Phase {
 ///
 /// Holds the low-pass node, the flicker-noise process, the phases of both
 /// oscillators, the reference the supply delivered, the chip's power state (the last
-/// output, whether it is locked out and the pedestal while the clamp restarts), and
-/// the CCD's floating diffusion: its charge and whether its reset pulses are being
-/// missed. The default is the power-on state, an empty diffusion.
+/// output, whether it is locked out and the pedestal while the clamp restarts), the
+/// CCD's floating diffusion (its charge and whether its reset pulses are being
+/// missed) and the serially programmed registers. The default is the power-on state,
+/// an empty diffusion and the camera's register values.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
     node_v: f64,
@@ -515,6 +865,8 @@ pub struct State {
     fd_charge_e: f64,
     /// Whether the reset pulse was missing in the frame's last pixel period.
     reset_missed: bool,
+    /// The serial registers' codes by address; `None` while all hold the camera's values.
+    serial: Option<[u32; REGISTERS]>,
 }
 
 impl State {
@@ -568,6 +920,17 @@ impl State {
     #[must_use]
     pub fn reset_missed(&self) -> bool {
         self.reset_missed
+    }
+
+    /// Returns the codes of the serial registers after the last frame's writes, for tests.
+    ///
+    /// Indexed by address, [`CONTROL_ADDRESS`] to [`CLAMP_ADDRESS`]. `None` while every
+    /// register holds its nominal code and so the camera's value, as at power-on and
+    /// after a frame of clean writes.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn serial_codes(&self) -> Option<[u32; REGISTERS]> {
+        self.serial
     }
 }
 
@@ -875,10 +1238,11 @@ struct Power {
 }
 
 impl Power {
-    fn new(params: &Params, state: &State, nominal_v: f64, pixel_s: f64) -> Self {
+    /// Starts a frame whose clamp holds `pedestal_v` at the nominal rail.
+    fn new(params: &Params, state: &State, pedestal_v: f64, nominal_v: f64, pixel_s: f64) -> Self {
         Self {
             nominal_v,
-            pedestal_v: params.pedestal_v,
+            pedestal_v,
             uvlo_v: params.uvlo_v,
             code_v: params.code_v,
             restart_s: params.restart_s,
@@ -945,7 +1309,14 @@ impl Power {
 struct Front<'a> {
     params: &'a Params,
     volts_per_e: f64,
+    /// The VGA's linear gain for the frame.
     gain: f64,
+    /// Pixel gain factors by image-row parity and column parity, unless all are 1.
+    pxga: Option<[[f64; 2]; 2]>,
+    /// The clamp's pedestal at the nominal rail for the frame, in volts.
+    pedestal_v: f64,
+    /// Optical-black samples at the start of each line.
+    ob_cols: usize,
     oversample: u32,
     sub_s: f64,
     tau_s: f64,
@@ -973,7 +1344,14 @@ struct Front<'a> {
 }
 
 impl<'a> Front<'a> {
-    fn new(params: &'a Params, state: &State, layout: &Layout, rail: &Rail, index: u64) -> Self {
+    fn new(
+        params: &'a Params,
+        state: &State,
+        setting: &Setting,
+        layout: &Layout,
+        rail: &Rail,
+        index: u64,
+    ) -> Self {
         let pixel_s = layout.pixel_period_s();
         let oversample = params.oversample.max(1);
         let sub_s = pixel_s / f64::from(oversample);
@@ -1007,7 +1385,10 @@ impl<'a> Front<'a> {
         Self {
             params,
             volts_per_e: params.conv_gain_uv_per_e * 1e-6,
-            gain: params.pga_gain(),
+            gain: setting.gain,
+            pxga: setting.pxga,
+            pedestal_v: setting.pedestal_v,
+            ob_cols: layout.ob_cols() as usize,
             oversample,
             sub_s,
             tau_s,
@@ -1018,7 +1399,7 @@ impl<'a> Front<'a> {
             inject,
             gain_mod,
             line_px: f64::from(layout.line_len() + layout.hblank_px()),
-            power: Power::new(params, state, rail.nominal_v(), pixel_s),
+            power: Power::new(params, state, setting.pedestal_v, rail.nominal_v(), pixel_s),
             noise: ReadNoise::new(params, pixel_s, index, state.flicker_v),
             node_v: state.node_v,
             diffusion: params
@@ -1074,10 +1455,12 @@ impl<'a> Front<'a> {
 
     /// Runs the stored samples of `line`, which starts `start_s` into the frame.
     ///
-    /// `supply` is the rail at the start of the line and at the end of its blanking.
+    /// `image_row` is the line's row in the image, whose parity gives the mosaic row of
+    /// the pixel gains; `supply` is the rail at the start of the line and at the end of
+    /// its blanking.
     fn line(
         &mut self,
-        line: u32,
+        (line, image_row): (u32, u32),
         start_s: f64,
         electrons: &[f32],
         volts: &mut [f32],
@@ -1110,19 +1493,25 @@ impl<'a> Front<'a> {
             });
         // On a steady rail the pedestal and the reference factor hold for the line.
         let steady = self.power.steady(supply);
-        let (pedestal_v, reference) = steady.map_or((0.0, 0.0), |ratio| {
-            (self.params.pedestal_v * ratio, 1.0 / ratio)
-        });
+        let (pedestal_v, reference) =
+            steady.map_or((0.0, 0.0), |ratio| (self.pedestal_v * ratio, 1.0 / ratio));
         let slope_v = (supply[1] - supply[0]) / self.line_px;
         let mut last_v = self.power.last_v;
+        // The pixel gains of the line's mosaic row, by the parity of the column, which
+        // runs from the first active sample and continues leftwards over optical black.
+        let pxga = self.pxga.map(|rows| rows[(image_row & 1) as usize]);
+        let ob_cols = self.ob_cols;
         for (sample, (volts, &charge)) in volts.iter_mut().zip(electrons).enumerate() {
             let packet_e = match self.diffusion.as_mut() {
                 Some(diffusion) => diffusion.read(f64::from(charge)),
                 None => f64::from(charge),
             };
             let level = packet_e * self.volts_per_e + self.noise.sample();
+            let gain = pxga.map_or(self.gain, |factors| {
+                self.gain * factors[(sample + ob_cols) & 1]
+            });
             if plain {
-                self.settle_pixel(level * self.gain);
+                self.settle_pixel(level * gain);
             } else {
                 for sub in 0..self.oversample {
                     let mut input = level;
@@ -1132,9 +1521,9 @@ impl<'a> Front<'a> {
                     if let Some((sweep, amplitude)) = inject.as_mut() {
                         input += *amplitude * sweep.next();
                     }
-                    let gain = gain_mod.as_mut().map_or(self.gain, |(sweep, depth)| {
-                        self.gain * (1.0 + *depth * sweep.next())
-                    });
+                    let gain = gain_mod
+                        .as_mut()
+                        .map_or(gain, |(sweep, depth)| gain * (1.0 + *depth * sweep.next()));
                     self.settle(input * gain);
                 }
             }
@@ -1228,12 +1617,26 @@ pub fn missed_runs(params: &Params, state: &State, layout: &Layout, index: u64) 
     runs
 }
 
+/// Returns the bits that read wrong in frame `index`'s serial writes, for tests.
+///
+/// One entry per write, in the order the processor sends them, which is the order of
+/// the intended addresses: the mask of the flipped address bits and the mask of the
+/// flipped data bits, padding included. Without `[bend.serial]` or at `bit_error = 0`
+/// every mask is empty.
+#[cfg(feature = "test-util")]
+#[must_use]
+pub fn serial_flips(params: &Params, index: u64) -> [(u8, u32); REGISTERS] {
+    params.serial.flips(index)
+}
+
 /// Converts the charge stream to volts at the ADC input for frame `index`.
 ///
 /// Runs the analog chain described in the [module documentation](self) over every
 /// stored sample and every blanking interval of the frame, and leaves the analog
 /// state ready for the next frame. With a [`ResetGate`] each sample first passes the
-/// floating diffusion of the module documentation's "Reset gate".
+/// floating diffusion of the module documentation's "Reset gate". Before the first
+/// line the processor's serial writes of frame `index` program the registers (see
+/// "Serial interface"), whose gains, pedestal and output controls apply to the frame.
 ///
 /// `rail` is the supply rail of every readout line from
 /// [`power::track`](crate::power::track), which sets the reference and the pedestal,
@@ -1265,7 +1668,15 @@ pub fn process(
         rail.lines(),
         layout.rows()
     );
-    let mut front = Front::new(params, state, layout, rail, index);
+    // In the vertical blanking before the frame the processor rewrites the registers,
+    // which take effect at VD.
+    state.serial = params.serial.program(state.serial, index);
+    let setting = Setting::new(params, state.serial.as_ref());
+    // Tristated outputs leave the bus holding the last word of the frame before.
+    let held_v = setting
+        .tristated
+        .then(|| (state.last_v / params.code_v).round() * params.code_v);
+    let mut front = Front::new(params, state, &setting, layout, rail, index);
     let line_s = layout.line_period_s();
     let hblank_s = f64::from(layout.hblank_px()) * layout.pixel_period_s();
     let line_len = layout.line_len() as usize;
@@ -1278,7 +1689,8 @@ pub fn process(
     for (line, (volts, electrons)) in (0..layout.rows()).zip(lines) {
         let start_s = f64::from(line) * line_s;
         let line_supply = supply[line as usize];
-        front.line(line, start_s, electrons, volts, line_supply);
+        let rows = (line, layout.image_row(line));
+        front.line(rows, start_s, electrons, volts, line_supply);
         front.blank(hblank_s, start_s + line_s, line + 1, line_supply[1]);
         front.skip_resets(hblank_px);
     }
@@ -1298,6 +1710,11 @@ pub fn process(
     state.flicker_v = front.noise.flicker_v;
     state.rail_v = params.vref_v * (end_v / rail.nominal_v());
     state.last_v = front.power.last_v;
+    if let Some(held_v) = held_v {
+        // The analog chain ran on behind the outputs; the bus kept the word.
+        out.volts.fill(held_v as f32);
+        state.last_v = held_v;
+    }
     state.locked = front.power.locked;
     state.restart_v = front.power.restart_v;
     if let Some(diffusion) = &front.diffusion {
