@@ -304,3 +304,15 @@ fn the_light_leak_renders_its_golden_frame() {
 fn the_open_body_renders_its_golden_frame() {
     check("a520-open-body");
 }
+
+/// The preset's seed, 167, closes the contact during the first frame's scan on the
+/// golden scene as on the sample, so the golden shows the decoder out of step.
+#[test]
+fn the_card_rot_renders_its_golden_frame() {
+    check("a520-card-rot");
+}
+
+#[test]
+fn the_strip_repeat_renders_its_golden_frame() {
+    check("a520-strip-repeat");
+}

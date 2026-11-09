@@ -178,7 +178,8 @@ impl Params {
     /// Resolves the codec parameters from the camera, preset and derived timing.
     ///
     /// The still and movie sections each select a quality setting; its tables come
-    /// from the camera's `[jpeg.tables]`. The scan has no restart markers.
+    /// from the camera's `[jpeg.tables]`, and the scan's restart interval is the camera's
+    /// `[jpeg] restart_interval`.
     ///
     /// # Errors
     ///
@@ -194,9 +195,7 @@ impl Params {
             tables: camera.jpeg.tables.get(quality).clone(),
             subsampling: camera.jpeg.subsampling,
             chroma_upsample: camera.jpeg.chroma_upsample,
-            // TODO(stage 20c): read `camera.jpeg.restart_interval` once the camera
-            // model has the key.
-            restart_interval: 0,
+            restart_interval: camera.jpeg.restart_interval,
         })
     }
 }

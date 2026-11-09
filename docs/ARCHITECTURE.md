@@ -51,8 +51,10 @@ camera's analog memory carries from one render to the next.
 module has a `Params` struct resolved once from camera, preset and `Timing`, a `State`
 where the hardware remembers across frames, and one public function per frame. The
 power, capture and memory stages resolve to nothing without their preset section and
-then pass their signal through untouched. The module docs hold the formulas; this
-section states the contracts.
+then pass their signal through untouched. The codec runs its direct round trip, unless
+the memory section's `reaches_jpeg` puts the compressed buffer in the bent SDRAM: then
+the frame is entropy-coded into its scan, the scan passes the SDRAM, and the decoder
+reads it back. The module docs hold the formulas; this section states the contracts.
 
 | Stage | Function | In → out | Parameters | State |
 |---|---|---|---|---|
@@ -68,6 +70,7 @@ section states the contracts.
 | Memory | `memory::bend` | `Raw` in place | camera `[memory]`; preset `[bend.memory]` | SDRAM content, contacts, decaying cells |
 | ISP | `isp::develop`, `isp::meter` | `Raw` → `Frame` | camera `[isp]` `[adc]` `[movie]`; preset `[isp]` | exposure and white-balance servos |
 | Codec | `codec::encode` | `Frame` in place | camera `[jpeg]` `[still]` `[movie]` | – |
+| Codec and memory, with `reaches_jpeg` | `codec::encode_scan`, `memory::bend_scan`, `codec::decode_scan` | `Frame` → scan (`Vec<u8>`) in place → `Frame` | as both, camera `[memory] jpeg_base` | the scan's words in the SDRAM |
 
 ### Scene
 
@@ -407,12 +410,83 @@ on about 30 sites at 100 °C, 0.3 % of them at 110 °C, a fifth at 120 °C and 9
 130 °C, single bright and dark sites in stripes that follow the SDRAM rows (0.9 of a
 readout line), coloured crosses after the demosaic.
 
+The compressed frame can pass the same chip. The processor keeps the codec's scan in
+memory until the card writer takes it, and whether that memory is the bent chip is the
+memory map's doing, unknown for the A520; the Fujifilm S9000's documented bend produced
+readable files with torn raws, so its compressed buffer was out of the faults' reach.
+`[bend.memory] reaches_jpeg` decides it (default `false`, PROVISIONAL), so the memory
+presets of milestone 3 and stage 19 keep their looks and goldens. While it is set,
+`memory::bend_scan` writes the scan at `[memory] jpeg_base` (PROVISIONAL 2^22 words, just
+above the native still raw's 3,871,488, moved with the row bits at other geometries),
+two bytes a word, the low byte first (PROVISIONAL), in bursts of one readout line's
+worth of words after the frame's development, and reads it back in the same bursts a
+frame period later, through the same address and data faults, marginal contacts and
+cells as the raw. A burst's write shares its instant with the raw's read of the same
+readout line, and its read with the next frame's, so the contacts run one path through
+both buffers and the raw's samples do not depend on the switch. The scan fills the
+word, so all 16 data pins carry its bits (a fault on `d_n` acts on bit `n mod 8` of
+every other byte), `d10` to `d15` included, and the cells of all 16 bits decay. Which
+addresses a fault reaches is the memory map's: at native still size `a11`, row bit 22,
+lies above the raw, so a fault on it folds the scan down onto the raw's first words and
+leaves the raw alone; the movie raw ends below 2^19, so `a9` to `a11` reach only the
+scan; a pin within the scan's length folds the scan onto itself. A marginal contact is
+sampled per burst, so a closure during the scan corrupts a whole burst, a thousand
+bits or so of a data pin, not one: a fault that sets bits turns a stuffed zero byte into
+a marker within a few hundred bytes and greys the rest at once, and one that clears
+bits never makes a marker, so the decoder runs out of step, shifted and tinted, to the
+end. Where `a11` changes between a burst's write and its read, the read finds this
+frame's raw, codes read as compressed bytes (the decoder's DC runs off into bars), or
+what the words held before: in a running camera the last frame's scan at the same
+offset, strips of the picture repeated, and in the first frame from power-on the
+SDRAM's random power-up content, which greys the rest. `Simulator::scan_len` reports
+the length of the last frame's scan while the path runs.
+
 ### Codec
 
 Encode and decode in place: BT.601 `Y'CbCr`, 4:2:2 subsampling, 8 by 8 DCT,
-`round(F / Q)` with the measured Canon tables at the mode's quality, inverse DCT and
-chroma upsampling (repetition or libjpeg's triangle filter). Entropy coding is lossless
-and not modelled.
+`round(F / Q)` to integer coefficients with the measured Canon tables at the mode's
+quality, then dequantisation, inverse DCT and chroma upsampling (repetition or
+libjpeg's triangle filter).
+
+Between the quantiser and the decoder lies the scan, the file's bytes after its
+headers. The entropy coder (`codec::encode_scan`) is baseline sequential Huffman coding
+through the standard's Annex K.3 tables (PROVISIONAL: the A520's own tables were not
+read from its files; the sample on file and most compacts of the time use these). It
+codes the MCUs in raster order, for 4:2:2 two luma blocks then Cb and Cr: each block's
+DC as the difference to the component's previous block, in a size category with its
+extra bits, and its ACs in zigzag order as (run, size) symbols with extra bits, an
+end-of-block and runs of sixteen zeros; a `0xFF` byte is followed by a stuffed `0x00`,
+and the last byte is padded with ones. With `[jpeg] restart_interval` MCUs (PROVISIONAL
+0: Canon's files are believed to carry no restart markers) an `RSTm` marker follows
+every interval but the last, and the DC predictions restart at zero. The coding is
+exact, so `encode_scan` followed by `decode_scan` gives the frame of `codec::encode`
+byte for byte, and the simulator takes that path only while `[bend.memory]
+reaches_jpeg` puts the scan in the bent SDRAM, where `memory::bend_scan` acts on it
+between the two (Memory); otherwise `encode` skips the coding.
+
+`decode_scan` reads a damaged scan as libjpeg (6b and turbo) does, since that is what a
+bender's file viewer shows. A corrupted bit mis-decodes a code, and the decoder runs on
+out of step: wrong sizes and runs, blocks that end early or late, MCUs shifted along
+the rows, and DC differences that accumulate wrongly, tinting and shading everything
+after the fault. A bit pattern that is no code reads as symbol 0 (a zero DC difference,
+an end of block) and consumes the bits libjpeg examined; a run past a block's last
+coefficient ends the block. `0xFF` followed by anything but `0x00` is a marker, and the
+end of the data reads as one: the decoder finishes the MCU in progress from zero bits
+and greys every later MCU (all coefficients zero, 128 in each channel) up to the next
+restart. At each restart it drops the bits it holds, resets the DC predictions and
+resynchronises as `jpeg_resync_to_restart` does, leaving an `RST` one or two numbers
+ahead unread (the intervals until it comes due decode grey), skipping one behind, and
+taking one further away for the expected one; so damage inside an interval ends at the
+next marker, unless it forms a marker other than `RST`, which greys the rest. Without
+restart markers nothing resynchronises. The decoded blocks go through the dequantiser,
+the inverse DCT and the upsampling of the direct path, and the frame keeps its size.
+
+Not modelled: the file's headers (SOI, DQT, SOF0, DHT, DRI, SOS, EOI), which the model
+assumes intact; progressive, hierarchical and lossless modes, arithmetic coding and
+tables optimised per image; and libjpeg's range limit after the inverse DCT, which
+wraps a sample far out of range around where the model clips the RGB bytes, so where a
+damaged scan's DC runs far off, the model shows flat black or white where libjpeg
+would wrap some samples back into range.
 
 ### Post
 
@@ -541,6 +615,15 @@ every frame, preset and seed. The frame buffer's state gains the cells' masks, a
 function of the temperature and the store's span. The leak has neither randomness nor
 state.
 
+The compressed buffer of stage 20 adds a stream and a store. A burst of the scan
+shares the raw's contact samples where their instants coincide, its reads drawn ahead
+from the next frame's stream exactly as that frame's raw will draw them; a burst at an
+instant no raw line shares continues the path from a stream of its own (salt
+`memory.scan-contact`). The frame buffer's state gains the scan's words outside the
+raw's span, with their cells' masks, kept like the raw's across frames and presets, so
+a burst read across a contact's change finds the last frame's scan. The scan's buffer
+itself is working memory, rewritten every frame.
+
 The contract: the same sequence of scenes and indices, from a fresh simulator or after
 `Simulator::reset`, with the same camera, preset and seed, is identical byte for byte.
 An index rendered twice without a reset need not repeat: the state has moved on.
@@ -556,9 +639,9 @@ The wiring is the set of source pins, the target, the function, the pot node, wh
 the pot is at zero, the common bus and whether patch resistors are fitted; new
 component values keep the charge. The rail's state, the drift's phases and the SDRAM's
 content and contacts carry on whatever `[bend.optics]`, `[bend.rail]`, `[bend.clock]`
-and `[bend.memory]` become, a new oscillator frequency included, and new memory faults
-read the old content, the cells' masks being recomputed when the SDRAM's temperature
-changes; the floating diffusion's charge carries on whatever `[bend.reset]` becomes,
+and `[bend.memory]` become, a new oscillator frequency and the compressed buffer's
+`reaches_jpeg` switch included, and new memory faults read the old content, the cells'
+masks being recomputed when the SDRAM's temperature changes; the floating diffusion's charge carries on whatever `[bend.reset]` becomes,
 and the AFE's registers whatever `[bend.serial]` becomes, until the next frame's
 writes, clean without the section, overwrite them; `[bend.sensor]` and `[bend.leak]`,
 which have no state, take effect with the next frame. A new wiring, or adding or
@@ -599,11 +682,13 @@ volts. `[memory]` gives the frame-buffer SDRAM's `column_bits`, `row_bits` and
 `bank_bits` and the raw buffer's word address `raw_base`; for the data pins and the
 heat, its DQ lines `data_pins` and its cells' retention: the median `retention_s` at
 `reference_temp_c`, the halving interval `retention_halving_c`, the natural-log spread
-`retention_spread` and the refresh period `refresh_ms`. For the serial link, `[afe]`
-gives the write's data field (`serial_data_bits`), the VGA register (`vga_bits`,
-`vga_min_db`, `vga_db_per_code`), the pixel gains' (`pxga_bits`, `pxga_max_db`) and
-their nominal settings (`pxga_gain_db`, R, Gr, Gb, B) and the clamp level's width
-(`clamp_bits`); the camera's `pga_gain_db`, `pxga_gain_db` and `pedestal_v` must fit
+`retention_spread` and the refresh period `refresh_ms`; for the compressed buffer, its
+word address `jpeg_base`, beside `[jpeg] restart_interval`, the scan's MCUs per
+restart interval (0 for none, at most 65,535, a file's 16-bit DRI). For the serial
+link, `[afe]` gives the write's data field (`serial_data_bits`), the VGA register
+(`vga_bits`, `vga_min_db`, `vga_db_per_code`), the pixel gains' (`pxga_bits`,
+`pxga_max_db`) and their nominal settings (`pxga_gain_db`, R, Gr, Gb, B) and the clamp
+level's width (`clamp_bits`); the camera's `pga_gain_db`, `pxga_gain_db` and `pedestal_v` must fit
 their registers. Each physical value carries a confidence letter from the key-constants
 table of `docs/research/a520-technical.md`: **A** measured or stated for the A520,
 **B** stated for the near-certain sibling part, **C** a documented substitute of the
@@ -636,8 +721,10 @@ faults' fields on the data pins, one fault a pin, and the SDRAM's `temperature_c
 to 150 °C, default the camera's reference); `[bend.serial]` `bit_error` (0 to 1,
 default 0.001); `[bend.leak]` `edge` (`left`, the default, `right`, `top` or
 `bottom`), `radiance` (at least 0, default 0.5), `spread_frac` (above 0, at most 2,
-default 0.3), `colour` (`[r, g, b]`, default `[1, 1, 1]`) and `nir` (default 1). The
-leak's edge is the sensor's, in its landscape orientation, so a left leak lies at the
+default 0.3), `colour` (`[r, g, b]`, default `[1, 1, 1]`) and `nir` (default 1). Stage
+20: `[bend.memory]` gains `reaches_jpeg` (default `false`, written only when set),
+whether the faults and cells reach the compressed buffer too. The leak's edge is the
+sensor's, in its landscape orientation, so a left leak lies at the
 bottom of a portrait still. Under one heat gun the SDRAM and the sensor show at about
 the same temperature: with the camera's retention a board loses its first bits from
 about 105 °C, and a daylight frame at 1/125 s shows its first grain from about 110 °C.
@@ -661,8 +748,8 @@ Tests of the public API live in `crates/*/tests/`, one file per area (`noise`,
 `timing`, `config`, `stages`, `clean_camera`, `readout_afe`, `bus`, `codec`,
 `simulator`, `interactive`, `servo`, `optics`, `power`, `capture`, `memory`,
 `milestone3_plumbing`, `sensor_bend`, `reset`, `stage19_plumbing`, `serial`, `leak`,
-`golden`, `io`, `video`, `cli`, and the app's panels, render worker, video, export and
-viewport); the `test-util` feature exposes internal state to them. They assert physical
+`huffman`, `jpeg_buffer`, `jpeg_path`, `golden`, `io`, `video`, `cli`, and the app's
+panels, render worker, video, export and viewport); the `test-util` feature exposes internal state to them. They assert physical
 properties and invariants, never restated constants: a 1 kHz square injection crosses
 zero twice per cycle, equal drivers meet at half rail, the divider skips pixel-rate
 edges, flat fields stay flat, the rail of an unloaded camera is the nominal to the bit,
@@ -673,7 +760,11 @@ reset over a bright run goes black once the swing is used up while a dark run su
 a solid `d9` high puts every code in the top half, the SDRAM at its reference
 temperature decays no cell and at 120 °C about a fifth of the sites, a flipped VGA MSB
 brightens a grey frame by 18 dB, a leak from the left falls to `1/e` at its spread and
-smears a still where the scene does not, every bend replays identically from power-on.
+smears a still where the scene does not, the scan decodes bit-exactly on every
+subsampling and quality and through the SDRAM without a fault renders the direct round
+trip's bytes, a flipped bit of the scan leaves the MCU rows before it and a restart
+marker ends its damage, a fault above the raw leaves the frame alone while
+`reaches_jpeg` is off, every bend replays identically from power-on.
 There is no random-input framework. Video tests generate clips with ffmpeg and skip
 without it.
 
@@ -683,7 +774,10 @@ match-input resolution with the preset's own seed, and the frame's FNV-1a hash m
 `crates/vcb_core/tests/golden/<preset>.hash`, beside which lies the golden PNG.
 `VCB_UPDATE_GOLDEN=1` rewrites hashes and PNGs after an intended change. Each preset
 renders with its own seed, so a preset whose bend depends on its seed's draws, such
-as `a520-serial-noise`, ships a seed whose first frame shows the bend.
+as `a520-serial-noise` and `a520-card-rot`, ships a seed whose first frame shows the
+bend. At 160 by 120 the memory map is scaled, so the raw passes the scaled
+`jpeg_base` and a fault on `a11` could reach it there; `a520-strip-repeat`'s golden
+shows the scan's damage alone.
 
 Validation is by eye. `scripts/validate-a520.sh` renders the reference sky through the
 clean, HPF, DIV and INV presets above the matching quadrants of a composite shot with a
@@ -752,6 +846,18 @@ when the temperature turns. Whole frames take 469.7 ms with `a520-serial-noise`,
 within the VM's scatter of the clean frame, 483.0 ms with `a520-hot-board`, whose
 store and masks add about 10 ms to the heat gun's 472.8 ms, and 493.4 ms with
 `a520-light-leak`, mostly the leak's smear.
+
+The compressed buffer of stage 20 was timed on the same VM, against a clean frame of
+471 ms. `cargo bench -p vcb_core --bench huffman` codes a native frame of noisy colour
+bars, the scan's worst case, at superfine: `codec::encode` takes 61.7 ms,
+`encode_scan` 89.9 ms and `decode_scan` 80.1 ms, so the coder and the decoder add
+about 108 ms to the direct round trip there. `memory::bend_scan` puts a native
+superfine scan of 1.7 MB through the SDRAM in about 1.6 ms without a fault and 3.5 ms
+through two marginal contacts. Whole frames take 532.4 ms with `a520-card-rot` and
+520.2 ms with `a520-strip-repeat`, against 476.2 ms with `a520-s9000-tear`, whose
+memory bend leaves the scan out of reach: the scan's path costs 45 to 60 ms on the
+bench scene, about a tenth of a frame. Without `reaches_jpeg` the frame takes the
+direct round trip and costs nothing more.
 
 ## 9. Extension points and known limitations
 
@@ -827,3 +933,20 @@ power-down. A still is frame 0 from power-on, so whether it shows a serial fault
 depends on the seed. The light leak's shape is a diffuse opening's exponential, not a
 point hole's peaked falloff; the leak is steady, without flicker, and reaches the
 photodiodes during a movie readout only through the smear.
+
+The compressed buffer of stage 20 adds its own. Whether the A520 keeps its scan in the
+bent chip, where (`jpeg_base`), in which byte order and with which Huffman tables and
+restart interval are all PROVISIONAL; the file's headers are assumed intact, and the
+decoder clips where libjpeg wraps. The scan's bursts are written after the frame's
+development and read a frame later, PROVISIONAL timing, and a contact keeps one state
+over a burst, so a closure flips a bit in every other byte of a burst of the scan, a
+thousand or so, where a contact that bounced within a burst would flip a few: a
+contact that sets bits greys the frame almost at the fault, one that clears them
+shifts and tints it to the end, and the look of a single flipped bit, a shifted and
+tinted stretch that ends in a grey tail, does not come out of a data pin. In the
+camera the scan's writes interleave with the raw's reads and the next frame's writes;
+here they follow them. A still is frame 0 from power-on, so where a burst is read
+across a contact's change it finds the power-up content or this frame's raw, never an
+earlier frame's scan: `a11`'s repeated strips need a running camera. A movie frame's
+scan is short (about 47 KB, eleven bursts, under 2 ms of each 67 ms frame), so a
+contact at a few hertz rarely meets it.

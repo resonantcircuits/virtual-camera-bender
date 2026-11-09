@@ -22,7 +22,10 @@ that blooms rows, locks the analog front end out and browns the processor out; a
 replaced master oscillator that the image processor no longer keeps in step with; and
 the frame-buffer memory, whose faulted address pins fold the frame in powers of two
 and let earlier frames through, whose faulted data pins posterise it and lift its
-black, and whose cells, under a heat gun, lose their bits before the refresh.
+black, and whose cells, under a heat gun, lose their bits before the refresh; and,
+where the compressed JPEG sits in the same bent chip, a flipped bit of its scan, which
+the decoder reads out of step: the picture holds, then shifts, tints and runs dark or
+grey, or repeats strips of an earlier frame.
 
 The reference for the A520 bend is a set of photos from a real modified camera. The
 validation sheet puts our HPF, DIV and INV renders beside them; it is built by
@@ -107,8 +110,9 @@ declares the bends patched into it: which data lines feed the DIP bank, the capa
 and pot values, the inverter or divider, the target pin; how far the IR-cut filter has
 slid; the light leaking into the body; the sensor's temperature and substrate bias;
 the reset gate's missed and weak pulses; the serial link's bit errors; the loads on the
-rail; the replacement oscillator; the faulted address and data pins and the SDRAM's
-temperature. It reads like a schematic, and its header says what is wired and why.
+rail; the replacement oscillator; the faulted address and data pins, the SDRAM's
+temperature and whether the compressed buffer sits in the bent chip. It reads like a
+schematic, and its header says what is wired and why.
 
 The presets, all of the A520 (`presets/a520-<name>.toml`):
 
@@ -137,6 +141,8 @@ The presets, all of the A520 (`presets/a520-<name>.toml`):
 | `serial-noise` | AFE serial link, one bit in a hundred flipped | a movie that flashes wrong gains, tints, green mazes and dropped frames; the still shows a green maze |
 | `light-leak` | daylight leak from one edge, scene auto-exposure | a pink glow over a stopped-down scene |
 | `open-body` | red plastic leak with the IR-cut filter removed, grey-world balance | a peach glow under a teal full-spectrum sky |
+| `card-rot` | compressed buffer, marginal data pin d13 | the picture holds, then a shifted, green-tinted copy drifting dark; the raw clean |
+| `strip-repeat` | compressed buffer, marginal address pin a11 | the picture holds, then bars, or strips of the last frame repeated; the raw clean |
 
 `hpf`, `div` and `inv` are tuned against photos of a real bent A520; the others are
 tuned by eye, since no reference images exist for those bends
@@ -169,9 +175,9 @@ The Rust rewrite has its validated core, the command line and the desktop app
 (milestones 1 and 2). Milestone 3 adds the optics, supply-rail, master-clock and
 frame-buffer bends beside the bus, CCD-clock and analog-front-end bends, with ten
 presets, tested by the user and tagged `v0.3.0`. Milestone 4 adds the sensor,
-reset-gate, frame-buffer data-pin and retention, serial-link and light-leak bends with
-nine presets; the JPEG buffer follows. A GPU path and more cameras are later
-milestones.
+reset-gate, frame-buffer data-pin and retention, serial-link and light-leak bends and
+the compressed JPEG buffer in the bent SDRAM, with eleven presets. A GPU path and more
+cameras are later milestones.
 
 ## Legacy version
 

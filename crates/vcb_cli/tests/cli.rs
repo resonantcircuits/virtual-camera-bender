@@ -147,6 +147,8 @@ fn presets_lists_every_preset_file() {
         ("a520-serial-noise", "serial"),
         ("a520-light-leak", "leak"),
         ("a520-open-body", "optics,leak"),
+        ("a520-card-rot", "memory"),
+        ("a520-strip-repeat", "memory"),
     ];
     for (name, bends) in shipped {
         let line = stdout

@@ -197,6 +197,10 @@ struct Buffers {
     codes: Codes,
     raw: Raw,
     frame: Frame,
+    /// The entropy-coded scan of the frame, while the memory bend reaches the compressed buffer.
+    scan: Vec<u8>,
+    /// The length of the last frame's scan in bytes; `None` if it went through [`codec::encode`].
+    scan_len: Option<usize>,
     /// The frame turned upright, when the camera is held in portrait.
     upright: Option<Frame>,
 }
@@ -213,6 +217,8 @@ impl Buffers {
             codes: Codes::new(layout.clone()),
             raw: Raw::new(layout.cols(), layout.rows()),
             frame: Frame::new(params.isp.output.width, params.isp.output.height),
+            scan: Vec::new(),
+            scan_len: None,
             upright: timing
                 .rotated
                 .then(|| Frame::new(timing.output_width, timing.output_height)),
@@ -404,6 +410,14 @@ impl Simulator {
     /// The scene may have any non-zero size; it is cropped to the sensor's aspect ratio
     /// and resampled to the sensor. `index` selects the temporal noise of the frame.
     ///
+    /// The developed frame goes through the camera's JPEG round trip,
+    /// [`codec::encode`]. While the preset's `[bend.memory]` sets `reaches_jpeg`, the
+    /// round trip runs in its three steps instead: [`codec::encode_scan`] writes the
+    /// entropy-coded scan, [`memory::bend_scan`] passes it through the bent SDRAM, and
+    /// [`codec::decode_scan`] reads it back as libjpeg would. Without a fault that
+    /// reaches the scan the two give the same bytes; [`scan_len`](Self::scan_len) tells
+    /// which ran.
+    ///
     /// # Determinism
     ///
     /// The hardware's memory persists from one call to the next, as in the camera: the
@@ -411,7 +425,8 @@ impl Simulator {
     /// flicker-noise level and serially programmed registers (which a write lost to
     /// `[bend.serial]` leaves as the last frame had them), the bus bend's capacitor
     /// voltages, protection-diode and
-    /// gate states, clock faults that straddle the frame boundary, and the exposure and
+    /// gate states, clock faults that straddle the frame boundary, the frame-buffer
+    /// SDRAM's words and marginal contacts under `[bend.memory]`, and the exposure and
     /// white balance that the servos (`ae_mode` and `wb` set to `"servo"`) metered on
     /// the previous frame. Nothing else carries over: scene auto-exposure meters each
     /// frame on its own and the black clamp starts afresh from each frame's first line.
@@ -485,7 +500,16 @@ impl Simulator {
             &b.raw,
             state.sensor.exposure_scale(),
         );
-        codec::encode(&params.codec, &mut state.codec, &mut b.frame);
+        // The compressed frame passes the bent SDRAM only where the memory map puts it there.
+        if let Some(memory) = params.memory.as_ref().filter(|memory| memory.reaches_jpeg) {
+            codec::encode_scan(&params.codec, &mut state.codec, &b.frame, &mut b.scan);
+            memory::bend_scan(Some(memory), &mut state.memory, index, &mut b.scan);
+            codec::decode_scan(&params.codec, &mut state.codec, &b.scan, &mut b.frame);
+            b.scan_len = Some(b.scan.len());
+        } else {
+            codec::encode(&params.codec, &mut state.codec, &mut b.frame);
+            b.scan_len = None;
+        }
         tracing::trace!(
             name: "sim.frame.done",
             index,
@@ -530,9 +554,9 @@ impl Simulator {
     ///   their values; a servo that the preset turns off forgets its value at once.
     /// - The supply rail, the processor's capture and the frame-buffer SDRAM keep their
     ///   state whatever `[bend.optics]`, `[bend.rail]`, `[bend.clock]` and
-    ///   `[bend.memory]` become, a new oscillator frequency included; removing
-    ///   `[bend.rail]` returns the rail to the nominal voltage, and removing
-    ///   `[bend.memory]` forgets the SDRAM's content.
+    ///   `[bend.memory]` become, a new oscillator frequency and the compressed buffer's
+    ///   `reaches_jpeg` switch included; removing `[bend.rail]` returns the rail to the
+    ///   nominal voltage, and removing `[bend.memory]` forgets the SDRAM's content.
     ///
     /// Everything else, the exposure time of the preset's `[sensor]` section included,
     /// takes effect with the next frame. Otherwise parameters, buffers and state are
@@ -637,6 +661,17 @@ impl Simulator {
         self.state.sensor.exposure_scale()
     }
 
+    /// Returns the length in bytes of the last frame's scan, if it passed the bent SDRAM.
+    ///
+    /// The entropy-coded scan, headers aside, that [`frame`](Self::frame) put through
+    /// [`memory::bend_scan`] while `[bend.memory] reaches_jpeg` was set; `None` before
+    /// the first frame and after a frame that took the direct round trip,
+    /// [`codec::encode`]. The SDRAM's faults keep the scan's length.
+    #[must_use]
+    pub fn scan_len(&self) -> Option<usize> {
+        self.buffers.scan_len
+    }
+
     /// Returns every stage to its power-on state.
     ///
     /// The supply rail returns to the nominal voltage with it.
@@ -701,5 +736,14 @@ impl Simulator {
     #[must_use]
     pub fn memory_state(&self) -> &memory::State {
         &self.state.memory
+    }
+
+    /// Returns the last frame's scan as the card writer read it back, for tests.
+    ///
+    /// `None` when [`scan_len`](Self::scan_len) is: the frame took the direct round trip.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn scan(&self) -> Option<&[u8]> {
+        self.buffers.scan_len.map(|_| self.buffers.scan.as_slice())
     }
 }

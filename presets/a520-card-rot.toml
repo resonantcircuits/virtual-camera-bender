@@ -1,0 +1,32 @@
+# Canon PowerShot A520 with a marginal SDRAM data contact that reaches the compressed buffer.
+# Data line d13 makes contact to ground (stuck low) 0.2 % of the time, about eight times a
+# second, a quarter of a millisecond each time, and the processor keeps the JPEG's scan in the
+# bent chip (reaches_jpeg). d13 carries no bit of the 10-bit sample, so the raw reads back
+# clean: the frame buffer itself shows nothing. In the scan it carries bit 5 of every high byte:
+# where the contact closes during the scan's write or the card writer's read, a burst or two of
+# the scan lose that bit, the decoder mis-reads a code and runs on out of step. The picture holds
+# to the fault, then a thin seam of broken blocks, then the rest shifted and tinted: a second
+# copy of the scene slid along the MCU rows in green, cyan or teal, drifting dark where the DC
+# predictions run off. Most frames pass clean: a still takes the fault about one time in three.
+# A movie frame's scan is short, so a movie rots a pair of frames every few seconds (the closure
+# that spoils one frame's read spoils the next frame's write), and there the rest floods black
+# or white with coloured bars. Seed 167's first frame holds the left half of the upright still, then a
+# lime-green copy shifted along the rows, then black. A contact to the supply (high) instead
+# greys the frame from the fault at once: a stuck bit turns a stuffed zero byte into a marker
+# within a few hundred bytes.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
+camera = "a520"
+seed = 167                          # also seeds the contact's telegraph process
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.memory]
+reaches_jpeg = true                 # PROVISIONAL: the A520's memory map is unknown
+
+[[bend.memory.data_faults]]
+pin = 13                            # PROVISIONAL, by eye: no sample bit, so the raw stays clean
+kind = "low"
+on_frac = 0.002                     # PROVISIONAL, by eye: a quarter of a millisecond a closure, a burst or two of the scan
+switch_hz = 8.0                     # PROVISIONAL, by eye: a still hit about one frame in three

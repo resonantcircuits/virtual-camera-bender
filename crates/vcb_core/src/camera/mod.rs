@@ -483,6 +483,13 @@ pub struct Jpeg {
     pub subsampling: Subsampling,
     /// Chroma upsampling of the decoder that displays the file.
     pub chroma_upsample: ChromaUp,
+    /// MCUs per restart interval of the scan, at most 65,535; 0 writes no restart markers.
+    ///
+    /// With a non-zero interval the encoder writes an `RSTm` marker after every
+    /// `restart_interval` MCUs and the decoder resynchronises there, so damage to the
+    /// scan ends at the next marker. A file's DRI segment holds the interval in 16
+    /// bits. See [`codec`](crate::codec#the-scan).
+    pub restart_interval: u32,
     /// The camera's quantisation tables for each quality setting.
     pub tables: JpegTables,
 }

@@ -13,6 +13,11 @@
 //! `Φ(ln(refresh / median) / spread)`; the readout shows it with the samples that hold
 //! such a cell.
 //!
+//! The "Compressed buffer" switch below it, the preset's `reaches_jpeg`, says where the
+//! processor keeps the JPEG's entropy-coded scan: untouched, out of the faults' reach,
+//! or in the bent chip, where the same pins and cells corrupt it and the decoder reads
+//! it out of step.
+//!
 //! The "Address pins" grid lists the address pins `a0` upward, which carry the row
 //! address and then the column address, so one bad pin corrupts a row bit and a column
 //! bit of the word address. The "Data pins" grid lists the data lines `d0` upward, one
@@ -26,11 +31,11 @@
 //! grid below each pin grid.
 //!
 //! [`MemoryPanel`] keeps every pin's settings, also of a pin set back to sound and of
-//! the whole bend while it is off, and the temperature. A pin may carry one fault, also
-//! as the other end of a bridge, so a bridge's partner is chosen among the sound pins
-//! of its grid and the partner's row shows the bridge instead of a choice of its own;
-//! [`PinGrid::set_kind`] and [`PinGrid::set_partner`] refuse what the preset could not
-//! hold.
+//! the whole bend while it is off, the temperature and the compressed buffer's switch.
+//! A pin may carry one fault, also as the other end of a bridge, so a bridge's partner
+//! is chosen among the sound pins of its grid and the partner's row shows the bridge
+//! instead of a choice of its own; [`PinGrid::set_kind`] and [`PinGrid::set_partner`]
+//! refuse what the preset could not hold.
 
 use std::f64::consts::SQRT_2;
 
@@ -42,8 +47,11 @@ use vcb_core::{Camera, Preset};
 use crate::panels::{self, Edit, Knob, PanelId, Scale, sensor};
 use crate::theme;
 
-/// The knob of a marginal contact's faulted time: 1 to 100 % of the time.
-pub const FAULTED: Knob = Knob::linear(1.0..=100.0, " % of time", 0).scaled(Scale::Times(100.0));
+/// The knob of a marginal contact's faulted time: 0.1 to 100 % of the time, logarithmic.
+///
+/// Down to a tenth of a percent: at a few hertz such a contact closes for a fraction of
+/// a millisecond, a burst or two of the compressed scan, as `a520-card-rot`'s does.
+pub const FAULTED: Knob = Knob::log(0.1..=100.0, 0.1, " % of time").scaled(Scale::Times(100.0));
 
 /// The knob of a marginal contact's switching rate: up to 1 kHz, logarithmic, with zero.
 pub const SWITCHING: Knob = Knob::log(0.0..=1000.0, 0.01, " Hz");
@@ -87,6 +95,12 @@ const PARTNER_HOVER: &str = "The other pin of the bridge, among the sound ones";
 /// The tooltip of a faulted pin's contact choice.
 const CONTACT_HOVER: &str =
     "Solid: always faulted. Marginal: a loose contact that comes and goes at random";
+
+/// The positions of the compressed buffer's switch: out of the faults' reach, or within it.
+pub const COMPRESSED: [&str; 2] = ["untouched", "in the bent chip"];
+
+/// The tooltip of the compressed buffer's switch.
+const COMPRESSED_HOVER: &str = "Where the processor keeps the JPEG until the card writer takes it. Untouched: in memory the faults do not reach, so the file holds the torn raw cleanly, as the Fujifilm S9000's did. In the bent chip: the same pins and hot cells flip the compressed bits too, and the decoder runs out of step from the first one: macroblocks shift, colours tint, and the rest of the frame drifts dark or goes grey";
 
 /// Expected number of leaking cells in the whole chip below which the readout names none.
 ///
@@ -516,7 +530,8 @@ impl Bank {
     }
 }
 
-/// The memory bend's switch, the settings of every pin set so far, and the temperature.
+/// The memory bend's switch, the settings of every pin set so far, the temperature, and
+/// whether the faults reach the compressed buffer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryPanel {
     /// Whether the SDRAM is bent: the section is written.
@@ -527,11 +542,13 @@ pub struct MemoryPanel {
     pub data: PinGrid,
     /// The SDRAM's temperature in degrees Celsius; `None` is the camera's `reference_temp_c`.
     pub temperature_c: Option<f64>,
+    /// Whether the compressed buffer lies in the bent chip: `reaches_jpeg`.
+    pub reaches_jpeg: bool,
 }
 
 impl Default for MemoryPanel {
     /// [`DEFAULT_PIN`] stuck high with a solid contact, the other pins sound, the chip at the
-    /// camera's temperature; off.
+    /// camera's temperature, the compressed buffer out of reach; off.
     fn default() -> Self {
         Self {
             enabled: false,
@@ -543,6 +560,7 @@ impl Default for MemoryPanel {
             },
             data: PinGrid::default(),
             temperature_c: None,
+            reaches_jpeg: false,
         }
     }
 }
@@ -556,8 +574,8 @@ impl MemoryPanel {
         panel
     }
 
-    /// Sets the panel from `preset`: its faults and temperature, every other pin sound with
-    /// its settings kept.
+    /// Sets the panel from `preset`: its faults, temperature and compressed buffer, every
+    /// other pin sound with its settings kept.
     pub fn load(&mut self, preset: &Preset) {
         let Some(memory) = &preset.bend.memory else {
             self.enabled = false;
@@ -567,6 +585,7 @@ impl MemoryPanel {
         self.address.load(memory.faults.iter().map(Stored::from));
         self.data.load(memory.data_faults.iter().map(Stored::from));
         self.temperature_c = memory.temperature_c;
+        self.reaches_jpeg = memory.reaches_jpeg;
     }
 
     /// The preset's `[bend.memory]` section; `None` while the bend is off.
@@ -586,6 +605,7 @@ impl MemoryPanel {
                 .filter_map(PinSetting::data_fault)
                 .collect(),
             temperature_c: self.temperature_c,
+            reaches_jpeg: self.reaches_jpeg,
         })
     }
 
@@ -612,6 +632,7 @@ impl MemoryPanel {
                 ui.multiply_opacity(panels::OFF_OPACITY);
             }
             edit |= self.show_retention(ui, camera);
+            edit |= self.show_compressed(ui);
 
             panels::section(ui, "Address pins");
             panels::hint(ui, &organisation(memory));
@@ -665,6 +686,21 @@ impl MemoryPanel {
         });
         let temperature_c = self.temperature_c.unwrap_or(memory.reference_temp_c);
         panels::hint(ui, &retention_readout(camera, temperature_c));
+        edit
+    }
+
+    /// The switch that puts the compressed buffer in the bent chip or out of its reach.
+    fn show_compressed(&mut self, ui: &mut Ui) -> Edit {
+        let mut edit = Edit::default();
+        panels::grid(ui, "memory-compressed", |ui| {
+            panels::row_label(ui, "Compressed buffer").on_hover_text(COMPRESSED_HOVER);
+            edit.record(
+                &panels::switch(ui, &mut self.reaches_jpeg, COMPRESSED[0], COMPRESSED[1])
+                    .on_hover_text(COMPRESSED_HOVER),
+            );
+            ui.label("");
+            ui.end_row();
+        });
         edit
     }
 }

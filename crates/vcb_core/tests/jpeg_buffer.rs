@@ -87,6 +87,7 @@ fn preset(
         faults,
         data_faults,
         temperature_c,
+        ..MemoryBend::default()
     });
     preset
 }

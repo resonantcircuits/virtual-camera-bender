@@ -1,6 +1,6 @@
 //! The inspector draws the panels of the four bends of milestone 3, the sensor and
-//! reset blocks of milestone 4 and the light leak, serial link, data pins and retention
-//! of stage 19 in a headless ui pass, a click on a lit stage of the strip scrolls their
+//! reset blocks of milestone 4, the light leak, serial link, data pins and retention
+//! of stage 19 and the compressed buffer's switch of stage 20 in a headless ui pass, a click on a lit stage of the strip scrolls their
 //! panel into view, the wheel scrolls on to the rest, and a wrapped strip breaks
 //! before an arrow, never after one.
 //!
@@ -451,6 +451,9 @@ fn the_stage19_blocks_draw_and_every_new_control_is_reachable() {
                 "Retention",
                 "Temperature",
                 "Median retention 177 ms against the 64 ms refresh: 2.11 % of the cells leak before it comes, in 19.2 % of the samples.",
+                "Compressed buffer",
+                "untouched",
+                "in the bent chip",
                 "Address pins",
                 "a0",
             ],

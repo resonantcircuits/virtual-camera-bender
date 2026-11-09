@@ -1,4 +1,5 @@
-//! The data-pin grid and the retention block of the memory panel, the serial link in the
+//! The data-pin grid, the retention block and the compressed buffer's switch of the memory
+//! panel, the serial link in the
 //! AFE panel and the light leak in the sensor panel write full sections that survive
 //! TOML, keep their values while switched off, hold the preset's rules, show their
 //! readouts from the camera's values, light their stages on the strip, and reach the
@@ -301,6 +302,7 @@ fn an_address_edit_keeps_the_data_faults_and_the_temperature_of_a_loaded_preset(
             },
         ],
         temperature_c: Some(105.0),
+        reaches_jpeg: true,
     });
     let preset = through_toml(&preset);
     let loaded = preset.bend.memory.clone().expect("the memory bend");
@@ -335,6 +337,10 @@ fn an_address_edit_keeps_the_data_faults_and_the_temperature_of_a_loaded_preset(
         bend.temperature_c, loaded.temperature_c,
         "the temperature survives an edit of an address pin"
     );
+    assert!(
+        bend.reaches_jpeg,
+        "the compressed buffer stays in the bent chip through an edit of an address pin"
+    );
 
     assert!(panels.memory.data.set_kind(2, None, data_pins()));
     panels.memory.temperature_c = None;
@@ -351,6 +357,79 @@ fn an_address_edit_keeps_the_data_faults_and_the_temperature_of_a_loaded_preset(
         2,
         "the address faults survive edits of the data pins"
     );
+}
+
+#[test]
+fn the_compressed_buffer_switch_writes_reaches_jpeg_and_reads_it_back() {
+    // Untouched by default, and then not written.
+    let panel = memory_panel();
+    assert!(
+        !panel.reaches_jpeg,
+        "the compressed buffer starts out of reach"
+    );
+    let preset = written(|preset| panel.apply(preset));
+    assert!(!preset.bend.memory.as_ref().expect("the bend").reaches_jpeg);
+    let text = presets::to_toml(&preset).expect("serialises");
+    assert!(!text.contains("reaches_jpeg"), "{text}");
+
+    // Thrown: written, read back through TOML, and loaded with the rest of the section.
+    let mut thrown = memory_panel();
+    thrown.reaches_jpeg = true;
+    let preset = written(|preset| thrown.apply(preset));
+    let text = presets::to_toml(&preset).expect("serialises");
+    assert!(text.contains("reaches_jpeg = true"), "{text}");
+    let bend = preset.bend.memory.as_ref().expect("the bend");
+    assert!(bend.reaches_jpeg);
+    assert_eq!(Some(bend), thrown.bend().as_ref());
+    assert_eq!(MemoryPanel::from_preset(&preset), thrown);
+    let mut loaded = MemoryPanel::default();
+    loaded.load(&preset);
+    assert!(loaded.reaches_jpeg, "load carries the switch");
+    assert_eq!(
+        loaded.bend(),
+        thrown.bend(),
+        "and the faults and heat beside it"
+    );
+
+    // A preset without it puts the switch back.
+    let mut untouched = preset.clone();
+    if let Some(memory) = untouched.bend.memory.as_mut() {
+        memory.reaches_jpeg = false;
+    }
+    loaded.load(&untouched);
+    assert!(!loaded.reaches_jpeg);
+
+    // Off, the bend keeps the switch's position for when it comes back on.
+    let mut off = thrown.clone();
+    off.enabled = false;
+    assert_eq!(off.bend(), None);
+    off.load(&Preset::new("a520"));
+    assert!(
+        off.reaches_jpeg,
+        "a preset without the bend keeps the switch"
+    );
+    off.enabled = true;
+    assert_eq!(off.bend(), thrown.bend());
+
+    // The shipped presets that throw it.
+    for name in ["a520-card-rot", "a520-strip-repeat"] {
+        let shipped =
+            presets::load_preset(&root().join(format!("presets/{name}.toml"))).expect("shipped");
+        let panel = MemoryPanel::from_preset(&shipped);
+        assert!(panel.enabled && panel.reaches_jpeg, "{name}");
+        let mut again = shipped.clone();
+        panel.apply(&mut again);
+        assert_eq!(
+            again, shipped,
+            "{name}: the panel writes back what it loaded"
+        );
+    }
+
+    // The strip lights the JPEG through the memory panel while the switch is thrown.
+    assert!(Stage::Jpeg.is_bent(&preset));
+    assert_eq!(Stage::Jpeg.panel(&preset), PanelId::Memory);
+    assert!(!Stage::Jpeg.is_bent(&untouched));
+    assert_eq!(Stage::Jpeg.panel(&untouched), PanelId::Jpeg);
 }
 
 #[test]
@@ -906,7 +985,7 @@ fn turning_the_new_knobs_keeps_the_camera_running() {
         bus_reset: false,
         servo_reset: false,
     };
-    let turns: [Turn; 10] = [
+    let turns: [Turn; 12] = [
         ("the leak's edge", |p| {
             if let Some(leak) = p.bend.leak.as_mut() {
                 leak.edge = Edge::Right;
@@ -940,6 +1019,16 @@ fn turning_the_new_knobs_keeps_the_camera_running() {
         ("the temperature's reset", |p| {
             if let Some(memory) = p.bend.memory.as_mut() {
                 memory.temperature_c = None;
+            }
+        }),
+        ("the compressed buffer's switch", |p| {
+            if let Some(memory) = p.bend.memory.as_mut() {
+                memory.reaches_jpeg = true;
+            }
+        }),
+        ("the compressed buffer's switch, back", |p| {
+            if let Some(memory) = p.bend.memory.as_mut() {
+                memory.reaches_jpeg = false;
             }
         }),
         ("the leak's switch", |p| p.bend.leak = None),

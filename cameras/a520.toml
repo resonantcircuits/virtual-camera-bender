@@ -170,6 +170,7 @@ refresh_ms = 64.0                   # C: JEDEC tREF of SDR SDRAM, every row refr
 [jpeg]
 subsampling = "4:2:2"               # A: measured (section 7)
 chroma_upsample = "bilinear"        # PROVISIONAL: decoder behaviour
+restart_interval = 0                # PROVISIONAL: Canon's files are believed to carry no restart markers; the A520's were not read
 
 [jpeg.tables.superfine]                 # A: measured, section 7
 luma = [
