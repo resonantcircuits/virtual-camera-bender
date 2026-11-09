@@ -25,13 +25,23 @@
 //! simulators to their power-on state first; the full render after a power cycle is
 //! frame 0 of a fresh simulator, byte for byte what `vcb render` writes for the same
 //! input and preset.
+//!
+//! The gallery's [`Thumbnail`]s go to the same worker as [`Request::Thumbnail`], in
+//! the worker's [`Lane::Background`]: they wait in order and run one at a time, only
+//! while no preview or full render waits, so a thumbnail delays a render by at most
+//! the one thumbnail in progress. A thumbnail crops and reduces the scene as a preview
+//! does, to [`GALLERY_LONG_EDGE`] pixels, and renders frame 0 of a fresh simulator at
+//! match-input resolution, which is dropped afterwards: the frame `vcb render`
+//! computes for the reduced scene, and the running simulators never see it.
 
 use std::any::Any;
+use std::collections::VecDeque;
 use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::Arc;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -41,6 +51,7 @@ use vcb_core::preset::Resolution;
 use vcb_core::scene::Channel;
 use vcb_core::{Camera, Frame, Preset, Reconfigured, Scene, Simulator, Timing};
 
+use crate::presets::Entry;
 use crate::viewport;
 
 /// Long edge of a preview render in pixels.
@@ -48,6 +59,13 @@ use crate::viewport;
 /// Small enough for a preview in a few tens of milliseconds on a laptop, large enough
 /// that the bus bend's line structure stays readable in a fitted view.
 pub const PREVIEW_LONG_EDGE: u32 = 720;
+
+/// Long edge of a gallery thumbnail in pixels.
+///
+/// The legacy gallery's size, a little larger than a tile's image on a standard
+/// density screen; a thumbnail costs about a sixth of a preview, so two dozen presets
+/// fill in well within a second.
+pub const GALLERY_LONG_EDGE: u32 = 300;
 
 /// One render request.
 #[derive(Debug, Clone)]
@@ -107,13 +125,111 @@ pub struct Reply {
     pub outcome: Result<Output, String>,
 }
 
+/// A gallery thumbnail to render: a preset on a reduced copy of the scene.
+#[derive(Debug, Clone)]
+pub struct Thumbnail {
+    /// The gallery's number of the request, which the reply carries back.
+    pub ticket: u64,
+    /// The preset file the thumbnail shows.
+    pub entry: Entry,
+    /// The preset as read from the file.
+    pub preset: Preset,
+    /// The camera the preset names.
+    pub camera: Arc<Camera>,
+    /// The scene in front of the lens, at its own size; the worker reduces it.
+    pub scene: Arc<Scene>,
+    /// The UI's count of scene changes when it asked, to tell stale thumbnails.
+    pub scene_generation: u64,
+}
+
+/// The worker's answer to a [`Thumbnail`].
+#[derive(Debug, Clone)]
+pub struct ThumbnailReply {
+    /// The ticket of the request.
+    pub ticket: u64,
+    /// The preset file the thumbnail shows.
+    pub path: PathBuf,
+    /// The camera it was rendered through.
+    pub camera: String,
+    /// The scene generation of the request.
+    pub scene_generation: u64,
+    /// The thumbnail, frame 0 of a fresh simulator, or why it failed.
+    pub outcome: Result<Output, String>,
+}
+
+/// What the UI asks of the render worker.
+#[derive(Debug, Clone)]
+pub enum Request {
+    /// A preview or a full render; only the newest waits, ahead of every thumbnail.
+    Render(Job),
+    /// A gallery thumbnail; thumbnails wait in order behind any render.
+    Thumbnail(Thumbnail),
+}
+
+impl Request {
+    /// The worker lane the request waits in.
+    #[must_use]
+    pub fn lane(&self) -> Lane {
+        match self {
+            Self::Render(_) => Lane::Newest,
+            Self::Thumbnail(_) => Lane::Background,
+        }
+    }
+}
+
+/// The render worker's answer to a [`Request`].
+#[derive(Debug, Clone)]
+pub enum Answer {
+    /// The answer to a preview or full render.
+    Render(Reply),
+    /// The answer to a thumbnail.
+    Thumbnail(ThumbnailReply),
+}
+
+/// Which of the worker's two queues a job waits in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Lane {
+    /// Only the newest such job waits, and it runs before any background job.
+    Newest,
+    /// Every such job waits, in order, and runs only while no newest job does.
+    Background,
+}
+
+/// The jobs a worker thread has taken from its channel and not yet run.
+#[derive(Debug)]
+struct Pending<J> {
+    newest: Option<J>,
+    background: VecDeque<J>,
+}
+
+impl<J> Pending<J> {
+    fn is_empty(&self) -> bool {
+        self.newest.is_none() && self.background.is_empty()
+    }
+
+    /// Queues `job` in `lane`; a newest job replaces the one waiting.
+    fn push(&mut self, job: J, lane: Lane) {
+        match lane {
+            Lane::Newest => self.newest = Some(job),
+            Lane::Background => self.background.push_back(job),
+        }
+    }
+
+    /// The job to run next: the newest job, else the oldest background job.
+    fn pop(&mut self) -> Option<J> {
+        self.newest.take().or_else(|| self.background.pop_front())
+    }
+}
+
 /// A thread that runs the newest job it has been sent and replies with the result.
 ///
 /// Jobs that arrive while a job runs wait in a queue; before the next job starts, the
 /// thread drains the queue and keeps only the newest, so only the most recent request
-/// is ever answered after a burst. After each reply the thread calls `notify`, which
-/// the app uses to wake the UI. Dropping the worker closes the queue; the thread
-/// finishes its current job and ends.
+/// is ever answered after a burst. A worker started with
+/// [`spawn_lanes`](Self::spawn_lanes) also keeps background jobs, every one in order,
+/// and runs one of them per pass while no newest job waits. After each reply the
+/// thread calls `notify`, which the app uses to wake the UI. Dropping the worker
+/// closes the queue; the thread finishes its current job and ends.
 #[derive(Debug)]
 pub struct Worker<J, R> {
     jobs: Sender<J>,
@@ -128,6 +244,25 @@ impl<J: Send + 'static, R: Send + 'static> Worker<J, R> {
     /// Returns the operating system's error if the thread cannot be started.
     pub fn spawn(
         name: &str,
+        work: impl FnMut(J) -> R + Send + 'static,
+        notify: impl Fn() + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::spawn_lanes(name, |_: &J| Lane::Newest, work, notify)
+    }
+
+    /// Starts a worker thread that sorts each job into the lane `lane` names.
+    ///
+    /// Before each job the thread takes every job sent so far; the newest job of
+    /// [`Lane::Newest`] runs first, and the oldest of [`Lane::Background`] only when
+    /// none waits, so a background job delays a newest one by at most the one in
+    /// progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating system's error if the thread cannot be started.
+    pub fn spawn_lanes(
+        name: &str,
+        lane: impl Fn(&J) -> Lane + Send + 'static,
         mut work: impl FnMut(J) -> R + Send + 'static,
         notify: impl Fn() + Send + 'static,
     ) -> io::Result<Self> {
@@ -136,10 +271,21 @@ impl<J: Send + 'static, R: Send + 'static> Worker<J, R> {
         thread::Builder::new()
             .name(name.to_owned())
             .spawn(move || {
-                while let Ok(mut job) = queue.recv() {
-                    while let Ok(newer) = queue.try_recv() {
-                        job = newer;
+                let mut pending = Pending {
+                    newest: None,
+                    background: VecDeque::new(),
+                };
+                loop {
+                    if pending.is_empty() {
+                        let Ok(job) = queue.recv() else { break };
+                        let lane = lane(&job);
+                        pending.push(job, lane);
                     }
+                    for job in queue.try_iter() {
+                        let lane = lane(&job);
+                        pending.push(job, lane);
+                    }
+                    let Some(job) = pending.pop() else { continue };
                     if answers.send(work(job)).is_err() {
                         break;
                     }
@@ -240,6 +386,7 @@ pub fn preview_preset(preset: &Preset) -> Preset {
 #[derive(Debug, Default)]
 pub struct Renderer {
     cache: Option<Reduced>,
+    thumbnail_cache: Option<Shrunk>,
     preview: Option<Live>,
     full: Option<Live>,
     power_cycle: u64,
@@ -249,6 +396,18 @@ pub struct Renderer {
 #[derive(Debug)]
 struct Reduced {
     source: Arc<Scene>,
+    aspect: [u32; 2],
+    scene: Arc<Scene>,
+}
+
+/// A reduced copy of a source scene for thumbnails.
+///
+/// The source is held weakly, so a scene the UI has replaced is freed even while no
+/// thumbnail comes to replace this copy; the weak reference keeps the allocation, so
+/// a new scene never takes the old one's address.
+#[derive(Debug)]
+struct Shrunk {
+    source: Weak<Scene>,
     aspect: [u32; 2],
     scene: Arc<Scene>,
 }
@@ -348,6 +507,90 @@ fn merge(first: Reconfigured, second: Reconfigured) -> Reconfigured {
 }
 
 impl Renderer {
+    /// Answers `request`: a render on the running simulators, or a thumbnail.
+    pub fn answer(&mut self, request: &Request) -> Answer {
+        match request {
+            Request::Render(job) => Answer::Render(self.render(job)),
+            Request::Thumbnail(job) => Answer::Thumbnail(self.thumbnail(job)),
+        }
+    }
+
+    /// Renders the thumbnail `job` on a fresh simulator and logs the result.
+    ///
+    /// The simulator is built for the job and dropped after it, so the running
+    /// simulators keep their state and only one thumbnail's simulator exists at a
+    /// time; a panic in the simulation becomes an error.
+    pub fn thumbnail(&mut self, job: &Thumbnail) -> ThumbnailReply {
+        let outcome =
+            panic::catch_unwind(AssertUnwindSafe(|| self.sketch(job))).unwrap_or_else(|payload| {
+                Err(format!("the simulation failed: {}", panic_text(&*payload)))
+            });
+        match &outcome {
+            Ok(output) => tracing::info!(
+                name: "app.thumbnail.done",
+                preset = %job.entry.name,
+                width = output.frame.width(),
+                height = output.frame.height(),
+                elapsed_ms = output.elapsed.as_secs_f64() * 1e3,
+                "thumbnail done"
+            ),
+            Err(message) => tracing::warn!(
+                name: "app.thumbnail.failed",
+                preset = %job.entry.name,
+                error = %message,
+                "thumbnail failed"
+            ),
+        }
+        ThumbnailReply {
+            ticket: job.ticket,
+            path: job.entry.path.clone(),
+            camera: job.preset.camera.clone(),
+            scene_generation: job.scene_generation,
+            outcome,
+        }
+    }
+
+    fn sketch(&mut self, job: &Thumbnail) -> Result<Output, String> {
+        let started = Instant::now();
+        let aspect = output_aspect(&job.camera, &job.preset, &job.scene)?;
+        let scene = self.thumbnail_scene(&job.scene, aspect);
+        let mut simulator =
+            Simulator::builder(((*job.camera).clone(), preview_preset(&job.preset)))
+                .input_size(scene.width(), scene.height())
+                .build()
+                .map_err(|error| error.to_string())?;
+        let timing = simulator.timing();
+        let sensor = [timing.sensor_width, timing.sensor_height];
+        let frame = simulator.frame(&scene, 0).clone();
+        drop(simulator);
+        let image = viewport::texture_image(frame.width(), frame.height(), frame.rgb());
+        Ok(Output {
+            frame: Arc::new(frame),
+            image,
+            sensor,
+            index: 0,
+            reconfigured: Reconfigured::Rebuilt,
+            elapsed: started.elapsed(),
+        })
+    }
+
+    /// Returns the thumbnail scene of `source` for an output of shape `aspect`, cached.
+    fn thumbnail_scene(&mut self, source: &Arc<Scene>, aspect: [u32; 2]) -> Arc<Scene> {
+        if let Some(cache) = &self.thumbnail_cache
+            && cache.source.as_ptr() == Arc::as_ptr(source)
+            && cache.aspect == aspect
+        {
+            return Arc::clone(&cache.scene);
+        }
+        let scene = Arc::new(reduce(source, ratio(aspect), GALLERY_LONG_EDGE));
+        self.thumbnail_cache = Some(Shrunk {
+            source: Arc::downgrade(source),
+            aspect,
+            scene: Arc::clone(&scene),
+        });
+        scene
+    }
+
     /// Renders `job` and logs the result; a panic in the simulation becomes an error.
     pub fn render(&mut self, job: &Job) -> Reply {
         let outcome =
@@ -398,14 +641,7 @@ impl Renderer {
             self.power_cycle();
         }
         let (scene, preset) = if job.preview {
-            let full = Timing::derive(
-                &job.camera,
-                &job.preset,
-                job.scene.width(),
-                job.scene.height(),
-            )
-            .map_err(|error| error.to_string())?;
-            let aspect = [full.output_width, full.output_height];
+            let aspect = output_aspect(&job.camera, &job.preset, &job.scene)?;
             (
                 self.reduced(&job.scene, aspect),
                 preview_preset(&job.preset),
@@ -444,8 +680,7 @@ impl Renderer {
         {
             return Arc::clone(&cache.scene);
         }
-        let ratio = f64::from(aspect[0].max(1)) / f64::from(aspect[1].max(1));
-        let scene = Arc::new(reduce(source, ratio, PREVIEW_LONG_EDGE));
+        let scene = Arc::new(reduce(source, ratio(aspect), PREVIEW_LONG_EDGE));
         self.cache = Some(Reduced {
             source: Arc::clone(source),
             aspect,
@@ -453,6 +688,18 @@ impl Renderer {
         });
         scene
     }
+}
+
+/// The size of the full render of `preset` on `scene`, whose shape previews crop to.
+fn output_aspect(camera: &Camera, preset: &Preset, scene: &Scene) -> Result<[u32; 2], String> {
+    let full = Timing::derive(camera, preset, scene.width(), scene.height())
+        .map_err(|error| error.to_string())?;
+    Ok([full.output_width, full.output_height])
+}
+
+/// Width over height of an output of size `aspect`.
+fn ratio(aspect: [u32; 2]) -> f64 {
+    f64::from(aspect[0].max(1)) / f64::from(aspect[1].max(1))
 }
 
 /// Crops `scene` centrally to `aspect` (width over height) and shrinks it to `long_edge`.

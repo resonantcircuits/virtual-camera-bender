@@ -5,6 +5,32 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Milestone 5: the preset gallery
+
+The JavaScript version's gallery in the app: every shipped preset rendered live on
+the loaded image and picked by eye.
+
+#### Added
+
+- The preset gallery, opened with G or the Gallery button beside the preset picker:
+  a grid over the image of every preset in the preset folder for the current camera,
+  each a 300-pixel thumbnail of the loaded image (the chosen frame of a video)
+  rendered through it, with its name and description under it. A filter box keeps
+  the presets whose name, description or bend sections hold every word typed; the
+  arrows move the selection, Enter or a click applies the preset as the preset
+  picker does and closes the gallery, Escape or G closes it. A preset that cannot
+  be read or rendered shows its error in its tile.
+- Thumbnails rendered by the render worker as background jobs, one at a time and
+  only while no preview or full render waits, so the editor keeps its speed while
+  the grid fills in. Each is frame 0 of a fresh simulator at match-input resolution
+  on the scene cropped and reduced as a preview is, so the camera under edit keeps
+  running untouched; about 10 ms each, a quarter of a second for the 23 shipped
+  presets on the sample. They are cached per preset file, camera and scene, and
+  dropped when the scene or the preset file changes.
+- An optional one-line `description` at the top of a preset, at most 200
+  characters, kept by the app's writer and printed by `vcb presets` after the bends
+  as `description="…"`.
+
 ### Milestone 4: the rest of the bender's reach
 
 The bends a bender makes on the sensor itself and on its reset gate, on the

@@ -1,13 +1,14 @@
 //! Sections of a preset file: readout mode, exposure, bends and image-processor overrides.
 //!
-//! A [`Preset`](crate::Preset) references a camera by name, picks a readout mode and
-//! resolution, optionally sets the exposure time, declares the circuit bends patched
-//! into the camera, and optionally overrides image-processor settings. Only `camera` is
-//! required; every other section defaults to the unmodified camera in still mode at the
-//! camera's native resolution:
+//! A [`Preset`](crate::Preset) references a camera by name, says in one line what it
+//! does, picks a readout mode and resolution, optionally sets the exposure time,
+//! declares the circuit bends patched into the camera, and optionally overrides
+//! image-processor settings. Only `camera` is required; every other section defaults
+//! to the unmodified camera in still mode at the camera's native resolution:
 //!
 //! ```toml
 //! camera = "a520"
+//! description = "High-pass contours from the bus bend's coupling capacitor."
 //! seed = 1
 //! [readout]
 //! mode = "still"              # or "movie"
@@ -302,6 +303,44 @@ pub struct Bend {
     /// Light leaking onto the sensor from one edge, `[bend.leak]`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub leak: Option<LeakBend>,
+}
+
+impl Bend {
+    /// The names of the bend sections set, as the file writes them after `bend.`.
+    ///
+    /// The names come in the order of the struct's fields, the order `vcb presets`
+    /// prints them in; an unbent camera has none.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vcb_core::Preset;
+    /// use vcb_core::preset::RailBend;
+    ///
+    /// let mut preset = Preset::new("a520");
+    /// assert!(preset.bend.sections().is_empty());
+    /// preset.bend.rail = Some(RailBend::default());
+    /// assert_eq!(preset.bend.sections(), ["rail"]);
+    /// ```
+    #[must_use]
+    pub fn sections(&self) -> Vec<&'static str> {
+        [
+            self.bus.as_ref().map(|_| "bus"),
+            self.clocks.as_ref().map(|_| "clocks"),
+            self.afe.as_ref().map(|_| "afe"),
+            self.optics.as_ref().map(|_| "optics"),
+            self.sensor.as_ref().map(|_| "sensor"),
+            self.rail.as_ref().map(|_| "rail"),
+            self.clock.as_ref().map(|_| "clock"),
+            self.memory.as_ref().map(|_| "memory"),
+            self.reset.as_ref().map(|_| "reset"),
+            self.serial.as_ref().map(|_| "serial"),
+            self.leak.as_ref().map(|_| "leak"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
 }
 
 /// The `[bend.bus]` section: the DIP-switch, capacitor and gate circuit on the data bus.

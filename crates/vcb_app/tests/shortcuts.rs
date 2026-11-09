@@ -20,6 +20,7 @@ fn every_shortcut_maps_to_its_action() {
         (Key::ArrowLeft, Modifiers::NONE, Action::PreviousFrame),
         (Key::ArrowRight, Modifiers::NONE, Action::NextFrame),
         (Key::P, Modifiers::NONE, Action::Play),
+        (Key::G, Modifiers::NONE, Action::Gallery),
     ];
     for (key, modifiers, action) in table {
         assert_eq!(
