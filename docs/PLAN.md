@@ -1036,6 +1036,28 @@ with a few per cent of red and blue excess (found by stage 19d, not investigated
 Stage 20a, the entropy coder cross-checked against libjpeg on 112 damaged scans, is
 merged; 20b is in progress; 20c follows, then milestone 5, the gallery.
 
+### Status (2026-11-10)
+
+Stage 20 is complete and merged on `rust-rewrite`: 20a the entropy coder and the
+decoder with libjpeg's rules (cross-checked against libjpeg on 112 damaged scans,
+differing only where libjpeg clips each component before the colour conversion), 20b
+the scan in the SDRAM through the same faults as the raw (two stores, the scan's words
+boxed as tagged NaNs where they fall in the raw's span), 20c the wiring behind
+`[bend.memory] reaches_jpeg`, `[jpeg] restart_interval` 0, the Memory panel's
+"Compressed buffer" switch, and the presets `a520-card-rot` (`d13` low, a marginal
+contact closed 0.2 % of the time at 8 Hz: a shifted lime copy of the scene, black
+after it; the raw untouched since `d13` carries no sample bit) and `a520-strip-repeat`
+(`a11` low, marginal: the raw clean, the scan breaking into bars on a still from
+power-on and into repeated strips from the second frame on). The scan path costs
+about a tenth of a frame. Limits recorded in the tuning note: a stuck-high data pin
+emulates a marker within a few hundred bytes and greys the rest, so the grey tail and
+the shifted copy do not come together; a contact holds one state over a whole burst,
+so a closure flips about a thousand bits, never one or two; movie scans are in the
+SDRAM for under 2 ms of a frame, so card rot is rare in movie mode at a few hertz.
+Stage 21a, the gallery, is merged: `description` on presets, the overlay with
+thumbnails through the render worker (10 ms each on the sample, 0.24 s for the
+shipped set), the filter, the keys, and `Bend::sections`. Stage 21b is next.
+
 ## Milestone 5: the preset gallery (direction from the user, 2026-11-07)
 
 Goal: the gallery the JavaScript version had, in the app: every shipped preset
