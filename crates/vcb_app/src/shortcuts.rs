@@ -1,7 +1,7 @@
 //! Keyboard shortcuts: which keys trigger which actions.
 //!
 //! Command shortcuts use the platform's command key (⌘ on macOS, Ctrl elsewhere) and
-//! work everywhere. Single keys (F, 1, R, P, the arrows) act only while no text field
+//! work everywhere. Single keys (F, 1, R, P, G, the arrows) act only while no text field
 //! has the keyboard and no control holds the focus, so typing a value or nudging a
 //! focused slider never steps the video. The space bar is held, not pressed: while it
 //! is down the viewport shows the original ([`holding_original`]).
@@ -31,6 +31,8 @@ pub enum Action {
     NextFrame,
     /// Start or stop playing the video.
     Play,
+    /// Open or close the preset gallery.
+    Gallery,
 }
 
 /// Whether a shortcut needs the keyboard to be free of text fields and focused controls.
@@ -43,7 +45,7 @@ enum Scope {
 }
 
 /// Every shortcut, the more specific before the less: ⌘⇧S before ⌘S.
-const SHORTCUTS: [(Action, Modifiers, Key, Scope); 10] = [
+const SHORTCUTS: [(Action, Modifiers, Key, Scope); 11] = [
     (Action::Open, Modifiers::COMMAND, Key::O, Scope::Always),
     (
         Action::SavePresetAs,
@@ -79,6 +81,7 @@ const SHORTCUTS: [(Action, Modifiers, Key, Scope); 10] = [
         Scope::Free,
     ),
     (Action::Play, Modifiers::NONE, Key::P, Scope::Free),
+    (Action::Gallery, Modifiers::NONE, Key::G, Scope::Free),
 ];
 
 impl Action {
@@ -96,6 +99,7 @@ impl Action {
             Self::PreviousFrame => "←",
             Self::NextFrame => "→",
             Self::Play => "P",
+            Self::Gallery => "G",
         }
     }
 }

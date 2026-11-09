@@ -55,6 +55,7 @@ fn a_hidden_window_takes_in_the_full_render_and_asks_for_the_screenshot() {
         Setup {
             path: Some(photo()),
             camera_dir: root().join("cameras"),
+            presets_dir: root().join("presets"),
             screenshot: Some(PathBuf::from("never-written.png")),
         },
     );

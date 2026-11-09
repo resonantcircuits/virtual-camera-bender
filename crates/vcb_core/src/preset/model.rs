@@ -10,6 +10,12 @@ use crate::validate::{finite, fraction, non_negative, positive, within};
 /// gives no basis for guessing it, and larger values are typos.
 const MAX_HEADROOM: f64 = 10_000.0;
 
+/// Longest accepted description in characters.
+///
+/// One line of a gallery tile or of `vcb presets`; a longer text is a paragraph, which
+/// belongs in the file's comments.
+const MAX_DESCRIPTION_CHARS: usize = 200;
+
 /// A camera, a readout mode, the bends patched into it and processing overrides.
 ///
 /// # Examples
@@ -31,6 +37,12 @@ const MAX_HEADROOM: f64 = 10_000.0;
 pub struct Preset {
     /// Name of the camera model, matching the camera file's `[camera] name`.
     pub camera: String,
+    /// What the preset does, in one line; the gallery and `vcb presets` show it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub description: Option<String>,
     /// Seed of every noise source; the same seed renders the same bytes.
     #[cfg_attr(feature = "serde", serde(default))]
     pub seed: u64,
@@ -63,6 +75,7 @@ impl Preset {
     pub fn new(camera: impl Into<String>) -> Self {
         Self {
             camera: camera.into(),
+            description: None,
             seed: 0,
             readout: Readout::default(),
             scene: SceneInput::default(),
@@ -73,6 +86,8 @@ impl Preset {
     }
 
     /// Checks that every value set in the preset is physically meaningful.
+    ///
+    /// The description, if any, must be one line of at most 200 characters.
     ///
     /// The camera's own values are checked by [`Camera::validate`](crate::Camera::validate).
     ///
@@ -86,6 +101,9 @@ impl Preset {
     pub fn validate(&self) -> Result<(), Error> {
         if self.camera.is_empty() {
             return Err(Error::config("preset camera must not be empty"));
+        }
+        if let Some(description) = &self.description {
+            validate_description(description)?;
         }
         within("scene.headroom", self.scene.headroom, 1.0, MAX_HEADROOM)?;
         if !(self.scene.shoulder_start > 0.0 && self.scene.shoulder_start < 1.0) {
@@ -163,6 +181,22 @@ impl Preset {
         }
         Ok(())
     }
+}
+
+/// Checks that a description is one line of text and not too long.
+fn validate_description(description: &str) -> Result<(), Error> {
+    if description.chars().any(char::is_control) {
+        return Err(Error::config(
+            "description must be one line of text, without line breaks or tabs",
+        ));
+    }
+    let length = description.chars().count();
+    if length > MAX_DESCRIPTION_CHARS {
+        return Err(Error::config(format!(
+            "description must be at most {MAX_DESCRIPTION_CHARS} characters, got {length}"
+        )));
+    }
+    Ok(())
 }
 
 /// A range check from [`crate::validate`].

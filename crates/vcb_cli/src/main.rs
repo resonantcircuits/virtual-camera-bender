@@ -7,7 +7,8 @@
 //!   several presets and tiles the results, with optional reference images, into one
 //!   contact sheet.
 //! - `vcb inspect --preset <file>` prints the derived readout timing.
-//! - `vcb presets` lists the presets in a directory.
+//! - `vcb presets` lists the presets in a directory, each with its camera, readout,
+//!   bends and description.
 //!
 //! Camera files are looked up as `<camera-dir>/<name>.toml`, where the directory is
 //! `--camera-dir`, else `$VCB_CAMERAS`, else `cameras/`. Video needs `ffmpeg` and
@@ -252,29 +253,20 @@ fn list_presets(args: &PresetsArgs) -> Result<()> {
         let name = path.file_stem().unwrap_or_default().to_string_lossy();
         match load_preset(&path) {
             Ok(preset) => {
-                let bends: Vec<&str> = [
-                    preset.bend.bus.as_ref().map(|_| "bus"),
-                    preset.bend.clocks.as_ref().map(|_| "clocks"),
-                    preset.bend.afe.as_ref().map(|_| "afe"),
-                    preset.bend.optics.as_ref().map(|_| "optics"),
-                    preset.bend.sensor.as_ref().map(|_| "sensor"),
-                    preset.bend.rail.as_ref().map(|_| "rail"),
-                    preset.bend.clock.as_ref().map(|_| "clock"),
-                    preset.bend.memory.as_ref().map(|_| "memory"),
-                    preset.bend.reset.as_ref().map(|_| "reset"),
-                    preset.bend.serial.as_ref().map(|_| "serial"),
-                    preset.bend.leak.as_ref().map(|_| "leak"),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
+                let bends = preset.bend.sections();
                 let bends = if bends.is_empty() {
                     "none".to_owned()
                 } else {
                     bends.join(",")
                 };
+                // The description goes last, quoted, so the fields before it parse as they did.
+                let description = preset
+                    .description
+                    .as_ref()
+                    .map(|text| format!(" description={text:?}"))
+                    .unwrap_or_default();
                 println!(
-                    "{name:<24} camera={} mode={} resolution={} bends={bends}",
+                    "{name:<24} camera={} mode={} resolution={} bends={bends}{description}",
                     preset.camera, preset.readout.mode, preset.readout.resolution
                 );
             }

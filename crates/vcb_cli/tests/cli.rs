@@ -403,3 +403,34 @@ fn sheet_honours_columns_and_cell_size() {
     let sheet = vcb_io::probe_image(&output).unwrap();
     assert_eq!((sheet.width, sheet.height), (50 + 2 * 4, 2 * 40 + 3 * 4));
 }
+
+#[test]
+fn presets_prints_the_description_after_the_bends() {
+    let dir = scratch("presets-described");
+    std::fs::create_dir_all(&dir).unwrap();
+    let described = "camera = \"a520\"\n\
+                     description = \"Contours from the \\\"bus\\\" bend's capacitor.\"\n\
+                     [bend.bus]\nsource_pins = [10, 9]\ntarget = \"pin:11\"\n\
+                     function = \"bypass\"\ncap_uf = 1.0\npot_kohm = 0.05\n";
+    std::fs::write(dir.join("a520-described.toml"), described).unwrap();
+    std::fs::write(dir.join("a520-plain.toml"), "camera = \"a520\"\n").unwrap();
+    let run = vcb(&["presets", "--dir", path_arg(&dir)]);
+    assert!(run.status.success(), "stderr: {}", text(&run.stderr));
+    let stdout = text(&run.stdout);
+    let line = |name: &str| {
+        stdout
+            .lines()
+            .find(|line| line.split_whitespace().next() == Some(name))
+            .unwrap_or_else(|| panic!("missing {name} in\n{stdout}"))
+            .to_owned()
+    };
+    assert!(
+        line("a520-described")
+            .ends_with("bends=bus description=\"Contours from the \\\"bus\\\" bend's capacitor.\""),
+        "the description follows the bends, quoted: {stdout}"
+    );
+    assert!(
+        line("a520-plain").ends_with("bends=none"),
+        "a preset without a description ends at its bends: {stdout}"
+    );
+}

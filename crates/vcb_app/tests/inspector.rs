@@ -165,6 +165,7 @@ impl Window {
             Setup {
                 path: Some(photo()),
                 camera_dir: root().join("cameras"),
+                presets_dir: root().join("presets"),
                 screenshot: None,
             },
         );

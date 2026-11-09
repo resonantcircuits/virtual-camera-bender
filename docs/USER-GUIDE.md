@@ -250,6 +250,29 @@ battery raises it. Below, the camera's rail with its thresholds (the AFE locks o
 below 2.7 V, the processor browns out below 2.4 V, the bend's logic stops below
 2.0 V), and the voltage the set load holds, with its lowest under spikes and ripple.
 
+## The gallery
+
+"Gallery", beside the preset picker, or G opens the gallery over the image: every
+preset in the preset folder for the camera, each a small render of the image in
+front of the lens (the chosen frame of a video; opening the gallery stops play)
+with its name and the preset's one-line description, if it has one, under it. The
+tiles fill in one after the other, behind the renders of the preset you are
+editing, and stay until the image or a preset file changes; a preset that cannot be
+read or rendered shows why in its tile. Type in the filter box to keep the presets whose name, description or
+bend sections (`bus`, `optics`, `memory`, …) contain every word you type. The
+arrows move the selection, Enter or a click applies the preset as the preset
+picker does and closes the gallery, and Escape or G closes it; while the filter
+box has the keyboard, the up and down arrows, Enter and Escape still work and G
+types a letter.
+
+A thumbnail is the first frame from power-on of a camera switched on for it alone,
+at match-input resolution and 300 pixels on the long edge: the frame `vcb render`
+would write for the image at that size. The camera you are editing is not touched.
+A bend that builds up over several frames (a drifting oscillator, a marginal
+contact's stale words, the servos settling), or one whose look hangs on where the
+seed's random draws land, may look different in the editor, where the camera keeps
+running, and at full size.
+
 ## Video
 
 The transport bar has previous and next frame (← and →), play (P), the scrubber
@@ -283,6 +306,7 @@ write the preset as TOML; the shipped presets are never overwritten.
 | R | New seed |
 | ← / → | Previous / next video frame |
 | P | Play or stop |
+| G | Open or close the gallery; in it, arrows to move, Enter to apply, Escape to close |
 
 Single keys act only while no text field is being edited.
 

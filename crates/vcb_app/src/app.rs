@@ -7,7 +7,10 @@
 //! of the preset into render jobs: a preview at once, and the full render when the
 //! drag ends or the preset has been still for [`SETTLE`]. For a video it also owns the
 //! decoder and the frame cache, plays the clip through the preview simulator one frame
-//! after the other, and runs video exports in the background.
+//! after the other, and runs video exports in the background. The preset gallery
+//! (G) covers the viewport while it is open; the app feeds its thumbnail requests to
+//! the render worker, behind the renders, and applies the preset picked in it as the
+//! preset picker does.
 //!
 //! Replies from the worker threads are taken in by `App::logic`, which eframe runs
 //! before every ui pass and also while the window is hidden and no ui pass runs, so a
@@ -25,10 +28,11 @@ use eframe::egui::{
 use vcb_core::{Camera, Frame, Preset, Timing};
 
 use crate::export::{self, Choice, Dialog, Export, Outcome};
+use crate::gallery::{Gallery, Pick};
 use crate::io::{self, Source, Task};
 use crate::panels::{self, Edit, PanelId, Panels};
 use crate::presets::{self, Current, Entry};
-use crate::render::{self, Generations, Job, Renderer, Reply, Worker};
+use crate::render::{self, Answer, Generations, Job, Renderer, Reply, Request, Worker};
 use crate::shortcuts::{self, Action};
 use crate::theme;
 use crate::video::{self, Clip, Decoded, FrameCache, Next, PlayStream, VideoFrame};
@@ -139,8 +143,10 @@ enum Transport {
 #[derive(Debug)]
 pub struct App {
     camera_dir: PathBuf,
+    presets_dir: PathBuf,
     cameras: Vec<Entry>,
     presets: Vec<Entry>,
+    gallery: Gallery,
     camera: Option<Arc<Camera>>,
     preset: Preset,
     current: Current,
@@ -150,7 +156,7 @@ pub struct App {
     video: Option<Video>,
     shown: Option<Shown>,
     texture: Option<Texture>,
-    worker: Option<Worker<Job, Reply>>,
+    worker: Option<Worker<Request, Answer>>,
     generations: Generations,
     latest_full: bool,
     settle: Option<Instant>,
@@ -177,24 +183,28 @@ pub struct App {
     circuit_reset: Option<Instant>,
 }
 
-/// What the app starts with: the first file, the camera folder and the screenshot switch.
+/// What the app starts with: the first file, the camera and preset folders, the screenshot switch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Setup {
     /// The image or video to open first.
     pub path: Option<PathBuf>,
     /// The folder of camera files.
     pub camera_dir: PathBuf,
+    /// The folder of the preset list and the gallery.
+    pub presets_dir: PathBuf,
     /// Where to save the window after the first full render, before quitting.
     pub screenshot: Option<PathBuf>,
 }
 
 impl Setup {
-    /// The setup the environment asks for: [`presets::camera_dir`] and [`SCREENSHOT_ENV`].
+    /// The setup the environment asks for: [`presets::camera_dir`],
+    /// [`presets::presets_dir`] and [`SCREENSHOT_ENV`].
     #[must_use]
     pub fn from_env(path: Option<PathBuf>) -> Self {
         Self {
             path,
             camera_dir: presets::camera_dir(),
+            presets_dir: presets::presets_dir(),
             screenshot: std::env::var_os(SCREENSHOT_ENV).map(PathBuf::from),
         }
     }
@@ -215,20 +225,24 @@ impl App {
         let Setup {
             path,
             camera_dir,
+            presets_dir,
             screenshot,
         } = setup;
         let ctx = cc.egui_ctx.clone();
         theme::apply(&ctx);
         let waker = ctx.clone();
         let mut renderer = Renderer::default();
-        let worker = Worker::spawn(
+        let worker = Worker::spawn_lanes(
             "vcb-render",
-            move |job: Job| renderer.render(&job),
+            Request::lane,
+            move |request: Request| renderer.answer(&request),
             move || waker.request_repaint(),
         );
         let mut app = Self {
             cameras: Vec::new(),
-            presets: presets::discover(&presets::presets_dir()).unwrap_or_default(),
+            presets: presets::discover(&presets_dir).unwrap_or_default(),
+            gallery: Gallery::default(),
+            presets_dir,
             camera: None,
             preset: Preset::new(""),
             current: Current::unsaved("untitled", &Preset::new("")),
@@ -335,8 +349,13 @@ impl App {
                 Err(error) => Message::error(format!("{error:#}")),
             };
         }
-        while let Some(reply) = self.worker.as_ref().and_then(Worker::poll) {
-            self.receive(ctx, reply);
+        while let Some(answer) = self.worker.as_ref().and_then(Worker::poll) {
+            match answer {
+                Answer::Render(reply) => self.receive(ctx, reply),
+                Answer::Thumbnail(reply) => {
+                    self.gallery.receive(ctx, reply);
+                }
+            }
         }
         self.poll_frames();
         if let Some(result) = self.exporting.as_ref().and_then(Export::poll) {
@@ -427,6 +446,7 @@ impl App {
             self.message = Message::default();
         }
         self.loaded = Some(Loaded { source, original });
+        self.gallery.scene_changed();
         self.generations.invalidate();
         self.shown = None;
         self.view.fit();
@@ -544,7 +564,7 @@ impl App {
             preview,
             power_cycle: self.power_cycle,
         };
-        if !worker.submit(job) {
+        if !worker.submit(Request::Render(job)) {
             self.message = Message::error("the renderer stopped; restart the app");
         }
         self.latest_full = !preview;
@@ -689,6 +709,72 @@ impl App {
         }
     }
 
+    /// Lists the preset folder again; the gallery drops the thumbnails of changed files.
+    fn rediscover_presets(&mut self) {
+        if let Ok(list) = presets::discover(&self.presets_dir) {
+            self.presets = list;
+            self.gallery.refresh(&self.presets);
+        }
+    }
+
+    /// The preset gallery: whether it is open, its tiles and its thumbnails.
+    #[must_use]
+    pub fn gallery(&self) -> &Gallery {
+        &self.gallery
+    }
+
+    /// Opens the gallery on the preset folder as it is now, or closes it.
+    ///
+    /// Opening stops play, so the gallery shows the frame play stopped at.
+    fn toggle_gallery(&mut self, ctx: &egui::Context) {
+        if self.gallery.is_open() {
+            self.gallery.close(ctx);
+            return;
+        }
+        self.stop_play();
+        self.rediscover_presets();
+        self.gallery
+            .open(&self.presets, &self.preset.camera, &self.current.name);
+    }
+
+    /// Acts on what the user did in the gallery: closes it, or applies a preset and closes it.
+    fn gallery_pick(&mut self, ctx: &egui::Context, pick: Pick) {
+        match pick {
+            Pick::Stay => return,
+            Pick::Close => {}
+            Pick::Apply(entry) => self.pick_shipped_preset(&entry),
+        }
+        self.gallery.close(ctx);
+    }
+
+    /// Asks the render worker for the gallery's next thumbnails while it is open.
+    ///
+    /// Waits while the chosen video frame is still being decoded, so no thumbnail is
+    /// rendered of a frame about to be replaced.
+    fn request_thumbnails(&mut self) {
+        self.gallery.set_camera(&self.preset.camera);
+        if !self.gallery.is_open() || self.waiting.is_some() {
+            return;
+        }
+        if self
+            .video
+            .as_ref()
+            .is_some_and(|video| video.loaded != video.index)
+        {
+            return;
+        }
+        let (Some(camera), Some(loaded), Some(worker)) = (&self.camera, &self.loaded, &self.worker)
+        else {
+            return;
+        };
+        while let Some(job) = self.gallery.next_request(camera, &loaded.source.scene) {
+            if !worker.submit(Request::Thumbnail(job)) {
+                self.message = Message::error("the renderer stopped; restart the app");
+                return;
+            }
+        }
+    }
+
     fn save_preset(&mut self, ask: bool) {
         let path = match (&self.current.path, ask) {
             (Some(path), false) => Some(path.clone()),
@@ -705,9 +791,7 @@ impl App {
                     path: Some(path),
                     saved: self.preset.clone(),
                 };
-                if let Ok(list) = presets::discover(&presets::presets_dir()) {
-                    self.presets = list;
-                }
+                self.rediscover_presets();
             }
             Err(error) => self.message = Message::error(format!("{error:#}")),
         }
@@ -756,6 +840,7 @@ impl App {
             loaded.source.scene = frame.scene;
             loaded.original.set(frame.original);
             video.loaded = index;
+            self.gallery.scene_changed();
         }
     }
 
@@ -844,7 +929,7 @@ impl App {
                     preview: true,
                     power_cycle: self.power_cycle,
                 };
-                if worker.submit(job) {
+                if worker.submit(Request::Render(job)) {
                     play.in_flight = Some((generation, index));
                     self.latest_full = false;
                     None
@@ -930,7 +1015,22 @@ impl App {
     }
 
     /// Carries out a keyboard shortcut.
+    ///
+    /// While the gallery covers the viewport, the single keys of the viewport and the
+    /// video do nothing.
     fn perform(&mut self, ctx: &egui::Context, action: Action) {
+        let hidden = matches!(
+            action,
+            Action::Fit
+                | Action::OneToOne
+                | Action::NewSeed
+                | Action::PreviousFrame
+                | Action::NextFrame
+                | Action::Play
+        );
+        if hidden && self.gallery.is_open() {
+            return;
+        }
         match action {
             Action::Open => {
                 if let Some(path) = io::pick_source() {
@@ -949,6 +1049,7 @@ impl App {
             Action::PreviousFrame => self.step(-1),
             Action::NextFrame => self.step(1),
             Action::Play => self.toggle_play(ctx),
+            Action::Gallery => self.toggle_gallery(ctx),
         }
     }
 
@@ -1127,6 +1228,17 @@ impl App {
         if let Some(entry) = preset_choice {
             self.pick_shipped_preset(&entry);
         }
+        if ui
+            .selectable_label(self.gallery.is_open(), "Gallery")
+            .on_hover_text(format!(
+                "Every preset for the camera on the loaded image ({})",
+                Action::Gallery.label()
+            ))
+            .clicked()
+        {
+            let ctx = ui.ctx().clone();
+            self.toggle_gallery(&ctx);
+        }
     }
 
     /// The bar above the status line for a video: step, play, the scrubber and the time.
@@ -1297,6 +1409,7 @@ impl App {
                 );
         }
         let busy = self.generations.is_pending()
+            || self.gallery.is_busy()
             || self.opening.is_some()
             || self.writing.is_some()
             || self.waiting.is_some();
@@ -1389,6 +1502,18 @@ impl App {
 
     fn central(&mut self, ui: &mut Ui, show_original: bool) {
         let ctx = ui.ctx().clone();
+        if self.gallery.is_open() {
+            let rect = ui.available_rect_before_wrap();
+            let aspect = self
+                .loaded
+                .as_ref()
+                .and(self.content_size())
+                .map(|size| size.x / size.y.max(1.0));
+            let pick = self.gallery.show(ui, aspect);
+            self.gallery_pick(&ctx, pick);
+            drop_overlay(ui, rect);
+            return;
+        }
         let Some(loaded) = &self.loaded else {
             self.empty_state(ui, &ctx);
             return;
@@ -1465,6 +1590,7 @@ impl eframe::App for App {
     /// request makes eframe paint even a hidden window, still fires.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll(ctx);
+        self.request_thumbnails();
         self.settle(ctx, self.dragging);
         if self.exporting.is_some() {
             ctx.request_repaint_after(EXPORT_REFRESH);
@@ -1492,6 +1618,11 @@ impl eframe::App for App {
             } else {
                 self.open(&ctx, path);
             }
+        }
+        // The gallery takes its arrows, Enter and Escape before the shortcuts see them.
+        if self.dialog.is_none() {
+            let pick = self.gallery.keys(&ctx);
+            self.gallery_pick(&ctx, pick);
         }
         let actions = if self.dialog.is_none() {
             shortcuts::take(&ctx)
@@ -1553,6 +1684,8 @@ impl eframe::App for App {
         }
         self.dragging = edit.dragging;
         self.settle(&ctx, edit.dragging);
+        // A gallery opened in this pass asks for its first thumbnails at once.
+        self.request_thumbnails();
         let title = self.window_title();
         if title != self.title {
             ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));

@@ -9,11 +9,13 @@
 //! running between renders: a reduced preview while a control is dragged, the full
 //! preset when it is released. Videos are read frame by frame on demand, played
 //! through the preview simulator ([`video`]) and exported through a fresh full-size
-//! simulator on a background thread ([`export`]). The binary `vcb-app` calls [`run`].
+//! simulator on a background thread ([`export`]). The [`gallery`] shows every preset
+//! for the camera rendered on the loaded image, the worker rendering its thumbnails
+//! behind the previews. The binary `vcb-app` calls [`run`].
 //!
 //! The modules are public so the pure parts (preset building, job coalescing, the
-//! frame cache, the export job, shortcuts, view geometry, camera discovery) can be
-//! tested from `tests/`; the app has no library users.
+//! frame cache, the export job, shortcuts, view geometry, camera discovery, the
+//! gallery's cache) can be tested from `tests/`; the app has no library users.
 
 #![expect(
     clippy::multiple_crate_versions,
@@ -22,6 +24,7 @@
 
 pub mod app;
 pub mod export;
+pub mod gallery;
 pub mod icon;
 pub mod io;
 pub mod panels;

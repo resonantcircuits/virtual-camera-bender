@@ -206,7 +206,8 @@ impl Texture {
         self.0.size_vec2()
     }
 
-    fn id(&self) -> TextureId {
+    /// The texture's id, for painting it.
+    pub(crate) fn id(&self) -> TextureId {
         self.0.id()
     }
 }
