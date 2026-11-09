@@ -17,7 +17,10 @@
 //! 120 °C, steady and with the temperature turned every frame. The frame buffer's
 //! compressed scan, the codec's scan of the developed frame, runs through an empty
 //! section, a stuck data pin, `s9000-tear`'s contacts, `a11` stuck low (the scan laid
-//! on the raw's words) and the SDRAM at 120 °C.
+//! on the raw's words) and the SDRAM at 120 °C. The whole chain also runs `card-rot` and
+//! `strip-repeat`, whose memory bends reach the compressed buffer, so the frame takes
+//! the scan's path: the entropy coder, the SDRAM and the decoder in place of the
+//! codec's direct round trip.
 //!
 //! Each stage bench times one public stage function on the signal that the stages
 //! before it produced. Persistent state carries on from one iteration to the next, as
@@ -98,8 +101,9 @@ const MEMORY_CASES: [&str; 8] = [
 /// Cases of the JPEG-buffer bench: the scan through the SDRAM; see [`scan_case`].
 const SCAN_CASES: [&str; 5] = ["empty", "d3-high", "s9000-tear", "a11-low", "hot-120"];
 
-/// Presets of the whole-chain bench: the two of every stage and one per bent stage.
-const FRAME_PRESETS: [&str; 11] = [
+/// Presets of the whole-chain bench: the two of every stage, one per bent stage, and the
+/// two whose frames take the compressed buffer's path.
+const FRAME_PRESETS: [&str; 13] = [
     "clean",
     "hpf",
     "full-spectrum",
@@ -111,6 +115,8 @@ const FRAME_PRESETS: [&str; 11] = [
     "reclock-roll",
     "s9000-tear",
     "hot-board",
+    "card-rot",
+    "strip-repeat",
 ];
 
 /// Width of the scene: the A520's native still width.

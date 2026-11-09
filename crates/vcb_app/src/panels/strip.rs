@@ -5,7 +5,9 @@
 //! bend or a light leak, the clocks on the readout, the AFE bend, the faulted reset
 //! gate or the noisy serial link, the bus bend, the master-clock reclock, the memory's
 //! pin faults or heat) or with processor overrides is lit in the accent colour. The supply rail has no stage of its own: it
-//! feeds the AFE, the bus and the processor, so a rail bend lights those three.
+//! feeds the AFE, the bus and the processor, so a rail bend lights those three. The
+//! JPEG lights when the memory bend reaches the compressed buffer, and leads to the
+//! memory panel.
 //!
 //! Clicking a stage asks the inspector to scroll to the panel of what bends it: a lit
 //! scene to the optics, a lit readout to the clocks, a stage lit by the rail alone to
@@ -98,6 +100,8 @@ impl Stage {
     /// sensor bend (`[bend.sensor]`) and the light leak (`[bend.leak]`), blocks in the
     /// sensor panel, light the sensor; the reset gate (`[bend.reset]`) and the serial
     /// link (`[bend.serial]`), blocks in the AFE panel, light the AFE as its bend does.
+    /// A memory bend that reaches the compressed buffer (`reaches_jpeg`) lights the
+    /// JPEG too and leads to the Memory panel.
     #[must_use]
     pub fn bent_by(self, preset: &Preset) -> Option<PanelId> {
         let bend = &preset.bend;
@@ -115,7 +119,12 @@ impl Stage {
             Self::Clock => bend.clock.is_some().then_some(PanelId::Clock),
             Self::Processor => preset.isp.is_some().then_some(PanelId::Processor).or(rail),
             Self::Memory => bend.memory.is_some().then_some(PanelId::Memory),
-            Self::Adc | Self::Jpeg => None,
+            Self::Jpeg => bend
+                .memory
+                .as_ref()
+                .filter(|memory| memory.reaches_jpeg)
+                .map(|_| PanelId::Memory),
+            Self::Adc => None,
         }
     }
 

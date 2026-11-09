@@ -19,11 +19,13 @@ use crate::validate::{fraction, non_negative, within};
 /// sample that carries it, folding the highlights down. A heat gun
 /// on the board shortens the cells' retention until the weakest lose their charge
 /// before the refresh comes: isolated bit errors first, then a frame eaten by them.
-/// See [`memory`](crate::memory).
+/// With `reaches_jpeg` the same pins and cells corrupt the compressed scan the encoder
+/// keeps in the chip. See [`memory`](crate::memory).
 ///
 /// ```toml
 /// [bend.memory]
 /// temperature_c = 110.0  # a heat gun on the board; the camera's reference is 25
+/// reaches_jpeg = true    # the compressed scan lies in the bent chip too
 /// [[bend.memory.faults]]
 /// pin = 3
 /// kind = "high"
@@ -52,6 +54,18 @@ pub struct MemoryBend {
     /// `retention_s` is given at, where no cell loses its charge before the refresh.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub temperature_c: Option<f64>,
+    /// Whether the faults reach the compressed buffer as well as the raw.
+    ///
+    /// The encoder keeps its entropy-coded scan in an SDRAM until the card writer takes
+    /// it; whether that is the bent chip, and so within the faults' reach, is the
+    /// memory map's doing. With `true` the faults and the hot cells corrupt the scan
+    /// as they do the raw ([`memory::bend_scan`](crate::memory::bend_scan)), and the
+    /// decoder reads it out of step: shifted macroblocks, tints, grey tails. The
+    /// default `false` is PROVISIONAL: the A520's memory map is unknown, and the
+    /// Fujifilm S9000's documented bend produced readable files with torn raws, so its
+    /// compressed buffer lay out of the faults' reach.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "std::ops::Not::not"))]
+    pub reaches_jpeg: bool,
 }
 
 /// One faulted SDRAM address pin.

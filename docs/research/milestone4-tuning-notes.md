@@ -1,8 +1,9 @@
-# Milestone 4 tuning notes (stages 16 to 19)
+# Milestone 4 tuning notes (stages 16 to 20)
 
 Tuning of the four presets of the sensor and reset bends (stages 16 to 18), the five of
 the frame buffer's data pins and heat, the AFE's serial link and the light leak (stage
-19, in its own section below), and the PROVISIONAL camera values they rest on. As in
+19, in its own section below), the two of the compressed buffer (stage 20, the last
+section), and the PROVISIONAL camera values they rest on. As in
 milestone 3 (`milestone3-tuning-notes.md`), no reference photos exist for these bends,
 so every judgement is by eye: on `samples/sample-01.jpg` at native still resolution,
 and in movie mode on the 3 s pan (`validation/clip-pan.mp4`, gitignored). The sample is
@@ -289,3 +290,77 @@ little under grey world.
   mean, the leak included, and pink under any fixed balance, the infrared outweighing
   the red; a red leak over a natural full-spectrum scene is not within reach of the
   white balance.
+
+## Stage 20: `a520-card-rot`, `a520-strip-repeat`
+
+Tuning of the two presets of the compressed buffer, `[bend.memory] reaches_jpeg`. Stage
+20c judged them at native still resolution on the sample and in movie mode on the pan,
+with a probe that read the contacts' state at each burst of the scan and rendered
+sequences from power-on (not committed). The looks to reach are the plan's: a marginal
+data pin at a few hertz, so the scan takes a flip or two (shifted macroblocks, tints, a
+grey tail), and a marginal `a11`, whose fold the native still raw lies below (the raw
+untouched, strips of the picture repeated). The camera values are stage 20b's
+`[memory] jpeg_base` 2^22 and stage 20c's `[jpeg] restart_interval` 0, both
+PROVISIONAL; the switch adds none.
+
+The sample's native superfine scan is 1.57 to 1.60 MB, 346 to 353 bursts of a readout
+line's 2272 words, so each of its write and read windows lasts about 46 ms of the
+still's 228 ms frame period. A burst takes one contact state, so a closure corrupts
+every other byte of at least one burst: some 4.5 KB, about two thirds of an MCU row of
+the landscape frame. The scan runs along the landscape frame's MCU rows, which stand
+upright in the portrait sample: its damage starts at a column and runs to the right.
+
+### Data pin: `a520-card-rot`
+
+| Round | Change | Effect | Keep / drop |
+|---|---|---|---|
+| CR1 | `d11` high, 5 % of the time, 3 Hz, seeds 1 to 8 | Seven frames clean, one grey from its first block (the contact closed at the scan's first bursts) | a shorter, more frequent closure |
+| CR2 | `d2` high, 2 %, 6 Hz, seeds 1 to 8, the raw-only path beside the scan's | The raw takes faint bands where the contact closed over its lines; the scan is hit in one frame (seed 7, closed from burst 314 to the end): at 1:1 a sliver of broken blocks, then grey from 90 % of the width | a pin above the sample bits; why grey at once |
+| CR3 | `d11` low against high, 0.1 %, 4 Hz, the four hit seeds of 40 | High: grey from the break in all four, a stuck bit turning a stuffed zero byte into a marker within a few hundred bytes. Low: black from the break in three, the DC predictions running off; in one a dark green copy of the scene, shifted along the rows | low |
+| CR4 | `d11` low, 0.2 %, 8 Hz (closures of a quarter of a millisecond, a burst or two), seeds 1 to 90 | 30 of 90 frames hit, none grey (a cleared bit makes no marker); two thirds drift black over most of the rest, a third show a shifted copy of the scene in green, lime, cyan or teal, the copy itself wrapped along the rows (tree at the top, sky below) | the look; a seed for the still and the golden |
+| CR5 | Seeds hit on the golden scene and on the sample alike, pins `d10` to `d15` (no sample bit, so the raw is the clean camera's) over seeds 1 to 300 | About one seed in twelve hits the golden, one in three the sample; sixteen hit both with the break between a quarter and three quarters of the width, five without the black: `d11` 209, `d13` 265 and 167, `d14` 232 and 155 | three finalists |
+| CR6 | The finalists at sheet scale: `d13` 167 and 265, `d14` 232 | 167: the left 56 % clean, a seam of broken blocks, a lime-green copy shifted along the rows, black at the right. 265: from 45 %, a dark green copy. 232: from 62 %, a teal copy. Golden of 167: the top clean, then a shifted pink disc over a dark red band, black below | card rot: `d13` low, 0.2 %, 8 Hz, seed 167 |
+| CR7 | The preset in movie mode on the pan | 2 of 45 frames differ (22 and 23: one closure at the read of the first and the write of the second), the bottom 32 rows broken into coloured bars; a movie frame's scan is 47 KB, eleven bursts in 1.6 ms of its 67 ms | keep: a pair of rotten frames every few seconds |
+| CR8 | The same closures at 30 Hz (0.75 % of the time) in movie mode | 10 of 45 frames, five pairs: the frame holds to the break, then floods black or white with coloured bars, twice with a grey bottom | the header's note; a few hertz kept |
+
+The raw at seed 167 is the clean camera's byte for byte: `d13` carries no bit of the
+10-bit sample. A low pin with a sample bit would add faint bands to the raw where the
+contact closes over its lines (CR2's `d2`); the scan reads any pin alike.
+
+### Address pin: `a520-strip-repeat`
+
+| Round | Change | Effect | Keep / drop |
+|---|---|---|---|
+| SR1 | `a11` low, 30 %, 8 Hz, seeds 1 to 6, against the clean camera at each seed | The raw identical to the clean camera's in all six. The scan: grey from the first blocks in four, a burst written through the fault and read in place finding the SDRAM's power-up content; one clean; one grey and black | a sequence |
+| SR2 | Four frames from power-on, the same settings, seed 1 | Frame 0 grey. Frame 1 holds two thirds, then bars of black, white, yellow and green: bursts read through the fault find this frame's raw, codes read as compressed bytes. Frame 2 holds two thirds, then a strip of the picture repeated, shifted and pale, then an orange band: the bursts written aside and read in place find the last frame's scan. Frame 3 clean | the strips need a running camera |
+| SR3 | 2 % and 5 %, 8 Hz, six and eight frames | One closure spoils a frame's read and the next frame's write, so bars in one frame bring the repeated strips in the next. At 2 % two frames of six hit; at 5 % (seed 2) five of eight: frame 0 holds two thirds, then bars; frame 2 holds a third, then strips of the tree, the hills and the water repeated, pale blue | 5 % |
+| SR4 | Frame 0 of seeds 1 to 31 at 2 %, 8 Hz | 15 hit: 11 grey (power-up content), 4 bars and black (the raw read as compressed bytes) | a seed whose still shows the bars |
+| SR5 | The preset (5 %, 8 Hz, seed 2) in movie mode on the pan | The raw identical to the clean camera's in all 45 frames (the movie raw ends below 2^19). Frames 32 and 33 hit: 32 bars, then black, then a grey bottom; 33 the top strip from the last frame's scan, the pan's previous position, over the rest | keep |
+
+The golden at seed 2 shows the scan's damage alone: the raw at 160 by 120 passes the
+scaled `jpeg_base`, 2^14, so `a11` could reach its last rows there, but at this seed
+the contact does not change over them. The golden reads shifted, tinted blocks from the
+second MCU row and a grey bottom: the card rot's look, not the strips, which a single
+frame from power-on cannot show.
+
+### What the stage 20 looks reach, and their limits
+
+- A data pin closes over a whole burst of the scan, so a frame takes a thousand or so
+  flipped bits where the plan imagined one or two. A pin stuck high greys the frame from
+  a few hundred bytes after the break; a pin stuck low never greys it, and the shifted,
+  tinted copy runs to the end, often drifting black as the DC predictions run off. The
+  plan's three phases, a shifted and tinted stretch before a grey tail, need a closure
+  shorter than a burst, which the per-burst contact does not give; card rot keeps the
+  shifted copy and its dark tail.
+- Where the DC runs far off, the model clips the RGB bytes to black or white; libjpeg
+  would wrap some samples around into bands of colour.
+- The repeated strips of `a11` need a running camera: a still from power-on finds the
+  power-up content (grey) or this frame's raw (bars) where a burst is read across the
+  contact's change, and only a later frame finds the last frame's scan: in a movie, or
+  in the app while the camera runs on from render to render.
+- A movie frame's scan takes under 2 ms of each frame, so contacts at a few hertz rot a
+  movie rarely; a faster contact rots it often, but floods the frame at the break, the
+  small frame packing several MCU rows into one burst.
+- The A520's memory map, scan byte order, Huffman tables and restart interval are
+  unknown; with a restart interval the damage would end at the next marker and the
+  rest of the frame would heal.

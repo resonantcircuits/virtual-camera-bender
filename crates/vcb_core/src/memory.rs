@@ -8,11 +8,14 @@
 //! [`isp::develop`](crate::isp::develop), while the preset has a `[bend.memory]`
 //! section; without one the raw passes untouched.
 //!
-//! The compressed frame passes the same SDRAM: **[`bend_scan`]** rewrites the codec's
+//! The compressed frame can pass the same SDRAM: **[`bend_scan`]** rewrites the codec's
 //! entropy-coded scan in place, between
 //! [`codec::encode_scan`](crate::codec::encode_scan) and
-//! [`codec::decode_scan`](crate::codec::decode_scan), under the same section and
-//! through the same pins and cells ([The JPEG buffer](#the-jpeg-buffer)).
+//! [`codec::decode_scan`](crate::codec::decode_scan), through the same pins and cells
+//! ([The JPEG buffer](#the-jpeg-buffer)), while the section sets `reaches_jpeg`
+//! ([`Params::reaches_jpeg`]); otherwise the codec's direct round trip,
+//! [`codec::encode`](crate::codec::encode), runs and the scan is out of the faults'
+//! reach.
 //!
 //! # Addresses
 //!
@@ -226,6 +229,12 @@
 //! byte, which the read drops; the scan keeps its length. On the A520 `jpeg_base` is
 //! 2^22 (PROVISIONAL), the weight of `a11`'s row bit, just above the native still raw,
 //! which ends at 3,871,488 words.
+//!
+//! Whether the compressed buffer lies in the bent chip at all is the memory map's doing,
+//! and unknown: the Fujifilm S9000's documented bend produced readable files with torn
+//! raws, so its compressed buffer was out of the faults' reach. `[bend.memory]
+//! reaches_jpeg` decides it (PROVISIONAL default `false`); without it the simulator
+//! leaves the scan alone and runs the codec's direct round trip.
 //!
 //! The DMA writes the scan in stream order, in bursts of one readout line's worth of
 //! words (`pitch`), after the frame's development, which follows the raw's read-back,
@@ -947,6 +956,10 @@ pub struct Params {
     pub seed: u64,
     /// What a word holds before it is first written.
     pub power_on: PowerOn,
+    /// Whether the compressed scan lies within the faults' reach: `[bend.memory] reaches_jpeg`.
+    ///
+    /// The simulator puts the scan through [`bend_scan`] only while it is set.
+    pub reaches_jpeg: bool,
 }
 
 impl Params {
@@ -1071,6 +1084,7 @@ impl Params {
                 max_code: (1u32 << dsp_bits) - 1,
                 black_code: f32::from(camera.adc.black_level >> camera.adc.dsp_lsb),
             },
+            reaches_jpeg: bend.reaches_jpeg,
         }))
     }
 

@@ -34,9 +34,9 @@ the loaded image and picked by eye.
 ### Milestone 4: the rest of the bender's reach
 
 The bends a bender makes on the sensor itself and on its reset gate, on the
-frame-buffer SDRAM's data pins and its heat, on the AFE's serial programming link and
-on the body's seal against light, each modelled in the stage whose hardware it
-changes, with presets tuned by eye.
+frame-buffer SDRAM's data pins and its heat, on the compressed JPEG it buffers, on the
+AFE's serial programming link and on the body's seal against light, each modelled in
+the stage whose hardware it changes, with presets tuned by eye.
 
 #### Added
 
@@ -84,6 +84,24 @@ changes, with presets tuned by eye.
   smears like scene light, and in still mode it smears alone, the mechanical shutter
   blocking the scene but not the leak. Scene auto-exposure meters it and stops the
   scene down for it within its two stops.
+- The JPEG's entropy-coded scan in the codec: baseline Huffman coding through the
+  standard's Annex K.3 tables (PROVISIONAL), MCU by MCU with DC differences, zigzag
+  runs, byte stuffing and, with `[jpeg] restart_interval`, restart markers; and a
+  decoder that reads a damaged scan as libjpeg does: out of step after a flipped bit,
+  MCUs shifted and DC predictions drifting into tints, grey after a stray marker or
+  the end of the data, back in step at the next restart marker. The coding is exact:
+  without damage the frame is the direct round trip's, byte for byte.
+- The compressed buffer in the frame-buffer SDRAM: with `[bend.memory] reaches_jpeg`
+  the scan is written at `[memory] jpeg_base` after the frame's development, two
+  bytes a word, and read back a frame later by the card writer, through the same
+  address and data faults, marginal contacts and hot cells as the raw. Every data pin
+  carries scan bits, `d10` to `d15` included; on the A520 at native still size `a11`
+  reaches the scan and leaves the raw alone. The switch defaults to off
+  (PROVISIONAL: the A520's memory map is unknown, and the Fujifilm S9000's bend left
+  its files readable), so the milestone 3 and stage 19 presets keep their looks.
+  `Simulator::scan_len` reports the length of the last scan that took this path.
+- Camera values for the JPEG buffer: `[memory] jpeg_base` 2^22 words and `[jpeg]
+  restart_interval` 0, both PROVISIONAL; the interval must fit a file's 16-bit DRI.
 - Camera values in `cameras/a520.toml`: `[sensor]` `reference_temp_c` 25 °C,
   `dark_doubling_c` 6, `read_noise_per_c` 0.003, `amp_glow_e_per_s` 1.0,
   `amp_glow_radius_frac` 0.15, `substrate_v` 12 V, `full_well_frac_per_v` 0.25,
@@ -109,6 +127,9 @@ changes, with presets tuned by eye.
   panel (edge, radiance, spread, colour and near infrared, with the glow's reach in
   photosites and what is left at the far edge). The strip lights the stages they
   bend; every knob keeps the circuit running. Guide sections for all three.
+- In the app, a "Compressed buffer" switch on the Memory panel, under the retention
+  block: untouched, or in the bent chip (`reaches_jpeg`). The strip lights the JPEG
+  stage while it is thrown, and throwing it keeps the circuit running.
 - Four presets: `a520-heat-gun` (mottled shadows and hot crosses in daylight, the
   readout corner's glow on a dark, long exposure), `a520-substrate` (highlights that
   bloom along their columns), `a520-reset-drag` (bright runs ending in black streaks,
@@ -123,6 +144,13 @@ changes, with presets tuned by eye.
   over a scene auto-exposure stops down) and `a520-open-body` (the full-spectrum
   optics with daylight through red plastic under grey-world balance: a peach glow
   under a teal sky).
+- Two presets for the compressed buffer: `a520-card-rot` (a marginal contact on data
+  line d13, which carries no sample bit, so the raw stays clean while the scan loses a
+  bit where it closes: the picture holds, then a seam of broken blocks and a shifted,
+  green-tinted copy of the scene drifting dark) and `a520-strip-repeat` (a marginal
+  `a11`, above the still raw: the raw stays clean while the scan's bursts read across
+  the contact's change find the raw, which breaks into bars, or the last frame's
+  scan, which repeats strips of the picture shifted along the rows).
 - Tests of both bends' physics, replay and reconfiguration (`sensor_bend`, `reset`),
   golden frames of the four presets, and benchmarks of the sensor with a hot and a
   drainless CCD and of the AFE with a weak, flaky reset gate.
@@ -130,9 +158,16 @@ changes, with presets tuned by eye.
   `leak`, `stage19_plumbing`), golden frames of their five presets, and benchmarks of
   the frame buffer with stuck and marginal data pins and a hot SDRAM, of the AFE with
   bit errors on its serial link at 0.003 and 0.03, and of the sensor with a light leak.
+- Tests of the scan's coding and decoding rules (`huffman`), of the scan in the SDRAM
+  (`jpeg_buffer`) and of the path through the chain (`jpeg_path`: the switch off
+  renders as before, on without a fault byte for byte as the direct round trip, a
+  marginal data contact damages the frame from its first flipped byte, replay from
+  reset, the switch kept on a running camera), golden frames of the two presets, and
+  benchmarks of the coder and decoder, of the scan through the SDRAM and of whole
+  frames through the compressed buffer.
 - `docs/research/milestone4-tuning-notes.md`, how the presets were chosen and what
   the sample could not show, with a stage 19 section on the five new presets and the
-  SDRAM's retention spread.
+  SDRAM's retention spread, and a stage 20 section on the compressed buffer's two.
 
 #### Changed
 
@@ -144,8 +179,12 @@ changes, with presets tuned by eye.
 - `docs/ARCHITECTURE.md` describes the five bends, the reset and serial streams, the
   diffusion's charge, the AFE's registers and the SDRAM's cell masks, the new
   configuration, their cost and their limits; the README lists the presets.
+- The codec quantises to integer coefficients, from which the scan is coded; the
+  frames are those of the former floating-point round trip, byte for byte.
+  `docs/ARCHITECTURE.md` describes the entropy coder, libjpeg's decoding rules and the
+  compressed buffer.
 - The existing golden frames are unchanged by the new presets: fourteen by stage 18's
-  four, eighteen by stage 19's five.
+  four, eighteen by stage 19's five, twenty-three by stage 20's two.
 
 ### Milestone 3: the bends from the old presets' spirit
 

@@ -198,8 +198,9 @@ read-only.
 **Memory** (bend; the switch leaves the SDRAM stock or bends it). The processor
 stores the raw frame in its SDRAM and reads it back a frame later. Three things a
 bender does to the chip sit under the one switch: its heat, its address pins and its
-data pins. A pin set back to sound keeps its settings, and the panel writes back a
-preset's faults and temperature as it found them.
+data pins; a fourth control says whether the compressed JPEG lies in the same chip. A
+pin set back to sound keeps its settings, and the panel writes back a preset's faults,
+temperature and compressed buffer as it found them.
 
 *Retention* comes first. *Temperature* (°C, −20 to 120): a heat gun on the board or
 freeze spray on the chip, dimmed at the camera's 25 °C until moved and returned
@@ -214,13 +215,27 @@ samples that hold such a cell: none of the 134 million cells at 25 °C, a handfu
 bright and dark single sites, and 2.1 % (a fifth of the samples) at 120 °C, a frame
 eaten by them.
 
+*Compressed buffer*, under it: a switch between *untouched* and *in the bent chip*.
+The processor keeps the finished JPEG, its entropy-coded scan, in memory until the
+card writer takes it; where that memory is, is the camera's memory map, unknown for
+the A520. *Untouched* keeps the scan out of the faults' reach, as on the Fujifilm
+S9000 whose bend left its files readable: the faults show only in the raw. *In the
+bent chip* puts the scan through the same pins and hot cells, two bytes to a word, so
+all sixteen data pins act on it, d10 to d15 included, and the decoder reads what comes
+back as a file viewer would: the picture holds to the first wrong bit, then runs on
+out of step, its blocks shifted along the rows, its colours tinted as the DC values
+drift, and greys from where a stray marker appears. A pin that sets bits makes such a
+marker within a few hundred bytes, so the rest goes grey at once; one that clears bits
+cannot, and the shifted, tinted copy runs to the end. On a native still a11 lies above
+the raw and reaches only the scan. The strip lights JPEG while the switch is thrown.
+
 *Address pins*: one row per address pin, a0 to a11 on the A520: *Fault* sound, low,
 high or bridge, with *With* the bridge's other pin among the sound ones (both read
 the OR of the two); *Contact* solid or marginal. Pins a0 to a8 carry a column and a
 row bit of the word address, a9 to a11 a row bit, so a solid fault folds the frame in
 powers of two. A marginal contact, which tears the frame into bands and lets old
 frames through, has two knobs under *Marginal address contacts*: *faulted* (% of
-time, 1 to 100) and *switching* (Hz, 0 to 1000), its mean on-off cycles a second.
+time, 0.1 to 100) and *switching* (Hz, 0 to 1000), its mean on-off cycles a second.
 
 *Data pins*: one row per data line, d0 to d15 on the A520's 16-bit SDRAM, with the
 same *Fault*, *With* and *Contact*, a bridge's partner among the sound data pins. A
@@ -234,7 +249,8 @@ knobs under *Marginal data contacts*, leaves a wrong bit in the word until the n
 write, so a stale word read back clean still shows it.
 
 In the preset it is `[bend.memory]` with `temperature_c` (left out at the camera's
-temperature), `[[bend.memory.faults]]` for the address pins and
+temperature) and `reaches_jpeg = true` for the compressed buffer in the bent chip (left
+out while untouched), `[[bend.memory.faults]]` for the address pins and
 `[[bend.memory.data_faults]]` for the data pins, each fault with `pin` (the number,
 3 for a3 or d3), `kind` (`"low"`, `"high"` or `"bridge"`), `with` for a bridge's
 other pin, and `on_frac` and `switch_hz` for a marginal contact.
@@ -410,3 +426,15 @@ The other bends start from the clean camera (`a520-clean`):
     White balance on Auto as for the full-spectrum look, for the full picture of an
     opened body (`a520-open-body`): grey world takes back the leak's red with the
     infrared's cast, and a peach glow rises under a teal sky.
+14. **A rotting card.** Switch on Memory, set a10 back to sound, set d13 to low and
+    its contact to marginal: d13 carries no bit of the sample, so the picture stays
+    clean. Now throw *Compressed buffer* to *in the bent chip*: the JPEG passes the
+    same pin, and wherever the contact closes during the scan the picture holds up to
+    there and then runs on out of step, a shifted copy of the scene in green or teal
+    that drifts dark. At the starting 30 % of the time more than half the frames
+    break, most of them from the first blocks on; set *d13 faulted* to 0.2 % and
+    *switching* to 8 Hz and most frames pass, one in three breaking somewhere along
+    the way (`a520-card-rot`). Set the pin high instead
+    and the rest of the frame goes grey at the break. A marginal a11, low, reaches the
+    compressed buffer alone too: a still breaks into bars, and as the camera keeps
+    running, strips of the last frame repeat (`a520-strip-repeat`).

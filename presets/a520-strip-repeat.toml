@@ -1,0 +1,33 @@
+# Canon PowerShot A520 with a marginal SDRAM address contact that reaches only the compressed buffer.
+# Address pin a11 makes contact to ground (stuck low) 5 % of the time, switching about eight
+# times a second, and the processor keeps the JPEG's scan in the bent chip (reaches_jpeg). a11
+# carries only row bit 22 of the word address. The native still raw ends at 3,871,488 words,
+# below 2^22, so the fault leaves it alone and the raw reads back clean; the scan lies at 2^22,
+# and where the contact closes its bursts fold down onto the raw's first words. A burst written
+# in place and read through the fault finds this frame's raw, its codes read as compressed
+# bytes: the picture holds to there, then breaks into flat bars of black, white, yellow and
+# green as the decoder runs off. A burst written through the fault and read in place finds what
+# the words held before: in a running camera (movie mode, or a still after the first frame) the
+# same strip of the last frame's scan, so the picture holds, then repeats strips of itself,
+# shifted along the MCU rows and pale; in the first frame from power-on the SDRAM's power-up
+# content, and the rest goes grey. One closure spoils a frame's read and the next frame's write,
+# so the bars of one frame bring the repeated strips of the next. Seed 2's first frame, a still
+# from power-on, holds two thirds of the upright frame and breaks into bars.
+# At the goldens' 160 x 120 the raw passes the scaled 2^14, so a11 can reach its last rows
+# there; at seed 2 it does not, and the golden shows the scan's damage alone.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone4-tuning-notes.md.
+camera = "a520"
+seed = 2                            # also seeds the contact's telegraph process
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.memory]
+reaches_jpeg = true                 # PROVISIONAL: the A520's memory map is unknown
+
+[[bend.memory.faults]]
+pin = 11                            # row bit 22: above the native still raw, at the compressed buffer
+kind = "low"
+on_frac = 0.05                      # PROVISIONAL, by eye: closures of about six milliseconds, some fifty bursts, a seventh of the scan
+switch_hz = 8.0                     # PROVISIONAL, by eye: more than half the frames of a running camera hit

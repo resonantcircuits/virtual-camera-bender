@@ -33,6 +33,9 @@ const MAX_ADDRESS_FIELD_BITS: u8 = 16;
 /// Most data pins of a supported SDRAM, an x16 part; a stored word fits a `u16`.
 const MAX_DATA_PINS: u8 = 16;
 
+/// Longest restart interval in MCUs: a JPEG file's DRI segment holds it in 16 bits (T.81 B.2.4.4).
+const MAX_RESTART_INTERVAL: u32 = 65_535;
+
 /// Largest supported width of an AFE register in bits.
 ///
 /// The AFE's gain and clamp registers are 6 to 10 bits wide; 16 bounds a typo.
@@ -407,6 +410,13 @@ impl Camera {
                     "jpeg.tables.{name} contains a zero quantiser step"
                 )));
             }
+        }
+        let restart_interval = self.jpeg.restart_interval;
+        if restart_interval > MAX_RESTART_INTERVAL {
+            return Err(Error::config(format!(
+                "jpeg.restart_interval {restart_interval} exceeds the {MAX_RESTART_INTERVAL} \
+                 MCUs a file's DRI segment can hold"
+            )));
         }
         Ok(())
     }

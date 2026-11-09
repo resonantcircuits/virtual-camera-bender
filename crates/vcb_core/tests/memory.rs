@@ -951,6 +951,7 @@ fn memory_preset(
         faults,
         data_faults,
         temperature_c,
+        ..MemoryBend::default()
     });
     preset
 }
@@ -1544,6 +1545,7 @@ fn bent_data() -> MemoryBend {
             data_bridge(1, 2),
         ],
         temperature_c: Some(115.0),
+        reaches_jpeg: false,
     }
 }
 

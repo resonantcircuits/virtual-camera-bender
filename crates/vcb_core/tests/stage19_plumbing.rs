@@ -87,6 +87,7 @@ fn stage19_preset() -> Preset {
             },
         ],
         temperature_c: Some(110.0),
+        reaches_jpeg: false,
     });
     preset
 }
