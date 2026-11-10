@@ -20,9 +20,15 @@ has unsaved changes.
 
 While you drag a control the app renders a quick preview, 720 pixels on the long
 edge at match-input resolution. When you let go, or after a short pause, it renders
-the full frame at the preset's resolution; the status line says which, and how long
-it took. Scroll to zoom, drag to pan, double-click or F to fit, 1 for one image pixel per
+the full frame at the preset's resolution; the status line says which, the sensor's
+size, and how long it took. Scroll to zoom, drag to pan, double-click or F to fit, 1 for one image pixel per
 screen pixel; hold the space bar to see the original.
+
+The bends are sized in the sensor's pixels and lines, so on a large photo a preview's
+small sensor shows them larger than the full frame does. To keep that look in the
+full render, set Readout → *Long edge*: at 720 px the full frame is rendered at the
+previews' scale, and at 720 px or less it is quick enough that the app shows it at
+once, with no preview.
 
 The camera keeps running between renders, as a real one does: oscillator phases,
 the bus capacitor's charge, the servos and running clock faults carry over, and each
@@ -109,9 +115,17 @@ of the A520's 2272 columns and keeps 3.6 % at the far edge. In the preset it is
 **Readout.** *Mode*: still reads every row; movie reads one row pair in four and
 bins columns into the 640 × 480 movie frame, with smear. *Resolution*: native uses
 the A520's 2272 × 1704 sensor; match input sizes the sensor to the file, with the
-same timing. *Orientation*: how the camera is held; auto turns it for tall images.
+same timing. *Long edge* (px, off or 160 to 4096; match input only, dimmed at
+native): the match-input sensor at most this many pixels on its long side, the
+file's aspect kept and the photo averaged down onto it, so the whole camera, its
+processor and its JPEG run at that size and the exported image has it. The bends are
+sized in sensor pixels and lines, so a small virtual sensor shows them large, as the
+previews do; the camera's own 4 MP sensor is the native resolution. Off, or a file
+smaller than the limit, keeps the file's size; the knob keeps its setting while you
+try native. In the preset it is `[readout] long_edge`, and `--long-edge` on the
+command line. *Orientation*: how the camera is held; auto turns it for tall images.
 *Seed* (0 to 4 294 967 295): the noise; R draws a new one. Below: the derived sensor and
-output size and the clocks.
+output size, with the long edge that limits them, and the clocks.
 
 **Clocks** (bend). *Transfer loss* (ppm, 0.1 to 100 000): charge left behind per
 vertical transfer; the A520 loses 10, 1000 smears highlights downwards by a couple
@@ -282,7 +296,8 @@ box has the keyboard, the up and down arrows, Enter and Escape still work and G
 types a letter.
 
 A thumbnail is the first frame from power-on of a camera switched on for it alone,
-at match-input resolution and 300 pixels on the long edge: the frame `vcb render`
+at match-input resolution and 300 pixels on the long edge (or the preset's long edge,
+if shorter): the frame `vcb render`
 would write for the image at that size. The camera you are editing is not touched.
 A bend that builds up over several frames (a drifting oscillator, a marginal
 contact's stale words, the servos settling), or one whose look hangs on where the

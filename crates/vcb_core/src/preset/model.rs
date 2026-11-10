@@ -105,6 +105,7 @@ impl Preset {
         if let Some(description) = &self.description {
             validate_description(description)?;
         }
+        self.readout.validate()?;
         within("scene.headroom", self.scene.headroom, 1.0, MAX_HEADROOM)?;
         if !(self.scene.shoulder_start > 0.0 && self.scene.shoulder_start < 1.0) {
             return Err(Error::config(format!(

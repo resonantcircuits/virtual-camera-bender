@@ -10,7 +10,10 @@
 //! render's aspect ratio, reduces it so the long edge is [`PREVIEW_LONG_EDGE`] pixels,
 //! and renders it at match-input resolution, which costs about a tenth of a native
 //! render; the reduced scene is cached per source scene. A full render uses the
-//! preset as it is.
+//! preset as it is. A match-input preset whose `[readout] long_edge` is no longer than
+//! the preview's renders its full frame at preview size, so it takes no preview
+//! ([`needs_preview`]); where a preview runs anyway, as in a video's play-through, it
+//! renders at the preset's size too.
 //!
 //! The [`Renderer`] keeps two running simulators, one for previews and one for full
 //! renders, each for one camera and scene size. A new preset reaches them through
@@ -31,8 +34,9 @@
 //! while no preview or full render waits, so a thumbnail delays a render by at most
 //! the one thumbnail in progress. A thumbnail crops and reduces the scene as a preview
 //! does, to [`GALLERY_LONG_EDGE`] pixels, and renders frame 0 of a fresh simulator at
-//! match-input resolution, which is dropped afterwards: the frame `vcb render`
-//! computes for the reduced scene, and the running simulators never see it.
+//! match-input resolution (at a shorter `long_edge` of the preset's, that size), which
+//! is dropped afterwards: the frame `vcb render` computes for the reduced scene, and
+//! the running simulators never see it.
 
 use std::any::Any;
 use std::collections::VecDeque;
@@ -366,15 +370,21 @@ impl Generations {
 
 /// Returns whether a preview of `preset` would differ from its full render.
 ///
-/// A match-input preset on a scene no larger than the preview renders the same frame
-/// either way, so it needs no preview.
+/// A match-input preset whose sensor is no larger than the preview, because the scene
+/// is no larger or because the preset's `long_edge` is no longer, renders a full frame
+/// of preview size, so it needs no preview: the full render is the preview.
 #[must_use]
 pub fn needs_preview(preset: &Preset, scene: &Scene) -> bool {
-    preset.readout.resolution == Resolution::Native
-        || scene.width().max(scene.height()) > PREVIEW_LONG_EDGE
+    let long = scene.width().max(scene.height());
+    let full = preset.readout.long_edge.map_or(long, |edge| long.min(edge));
+    preset.readout.resolution == Resolution::Native || full > PREVIEW_LONG_EDGE
 }
 
 /// Returns the preset of a preview: the same preset at match-input resolution.
+///
+/// A match-input preset keeps its `long_edge`: on a scene reduced to
+/// [`PREVIEW_LONG_EDGE`] it changes nothing, unless it is shorter, and then the
+/// preview, as a video's play-through, renders at the preset's own size.
 #[must_use]
 pub fn preview_preset(preset: &Preset) -> Preset {
     let mut preview = preset.clone();

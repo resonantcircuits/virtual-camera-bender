@@ -102,6 +102,7 @@ fn trace_timing(name: &'static str, camera: &Camera, timing: &Timing) {
         camera = %camera.info.name,
         mode = %timing.mode,
         resolution = %timing.resolution,
+        long_edge = timing.long_edge,
         sensor_width = timing.sensor_width,
         sensor_height = timing.sensor_height,
         frame_period_s = timing.frame_period_s,
@@ -111,10 +112,12 @@ fn trace_timing(name: &'static str, camera: &Camera, timing: &Timing) {
 
 /// Returns whether two timings read out the same geometry on the same processor clock.
 ///
-/// Everything but the resolution mode and the sensor-side clock must agree: sensor
-/// size, rows read, columns, optical black, blanking, line skip, the processor's
-/// capture period, the native pixel period, the frame period, oversampling,
-/// orientation and output size. Then every buffer keeps its size. The sensor-side
+/// Everything but the resolution mode, its long-edge limit and the sensor-side clock
+/// must agree: sensor size, rows read, columns, optical black, blanking, line skip, the
+/// processor's capture period, the native pixel period, the frame period,
+/// oversampling, orientation and output size. Then every buffer keeps its size; a new
+/// long edge that changes the sensor's size changes the geometry, one that leaves it
+/// (an input within both limits) does not. The sensor-side
 /// pixel period, pixel clock and line period and the clock ratio may differ: they
 /// follow the oscillator of `[bend.clock]`, a knob on the running camera, and the
 /// kept buffers take the new period ([`Buffers::retime`]).
@@ -123,6 +126,7 @@ fn trace_timing(name: &'static str, camera: &Camera, timing: &Timing) {
 fn same_geometry(old: &Timing, new: &Timing) -> bool {
     let aligned = Timing {
         resolution: old.resolution,
+        long_edge: old.long_edge,
         pixel_clock_hz: old.pixel_clock_hz,
         pixel_period_s: old.pixel_period_s,
         line_period_s: old.line_period_s,
@@ -536,9 +540,9 @@ impl Simulator {
     ///
     /// If the readout geometry is unchanged (sensor size, rows read, columns, optical
     /// black, blanking, clocks, mode, orientation, output size and oversampling; the
-    /// resolution mode may differ if those agree), every stage's parameters are resolved
-    /// anew, every buffer is kept, and so is the hardware's memory, as when a knob turns
-    /// on a running camera:
+    /// resolution mode and its long edge may differ if those agree), every stage's
+    /// parameters are resolved anew, every buffer is kept, and so is the hardware's
+    /// memory, as when a knob turns on a running camera:
     ///
     /// - The bus bend keeps its capacitor voltages, diodes and gates while its wiring
     ///   stays: the same source pins, target, function, potentiometer node, common bus,

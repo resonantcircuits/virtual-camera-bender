@@ -11,8 +11,10 @@
 //! [`rail`]) and the bend blocks inside the sensor and AFE panels (the sensor bend and
 //! the light leak, the reset gate and the serial link) hold their switch positions and
 //! values even while the bend is switched off, which the preset cannot store, and write
-//! their section of the preset with `apply`; [`Panels`] holds the eleven. The other
-//! panels edit the preset directly.
+//! their section of the preset with `apply`; [`Panels`] holds the eleven, and the
+//! [`readout`] panel's long edge, which it keeps while the resolution is native, where
+//! the preset cannot hold one. The other panels, and the readout panel's other
+//! controls, edit the preset directly.
 //! Every control shows a physical value with its unit; [`Knob`] describes how a stored
 //! value is shown.
 
@@ -139,9 +141,11 @@ impl PanelId {
     }
 }
 
-/// The panels that hold state the preset cannot: the eleven bends.
+/// The panels that hold state the preset cannot: the eleven bends and the long edge.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Panels {
+    /// The readout's long edge, kept at native resolution.
+    pub readout: readout::ReadoutPanel,
     /// The IR-cut filter bend.
     pub optics: optics::OpticsPanel,
     /// The sensor bend, a block in the sensor panel.
@@ -175,8 +179,9 @@ impl Panels {
         panels
     }
 
-    /// Sets every bend panel from `preset`.
+    /// Sets every bend panel and the long edge from `preset`.
     pub fn load(&mut self, preset: &Preset) {
+        self.readout.load(preset);
         self.optics.load(preset);
         self.sensor.load(preset);
         self.leak.load(preset);
@@ -190,8 +195,9 @@ impl Panels {
         self.rail.load(preset);
     }
 
-    /// Writes every bend panel into `preset`.
+    /// Writes every bend panel and the long edge into `preset`.
     pub fn apply(&self, preset: &mut Preset) {
+        self.readout.apply(preset);
         self.optics.apply(preset);
         self.sensor.apply(preset);
         self.leak.apply(preset);

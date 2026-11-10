@@ -5,6 +5,34 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Stage 22
+
+The previews' look in a full render: a small virtual sensor on demand.
+
+#### Added
+
+- A long-edge limit for the match-input resolution, `[readout] long_edge` (16 to
+  8192 pixels; an error with `resolution = "native"`, whose sensor is the camera's
+  own). The virtual sensor takes the input's aspect fitted into that many pixels on
+  its long side, rounded to even; the scene stage area-averages the input onto it as
+  onto the native sensor, and the whole chain, the processor and the JPEG run at that
+  size, with the native line time and frame period. The bends are sized in sensor
+  pixels and line periods, so a still rendered at 720 pixels shows them at the scale
+  the previews do. The limit never enlarges: an input within it, and every preset
+  without it, renders the same bytes as before, and the goldens are unchanged. A new
+  long edge rebuilds the running simulator only when the sensor's size changes.
+- The Readout panel's *Long edge* knob, logarithmic from 160 to 4096 px with an off
+  position, enabled at match input and dimmed at native, where it keeps its setting
+  for the next switch back. The panel's derived readout names the limit with the
+  sensor it leaves, and the status line shows the full render at that size. A preset
+  limited to 720 px or less needs no preview: its full render is preview-sized and
+  is shown at once; previews of a longer limit still reduce to 720 px.
+- `--long-edge <px>` for `vcb render`, `render-video`, `sheet` and `inspect`, which
+  also takes `--mode`, `--resolution` and `--seed` now; it switches the preset to
+  match-input unless `--resolution` says otherwise, and `--resolution native` drops a
+  preset's limit. `vcb inspect` prints the limit on the resolution line and the
+  sensor it leaves.
+
 ### Milestone 5: the preset gallery
 
 The JavaScript version's gallery in the app: every shipped preset rendered live on

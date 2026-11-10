@@ -10,7 +10,9 @@
 //!    photosite integrates the light over its footprint), linear interpolation when
 //!    upscaling, a plain copy when the sizes match. An input that exceeds the sensor
 //!    by at most one pixel per axis, as in match-input mode with an odd input size,
-//!    loses its last row or column instead.
+//!    loses its last row or column instead. A match-input sensor limited by
+//!    `[readout] long_edge` is smaller than the input, which is area-averaged onto it
+//!    as onto the native sensor.
 //! 2. Highlight reconstruction. The input's highlights were compressed and clipped by
 //!    the camera that took it; they are expanded so that clipped white reaches
 //!    `headroom` times reference white, coherently across channels. The method is

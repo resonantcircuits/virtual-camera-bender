@@ -72,9 +72,10 @@ period and frame rate of the virtual sensor:
 vcb inspect --preset presets/a520-hpf.toml --input samples/sample-01.jpg
 ```
 
-`vcb presets` lists the preset files and their bends. Every rendering command accepts
-`--mode still|movie`, `--resolution match-input|native` and `--seed` to override the
-preset; `render-video` also takes `--max-dimension`, `--quality`, `--codec h264|prores`
+`vcb presets` lists the preset files and their bends. Every rendering command and
+`inspect` accept `--mode still|movie`, `--resolution match-input|native`,
+`--long-edge <px>` (a match-input sensor at most that long, so the bends read at the
+scale of the app's previews) and `--seed` to override the preset; `render-video` also takes `--max-dimension`, `--quality`, `--codec h264|prores`
 and `--fps`. `vcb help <command>` lists the rest.
 
 ## Desktop app

@@ -531,6 +531,27 @@ periods would remain, as for inputs with more rows than the native readout, blan
 stays at eight and the frame period grows. Still output is `cols` by `rows_read`; movie
 output is `cols / h_bin` by `rows_read` at match-input, the camera's movie size at native.
 
+`[readout] long_edge` (16 to 8192 pixels, match-input only; an error with `native`,
+whose sensor is the camera's) limits the match-input sensor: the oriented input's
+aspect fitted into that many pixels on its long side, the short side rounded to the
+nearest pixel, both then down to even. It is a limit, never an enlargement, so an
+input within it keeps its size and renders the same bytes as without it. The scene
+stage area-averages the input onto the smaller sensor as it does onto the native one,
+and everything downstream, the ISP and the JPEG included, runs at the limited size,
+under the same rules as any match-input sensor: native active-line time and frame
+period, optical black and blanking scaled. A render at a long edge is therefore the
+match-input render of the input reduced to that size; with the reduction the scene
+stage makes, byte for byte. The point is scale: the bends' structures (a bus bend's
+contours, an oscillator's bands, a stall, a glitch band) are sized in sensor pixels
+and line periods, so on a small sensor they cover more of the frame, as on the app's
+previews, which reduce the scene to 720 pixels. The limit lets a still be rendered in
+full at that scale; the camera's own 4 MP sensor stays the `native` resolution.
+`same_geometry` ignores the limit and compares the sensor it leaves, so a new long
+edge rebuilds a running simulator exactly when the sensor's size changes. The app's
+preview path keeps the limit: previews still reduce to 720 pixels, and a preset whose
+long edge is no longer renders a full frame of preview size, which the app shows at
+once instead of a preview.
+
 Constants shorter than a line (AFE bandwidth and slew, gate delays, minimum pulse,
 setup time, `1 / ff_fmax_hz`, the bus drivers' slew) describe the hardware in seconds at
 the native clock and are multiplied by `Timing::resolution_scale`, `dsp_pixel_period_s /

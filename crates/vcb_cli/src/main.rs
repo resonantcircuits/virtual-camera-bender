@@ -6,9 +6,13 @@
 //! - `vcb sheet <output> --input <image> --preset <file>...` renders an image through
 //!   several presets and tiles the results, with optional reference images, into one
 //!   contact sheet.
-//! - `vcb inspect --preset <file>` prints the derived readout timing.
+//! - `vcb inspect --preset <file>` prints the derived readout timing and sensor size.
 //! - `vcb presets` lists the presets in a directory, each with its camera, readout,
 //!   bends and description.
+//!
+//! `render`, `render-video`, `sheet` and `inspect` take the same preset overrides:
+//! `--mode`, `--resolution`, `--long-edge <px>` (a match-input sensor at most that
+//! long, switching to match-input) and `--seed`.
 //!
 //! Camera files are looked up as `<camera-dir>/<name>.toml`, where the directory is
 //! `--camera-dir`, else `$VCB_CAMERAS`, else `cameras/`. Video needs `ffmpeg` and
@@ -27,7 +31,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
-use vcb_core::preset::{Mode, Resolution};
+use vcb_core::preset::{Mode, Readout, Resolution};
 use vcb_core::{Camera, Preset, Simulator, Timing};
 use vcb_io::Format;
 
@@ -72,9 +76,20 @@ struct Overrides {
     /// Override the preset's readout mode: still or movie.
     #[arg(long)]
     mode: Option<Mode>,
-    /// Override the preset's sensor resolution: match-input or native.
+    /// Override the preset's sensor resolution: match-input or native, which drops the
+    /// preset's long edge.
     #[arg(long)]
     resolution: Option<Resolution>,
+    /// Limit the match-input sensor's long side to this many pixels (16 to 8192); implies
+    /// --resolution match-input.
+    #[arg(
+        long,
+        value_name = "PIXELS",
+        value_parser = clap::value_parser!(u32).range(
+            i64::from(Readout::MIN_LONG_EDGE)..=i64::from(Readout::MAX_LONG_EDGE)
+        )
+    )]
+    long_edge: Option<u32>,
     /// Override the preset's noise seed, an unsigned integer.
     #[arg(long)]
     seed: Option<u64>,
@@ -82,6 +97,10 @@ struct Overrides {
 
 impl Overrides {
     /// Loads the preset at `path` and applies the overrides.
+    ///
+    /// A long edge switches the preset to match-input resolution unless `--resolution`
+    /// says otherwise, in which case the preset's validation rejects the pair; a
+    /// native resolution alone drops the preset's long edge, which it cannot use.
     fn preset(&self, path: &Path) -> Result<Preset> {
         let mut preset = load_preset(path)?;
         if let Some(mode) = self.mode {
@@ -89,6 +108,15 @@ impl Overrides {
         }
         if let Some(resolution) = self.resolution {
             preset.readout.resolution = resolution;
+            if resolution == Resolution::Native {
+                preset.readout.long_edge = None;
+            }
+        }
+        if let Some(long_edge) = self.long_edge {
+            preset.readout.long_edge = Some(long_edge);
+            if self.resolution.is_none() {
+                preset.readout.resolution = Resolution::MatchInput;
+            }
         }
         if let Some(seed) = self.seed {
             preset.seed = seed;
@@ -122,6 +150,8 @@ struct InspectArgs {
     preset: PathBuf,
     #[command(flatten)]
     cameras: CameraDir,
+    #[command(flatten)]
+    overrides: Overrides,
     /// Image whose size the sensor matches; defaults to the camera's native size.
     #[arg(long, conflicts_with_all = ["width", "height"])]
     input: Option<PathBuf>,
@@ -191,7 +221,7 @@ fn render(args: &RenderArgs) -> Result<()> {
 }
 
 fn inspect(args: &InspectArgs) -> Result<()> {
-    let preset = load_preset(&args.preset)?;
+    let preset = args.overrides.preset(&args.preset)?;
     let camera = load_camera(&args.cameras.camera_dir, &preset.camera)?;
     camera
         .validate()

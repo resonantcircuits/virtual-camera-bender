@@ -1470,7 +1470,9 @@ impl App {
                     edit
                 });
                 edit |= section(ui, target, PanelId::Readout, |ui| {
-                    panels::readout::show(ui, &mut self.preset, timing.as_ref(), self.running)
+                    self.panels
+                        .readout
+                        .show(ui, &mut self.preset, timing.as_ref(), self.running)
                 });
                 edit |= section(ui, target, PanelId::Clocks, |ui| {
                     self.panels.clocks.show(ui, &base, timing.as_ref())
