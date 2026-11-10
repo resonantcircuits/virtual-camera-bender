@@ -1134,3 +1134,100 @@ where the reset gate's `hold_px` counts native ones; `gain_mod` lacks a `phase_s
 Open for the user: the audit's stage 22 (the JPEG quality override, the demosaic
 phase override, lens chromatic aberration, CCD column defects), the vertical roll,
 and the post stage's two justified candidates.
+
+### Stage 22a: the long-edge limit (small, one agent; direction from the user, 2026-11-10)
+
+`[readout] long_edge` with `match-input`: the virtual sensor is the input's aspect
+fitted into the long edge, so a still renders at the scale the previews show (the
+bends are sized in sensor pixels and line periods, so a small sensor shows them
+large). A Readout panel knob, a CLI option, docs. The rest of stage 22 (the audit's
+small models) follows, so that every bend type exists before milestone 6.
+
+## Milestone 6: randomization (direction from the user, 2026-11-10)
+
+Goal: the JavaScript version's best feature, rebuilt for the physical chain. A roll
+is a bender's session: a coherent set of circuits, each with physical values drawn
+from its knob's range, under one latent severity, as a preset the user can keep, edit
+and save; per-panel dice that re-roll one bend and leave every other byte unchanged;
+a gallery filled with rolled candidates to pick from; and the bender's hands on the
+knobs during a video. Everything is deterministic from a roll seed and produces
+ordinary presets. Starts when stage 22 is complete, since a roll should reach every
+bend type.
+
+### 3.14 The model
+
+**Severity.** A roll chooses one latent severity `u` in the selected band: gentle
+(0.06 to 0.22), broken (0.38 to 0.66), wrecked (0.78 to 1), explore (0 to 1); every
+value in the roll follows it (the legacy's rule, which kept a gentle camera from
+combining a weak headline with a full-strength secondary fault). Draws are fresh,
+never cumulative, so repeated rolls wander instead of ratcheting.
+
+**Knob ranges live in the core.** Each bend field gets a `Range` in `vcb_core`
+(physical bounds, scale, a "clean" end and a "destroyed" end, discrete choices with
+weights), the single source the panels' knobs and the roller both read, so a dice
+roll can never leave a knob's range and a knob can always show what a roll made.
+Severity maps to a value through the clean-to-destroyed curve with jitter; discrete
+choices (pins, functions, waves, edges, pin kinds) are weighted and their count
+grows with severity.
+
+**Families are stages.** Optics (the IR-cut filter, the leak), Sensor (heat,
+substrate), Readout (the CCD clocks), AFE (injection, gain modulation, CDS skew, the
+reset gate, the serial link), Bus (pins, function, pot, capacitor, common bus,
+series), Clock (the reclock), Power (the rail), Memory (address pins, data pins,
+heat, the compressed buffer), Processor (white balance and exposure modes, tone,
+the demosaic phase once stage 22 adds it). A family roll rebuilds its own sections
+and leaves the others and the preset's seed byte for byte; the Bus, AFE and Clock
+families compound in the raw domain, so a roll caps the active physics sections by
+severity (three at most, as the legacy found).
+
+**Archetypes.** A global roll picks an archetype, a coherent story of what the
+bender did, then rolls its families: the solder bridge (Bus with logic), the dying
+battery (Power with Memory), the heat gun (Sensor heat with Memory heat), ribbon
+damage (Readout clocks, the reset gate, the serial link), the reclock (Clock with
+Power), the open body (the leak with Optics), the card rot (Memory with the
+compressed buffer), and mixtures at higher severity. It names the camera (two-word
+names from seeded word lists, the legacy's fun) and writes a description from the
+sections it rolled.
+
+**The bender's hands.** `[drift]` in the preset: `amount` (a fraction of each knob's
+range) and `speed` (hertz) wander every continuous bend value around its preset
+value on smooth seeded tracks from frame to frame of a video, through kept
+reconfigurations; `jog_hz` re-rolls one discrete choice (a DIP switch, a pin) now and
+then. The chain's own randomness already shimmers (contacts, drops, noise), so the
+legacy's seed tiers are not needed; drift is the one temporal layer.
+
+### Stage 23a: ranges and the roller (medium, one agent)
+
+`vcb_core::random`: the `Range` table for every bend field, the severity bands, the
+families with their weights and caps, the archetypes, the name and description
+generator; `roll(seed, family, band) -> Preset` and `roll_section(preset, section,
+band, seed)`; tests (determinism, every rolled preset validates and renders, ranges
+cover every panel knob, family rolls leave other sections byte-identical, severity
+monotone on average).
+
+### Stage 23b: the CLI (small)
+
+`vcb roll --family --severity --seed --count --out`, writing preset files with
+names and descriptions; `vcb sheet` over them.
+
+### Stage 23c: the app (medium)
+
+A Randomize bar (severity band, family buttons, "New camera"), a dice on every bend
+block's header (re-roll that section, keep the rest), reset per block; the panels'
+knobs read their ranges from the core table.
+
+### Stage 23d: the lab (medium)
+
+A "Roll" button in the gallery fills it with a batch of rolled candidates on the
+loaded image; keep or discard, keepers saved to the presets folder with their names
+and descriptions.
+
+### Stage 23e: drift (medium)
+
+`[drift]`, applied per frame in the simulator's video path and the app's play, a
+Drift panel, tests of smoothness and determinism.
+
+### Stage 23f: feel (the orchestrator plus one agent)
+
+Tuning the clean and destroyed ends and the weights by eye on the samples and a clip
+across the bands, the part that made the legacy fun; a tuning note.
