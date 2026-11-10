@@ -1231,3 +1231,13 @@ Drift panel, tests of smoothness and determinism.
 
 Tuning the clean and destroyed ends and the weights by eye on the samples and a clip
 across the bands, the part that made the legacy fun; a tuning note.
+
+### Status (2026-11-10, evening)
+
+Stage 22a is complete and merged: `[readout] long_edge` with `match-input` fits the
+input into the long edge and never enlarges (an input already within it keeps its
+size), the Readout panel's "Long edge" knob (160 to 4096 px, off at the left, kept
+while native is selected), `--long-edge` on every CLI command, `inspect` printing the
+resulting sensor size; a full render within 720 px needs no preview. Gates green: 51
+suites, 576 tests. Work is paused here at the user's request; the rest of stage 22
+and milestone 6 wait for the user's word.
