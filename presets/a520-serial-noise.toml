@@ -15,6 +15,7 @@
 # first frame takes no flip that shows and would render the clean camera's bytes.
 # Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
+description = "A noisy contact on the AFE's serial link: flicker, tints and green mazes."
 seed = 17                           # also seeds the link's bit errors, frame by frame; 17's first frame shows a flipped green gain
 
 [readout]

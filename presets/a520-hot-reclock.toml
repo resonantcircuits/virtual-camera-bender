@@ -8,6 +8,7 @@
 # the held and the sheared stretches alike, with hot crosses and a higher read noise.
 # Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
+description = "The LTC1799 reclock and a heat gun on the CCD: loose sync on a hot, grainy sensor."
 seed = 1                            # also seeds the wander's phases, which place the snaps
 
 [readout]

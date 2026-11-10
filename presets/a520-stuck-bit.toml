@@ -12,6 +12,7 @@
 # no sample bit on the A520 and change nothing.
 # Tuned by eye on samples/sample-01.jpg: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
+description = "One SDRAM data pin stuck high: posterised colour, black lifted."
 seed = 1
 
 [readout]

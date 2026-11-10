@@ -13,6 +13,7 @@
 # the processor still assumes the nominal well. Nothing blooms.
 # Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
+description = "The substrate bias turned down: highlights that bloom along their columns."
 seed = 1
 
 [readout]

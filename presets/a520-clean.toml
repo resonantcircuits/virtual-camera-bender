@@ -1,5 +1,6 @@
 # Canon PowerShot A520, unmodified: full-sensor still at the camera's native resolution.
 camera = "a520"
+description = "The camera as built: nothing bent."
 seed = 1
 
 [readout]

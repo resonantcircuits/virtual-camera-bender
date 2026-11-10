@@ -7,6 +7,7 @@
 # to frame (VD restarts the timing generator, so a steady oscillator would draw the same tears).
 # Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone3-tuning-notes.md.
 camera = "a520"
+description = "The master oscillator replaced and wandering wide: rolling tears and colour-phase bands."
 seed = 1                            # also seeds the wander's phases
 
 [readout]

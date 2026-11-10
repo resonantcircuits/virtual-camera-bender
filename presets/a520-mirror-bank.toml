@@ -7,6 +7,7 @@
 # so the pin leaves a movie frame alone; a8 and below act in both modes.
 # Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
 camera = "a520"
+description = "One SDRAM address pin stuck high: the mirror bank, a crystalline repeated band."
 seed = 1
 
 [readout]

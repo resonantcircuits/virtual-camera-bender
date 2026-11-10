@@ -8,6 +8,7 @@
 # No bus bend: the high-pass bend would darken the held words.
 # Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
 camera = "a520"
+description = "A weak supply with load spikes: the chromatic sieve, rows dying into solid colour."
 seed = 1
 
 [readout]

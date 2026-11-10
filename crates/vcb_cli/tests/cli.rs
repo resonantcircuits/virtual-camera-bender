@@ -149,15 +149,30 @@ fn presets_lists_every_preset_file() {
         ("a520-open-body", "optics,leak"),
         ("a520-card-rot", "memory"),
         ("a520-strip-repeat", "memory"),
+        ("a520-cloud-solarizer", "bus"),
+        ("a520-dc42-solarize", "bus"),
+        ("a520-ground-loop", "afe"),
+        ("a520-carrier-clash", "afe"),
+        ("a520-reset-ghost", "afe"),
+        ("a520-a540-melt", "clocks"),
+        ("a520-a530-warp", "clocks"),
     ];
     for (name, bends) in shipped {
         let line = stdout
             .lines()
             .find(|line| line.split_whitespace().next() == Some(name))
             .unwrap_or_else(|| panic!("missing {name} in\n{stdout}"));
+        // Every shipped preset carries a one-line description, printed last and quoted.
+        let (fields, description) = line
+            .split_once(" description=\"")
+            .unwrap_or_else(|| panic!("{name} should end with its description: {line}"));
         assert!(
-            line.ends_with(&format!("bends={bends}")),
+            fields.ends_with(&format!("bends={bends}")),
             "{name} should list bends={bends}: {line}"
+        );
+        assert!(
+            description.len() > 1 && description.ends_with('"'),
+            "{name}'s description should be quoted and not empty: {line}"
         );
     }
     assert_eq!(stdout.lines().count(), shipped.len(), "{stdout}");

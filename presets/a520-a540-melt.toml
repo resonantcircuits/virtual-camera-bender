@@ -1,0 +1,30 @@
+# Canon PowerShot A520 with failing vertical transfer clocks, after the A540 bend: melt and stalls.
+# The CCD's vertical transfer clocks weakened, as on the bent A540 the legacy preset is named
+# after: each transfer moves only 99 % of a packet (a charge transfer efficiency of 0.99 against the
+# sensor's 0.99999), so a row far from the register leaves nearly all its charge in a trail some
+# 17 lines long and the picture melts away from the register: bright branches run in drips across
+# the water. The trail falls into the next rows of the column, which carry the other row of the
+# mosaic, so the colours of the two rows mix and the daylight balance turns the frame magenta,
+# least near the register (the left of a portrait still, the top of a landscape frame). About 20
+# times a second of readout the V clock misses pulses or doubles them for 16 lines on average:
+# the row pointer stalls, repeating one row in a stretched band, or skips rows; an odd slip flips
+# the Bayer row phase for the rest of the frame. Under this much transfer loss the flip hardly
+# shows, the rows' colours being mixed already; with cte 0.9998 the frame keeps its colours and
+# turns magenta below the first odd stall. The legacy preset's anti-blooming failure is
+# a520-substrate's, and needs its overexposure. Previews and the gallery melt further: the trail
+# keeps its length in lines, so on a smaller sensor it reaches further across the frame.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone5-tuning-notes.md.
+camera = "a520"
+description = "Starved vertical clocks: the picture melts in magenta drips and stalls in stretched bands."
+seed = 1                            # also seeds the clock faults
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.clocks]
+cte = 0.99                          # PROVISIONAL, by eye: 0.995 a soft smear, 0.98 the tree washed out; from 0.9995 down the frame pinks
+v_pulse_drop_hz = 20.0              # PROVISIONAL, by eye: about five faults in a still frame; 50 Hz, the legacy preset's rate, stripes it all over
+v_stall_lines = 16.0                # PROVISIONAL, by eye: the legacy preset's mean stretch
+h_glitch_hz = 0.0
+h_shift_frac = 0.2

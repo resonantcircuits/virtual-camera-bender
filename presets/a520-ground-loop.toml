@@ -1,0 +1,26 @@
+# Canon PowerShot A520 with a ground loop into the AFE input: mains hum in rolling bands.
+# A mains-powered bend box on the camera's ground lets 50 Hz hum of 50 mV peak into the AFE's
+# input, a ninth of the CCD's 460 mV swing, amplified with the signal: about eleven cycles
+# across a 0.23 s still frame, three and a third per movie frame, so the bands roll a third of
+# a cycle from frame to frame. The processor's black clamp follows each line's optical black
+# with a four-line lag and takes most of the hum back; what shows is what it cannot follow: a
+# bright edge where the hum rises faster than the clamp, and a dark band in each trough, where
+# the optical black clips at code 0 and the clamp can follow it only the black level's 31
+# codes down. The bands lie
+# along the readout lines: horizontal in a landscape frame, vertical in a portrait still.
+# A hum does not tilt: its phase moves 0.004 cycles across a line's samples, so phase_skew can
+# only respace the bands (at -0.0066 it freezes the phase from line to line, and the clamp
+# removes the hum altogether), and it stays 0 here.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone5-tuning-notes.md.
+camera = "a520"
+description = "Mains hum leaking into the analog front end through a ground loop: rolling interference bands."
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.afe]
+inject = { wave = "sine", freq_hz = 50.0, amplitude_v = 0.05, phase_skew = 0.0 }  # PROVISIONAL, by eye: 30 mV soft bands; 100 mV crushes the troughs to black, 200 to 300 mV a black and pink barcode
+cds_lag_px = 0.0
+cds_mix = 0.0

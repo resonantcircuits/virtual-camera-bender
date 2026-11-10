@@ -10,6 +10,7 @@
 # cap or a night shot with the exposure time turned up in the Sensor panel.
 # Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
+description = "A heat gun on the CCD: mottled shadows and hot crosses; on a dark scene, a corner glow."
 seed = 1
 
 [readout]

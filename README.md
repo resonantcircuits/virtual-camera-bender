@@ -143,10 +143,20 @@ The presets, all of the A520 (`presets/a520-<name>.toml`):
 | `open-body` | red plastic leak with the IR-cut filter removed, grey-world balance | a peach glow under a teal full-spectrum sky |
 | `card-rot` | compressed buffer, marginal data pin d13 | the picture holds, then a shifted, green-tinted copy drifting dark; the raw clean |
 | `strip-repeat` | compressed buffer, marginal address pin a11 | the picture holds, then bars, or strips of the last frame repeated; the raw clean |
+| `cloud-solarizer` | bus, bypass, D11 to D10 through 10 nF | pastel lavender skies, an orange horizon, clean midtones |
+| `dc42-solarize` | bus, D11 to D8 on one common bus through patch resistors | solarised rainbow skies, speckle |
+| `ground-loop` | AFE, 50 Hz hum at the input | rolling interference bands along the readout lines |
+| `carrier-clash` | AFE, square carrier near half the pixel clock, slow gain modulation | tilted colour moiré, pumping gain |
+| `reset-ghost` | AFE, CDS reset sample ten pixels late | a dark embossed relief with negative trails |
+| `a540-melt` | CCD vertical clocks, transfer loss and stalls | magenta drips away from the register, stalled stretches |
+| `a530-warp` | CCD horizontal register glitches | sheared bands, the odd ones in false magenta |
 
-`hpf`, `div` and `inv` are tuned against photos of a real bent A520; the others are
-tuned by eye, since no reference images exist for those bends
-(`docs/research/milestone3-tuning-notes.md`, `docs/research/milestone4-tuning-notes.md`).
+Every preset carries a one-line description, shown in the app's gallery and by
+`vcb presets`. `hpf`, `div` and `inv` are tuned against photos of a real bent A520; the
+others are tuned by eye, since no reference images exist for those bends
+(`docs/research/milestone3-tuning-notes.md`, `docs/research/milestone4-tuning-notes.md`,
+`docs/research/milestone5-tuning-notes.md`); the last seven bring the JavaScript
+version's physics presets into the chain.
 
 ## Repository layout
 
@@ -176,14 +186,16 @@ The Rust rewrite has its validated core, the command line and the desktop app
 frame-buffer bends beside the bus, CCD-clock and analog-front-end bends, with ten
 presets, tested by the user and tagged `v0.3.0`. Milestone 4 adds the sensor,
 reset-gate, frame-buffer data-pin and retention, serial-link and light-leak bends and
-the compressed JPEG buffer in the bent SDRAM, with eleven presets. A GPU path and more
-cameras are later milestones.
+the compressed JPEG buffer in the bent SDRAM, with eleven presets. Milestone 5 adds the
+app's preset gallery and seven presets after the legacy gallery's physics presets. A GPU
+path and more cameras are later milestones.
 
 ## Legacy version
 
 The earlier JavaScript version, a browser editor with stylised effect modules, is
 tagged `v0.1.0-js` and lives on the `legacy-js` branch. Its README is kept in
-`docs/legacy/README-js.md`. Its presets do not carry over.
+`docs/legacy/README-js.md`. Its presets do not carry over; seven of its physics presets
+have counterparts made with the chain's bends (`docs/research/legacy-presets-audit.md`).
 
 ## Licence
 

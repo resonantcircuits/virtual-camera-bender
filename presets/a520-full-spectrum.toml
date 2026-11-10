@@ -5,6 +5,7 @@
 # and grey-world white balance fights the cast: cream clouds, teal water, pale vegetation.
 # Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
 camera = "a520"
+description = "The IR-cut filter removed: the washed full-spectrum photograph, cream clouds and teal water."
 seed = 1
 
 [readout]

@@ -9,6 +9,7 @@
 # the SDRAM's content in play, which without it the brownout would leave black.
 # Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone3-tuning-notes.md.
 camera = "a520"
+description = "A dying battery with the frame buffer in play: lockout stripes, then the buffer's old content."
 seed = 1                            # also seeds the spikes' arrivals
 
 [readout]

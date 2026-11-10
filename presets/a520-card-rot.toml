@@ -16,6 +16,7 @@
 # within a few hundred bytes.
 # Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
+description = "A marginal SDRAM data contact under the JPEG: the picture holds, then slides into a tinted copy."
 seed = 167                          # also seeds the contact's telegraph process
 
 [readout]

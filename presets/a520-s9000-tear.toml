@@ -8,6 +8,7 @@
 # and row bit 17 (58 lines); both act on the movie raw as well.
 # Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone3-tuning-notes.md.
 camera = "a520"
+description = "Two marginal SDRAM address contacts: the Fujifilm S9000's torn bands and stale frames."
 seed = 1                            # also seeds the contacts' telegraph processes
 
 [readout]

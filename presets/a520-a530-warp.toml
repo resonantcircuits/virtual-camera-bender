@@ -1,0 +1,25 @@
+# Canon PowerShot A520 with glitching horizontal register clocks, after the A530 bend: sheared bands.
+# The CCD's horizontal register clock disturbed (a touched or loaded H1/H2 line, as on the bent
+# A530 the legacy preset is named after): about 100 times a second of readout a band of lines
+# comes out of the register shifted along the line by a whole number of samples, up to 15 % of
+# the line either way, with wraparound. Most bands are thin, 2 to 4 lines; the rest 8 to 22. An
+# even shift slides the band's picture sideways; an odd one also swaps the Bayer column phase, so
+# the band develops in false colour, a checkered magenta with coloured fringes at its edges. The
+# bands lie along the readout lines: horizontal in a landscape frame, vertical in a portrait
+# still, where they slide the picture up and down. The legacy bands were about twice as thick
+# against the frame (the band widths are the readout's fixed rule); the legacy preset's light
+# transfer loss and V skips are left to a520-a540-melt, whose transfer loss pinks the frame.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone5-tuning-notes.md.
+camera = "a520"
+description = "Glitching horizontal register clocks: sheared scanline bands, some in false magenta."
+seed = 1                            # also seeds the glitches
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.clocks]
+v_pulse_drop_hz = 0.0
+v_stall_lines = 4.0
+h_glitch_hz = 100.0                 # PROVISIONAL, by eye: some twenty bands in a still frame; 30 Hz a few, 120 Hz busy
+h_shift_frac = 0.15                 # PROVISIONAL, by eye: the legacy preset's span; 0.05 keeps the bands close to the picture
