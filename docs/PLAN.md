@@ -1110,3 +1110,27 @@ knob; `[sensor]` dead columns and clusters. One stage, one agent each or two in
 sequence, with presets `a520-zipper`, `a520-broken-panel`, `a520-tourist`.
 Direction decisions left open: the vertical roll, and the post stage's two
 justified candidates (generational recompression, the OSD datestamp).
+
+### Status (2026-11-10, later)
+
+Milestone 5 is complete and merged on `rust-rewrite`: stage 21a the gallery, stage 21b
+descriptions on every preset and the seven physics presets of the legacy gallery
+(`a520-cloud-solarizer`, `a520-dc42-solarize`, `a520-ground-loop`,
+`a520-carrier-clash`, `a520-reset-ghost`, `a520-a540-melt`, `a520-a530-warp`), 32
+presets in all, with goldens and `docs/research/milestone5-tuning-notes.md`. Looks
+reached with a twist: the cloud solarizer wants a 10 nF capacitor, not the
+schematic's 1 µF, so the fold follows the sky's brightness; the ground loop shows the
+black clamp's lag rather than the hum itself, and a 50 Hz hum cannot tilt; the
+carrier clash's colour moiré holds only at the native still's pixel clock, since
+previews and thumbnails run a slower one; the A540 melt turns the frame magenta, the
+trailing charge landing on the other mosaic row, which also hides the Bayer flip
+below an odd stall; the A530 warp's bands are half the legacy's thickness, fixed in
+the readout code. Core findings for the fix round, from stage 21b: the transfer-loss
+trail in `readout.rs` scales its release fraction with the native transfer count as
+if it were virtual lines, so the trail is about 8 times too long relative to the
+frame on thumbnails and 14 times on the goldens (scale the mean delay by
+`sensor_height / native_height`); `cds_lag_px` counts the processor's pixel periods
+where the reset gate's `hold_px` counts native ones; `gain_mod` lacks a `phase_skew`.
+Open for the user: the audit's stage 22 (the JPEG quality override, the demosaic
+phase override, lens chromatic aberration, CCD column defects), the vertical roll,
+and the post stage's two justified candidates.
