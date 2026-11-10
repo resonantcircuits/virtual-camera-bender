@@ -64,6 +64,144 @@ fn render_writes_the_upright_input_size() {
 }
 
 #[test]
+fn render_limits_the_long_edge_and_keeps_the_aspect() {
+    let output = scratch("sample-long-edge.png");
+    let _ = std::fs::remove_file(&output);
+    let run = vcb(&[
+        "render",
+        "samples/sample-01.jpg",
+        path_arg(&output),
+        "--preset",
+        "presets/a520-hpf.toml",
+        "--long-edge",
+        "320",
+    ]);
+    assert!(run.status.success(), "stderr: {}", text(&run.stderr));
+    let input = vcb_io::probe_image(root().join("samples/sample-01.jpg")).unwrap();
+    let written = vcb_io::probe_image(&output).unwrap();
+    assert_eq!(
+        written.width.max(written.height),
+        320,
+        "the long edge implies match-input and limits the sensor: {}x{}",
+        written.width,
+        written.height
+    );
+    let aspect = |w: u32, h: u32| f64::from(w) / f64::from(h);
+    assert!(
+        (aspect(written.width, written.height) / aspect(input.width, input.height) - 1.0).abs()
+            < 0.01,
+        "{}x{} keeps the aspect of {}x{}",
+        written.width,
+        written.height,
+        input.width,
+        input.height
+    );
+    assert!(
+        text(&run.stdout).contains(&format!("{}x{}", written.width, written.height)),
+        "{}",
+        text(&run.stdout)
+    );
+
+    let refused = vcb(&[
+        "render",
+        "samples/sample-01.jpg",
+        path_arg(&scratch("never-native.png")),
+        "--preset",
+        "presets/a520-hpf.toml",
+        "--resolution",
+        "native",
+        "--long-edge",
+        "320",
+    ]);
+    assert!(!refused.status.success());
+    let stderr = text(&refused.stderr);
+    assert!(stderr.contains("readout.long_edge"), "{stderr}");
+    let small = vcb(&[
+        "render",
+        "samples/sample-01.jpg",
+        path_arg(&scratch("never-small.png")),
+        "--preset",
+        "presets/a520-hpf.toml",
+        "--long-edge",
+        "8",
+    ]);
+    assert!(!small.status.success());
+    assert!(
+        text(&small.stderr).contains("--long-edge"),
+        "{}",
+        text(&small.stderr)
+    );
+}
+
+#[test]
+fn inspect_prints_the_sensor_a_long_edge_leaves() {
+    let run = vcb(&[
+        "inspect",
+        "--preset",
+        "presets/a520-clean.toml",
+        "--width",
+        "4000",
+        "--height",
+        "3000",
+        "--long-edge",
+        "400",
+    ]);
+    assert!(run.status.success(), "stderr: {}", text(&run.stderr));
+    let stdout = text(&run.stdout);
+    for needle in [
+        "input         4000 x 3000 px",
+        "resolution    match-input, long edge at most 400 px",
+        "sensor        400 x 300 photosites",
+        "output        400 x 300 px",
+    ] {
+        assert!(stdout.contains(needle), "missing {needle:?} in\n{stdout}");
+    }
+
+    let native = vcb(&[
+        "inspect",
+        "--preset",
+        "presets/a520-clean.toml",
+        "--resolution",
+        "native",
+    ]);
+    assert!(native.status.success(), "stderr: {}", text(&native.stderr));
+    assert!(
+        text(&native.stdout).contains("sensor        2272 x 1704 photosites"),
+        "{}",
+        text(&native.stdout)
+    );
+}
+
+#[test]
+fn sheet_renders_every_tile_at_the_long_edge() {
+    let input = gradient("sheet-input-long-edge.png", 96, 64);
+    let output = scratch("sheet-long-edge.png");
+    let run = vcb(&[
+        "sheet",
+        path_arg(&output),
+        "--input",
+        path_arg(&input),
+        "--preset",
+        "presets/a520-clean.toml",
+        "presets/a520-inv.toml",
+        "--long-edge",
+        "48",
+    ]);
+    assert!(run.status.success(), "stderr: {}", text(&run.stderr));
+    let stdout = text(&run.stdout);
+    let tiles: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("tile"))
+        .collect();
+    assert!(
+        tiles.len() == 2 && tiles.iter().all(|line| line.ends_with(" 48x32")),
+        "both tiles render 48 x 32:\n{stdout}"
+    );
+    let sheet = vcb_io::probe_image(&output).unwrap();
+    assert_eq!((sheet.width, sheet.height), (2 * 48 + 3 * 4, 32 + 2 * 4));
+}
+
+#[test]
 fn render_honours_the_camera_directory_and_mode_override() {
     let output = scratch("sample-movie.jpg");
     let run = vcb(&[
@@ -302,6 +440,31 @@ fn render_video_in_movie_mode_writes_the_movie_size() {
     assert!(written.width < input.width, "movie readout bins and skips");
     assert_eq!(written.frames, Some(10), "one second of a 10 fps clip");
     assert!((written.fps - 15.0).abs() < 1e-9, "{written}");
+}
+
+#[test]
+fn render_video_limits_the_long_edge() {
+    let Some(clip) = clip() else { return };
+    let output = scratch("clip-long-edge.mp4");
+    let run = vcb(&[
+        "render-video",
+        path_arg(clip),
+        path_arg(&output),
+        "--preset",
+        "presets/a520-clean.toml",
+        "--long-edge",
+        "160",
+        "--duration",
+        "0.5",
+    ]);
+    assert!(run.status.success(), "stderr: {}", text(&run.stderr));
+    let written = probe_video(&output).unwrap();
+    assert_eq!((written.width, written.height), (160, 120));
+    assert!(
+        text(&run.stdout).contains("160x120"),
+        "{}",
+        text(&run.stdout)
+    );
 }
 
 #[test]

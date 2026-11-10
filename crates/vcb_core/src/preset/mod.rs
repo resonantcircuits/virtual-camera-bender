@@ -14,6 +14,7 @@
 //! mode = "still"              # or "movie"
 //! resolution = "native"       # or "match-input"
 //! orientation = "auto"        # or "landscape", "portrait"
+//! # long_edge = 720           # with "match-input": the sensor at most 720 px long
 //! [scene]
 //! headroom = 2.5              # clipped white is 2.5 times reference white
 //! shoulder_start = 0.8
@@ -209,6 +210,11 @@ impl FromStr for Orientation {
 }
 
 /// The `[readout]` section: readout mode, sensor resolution and camera orientation.
+///
+/// With `resolution = "match-input"`, `long_edge` limits the virtual sensor: the
+/// input's aspect fitted into that many pixels on its long side, so the whole chain
+/// runs at that size and the input is area-averaged onto it. The bends are sized in
+/// sensor pixels and line periods, so a small sensor shows them large.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
@@ -219,6 +225,53 @@ pub struct Readout {
     pub resolution: Resolution,
     /// How the camera is held.
     pub orientation: Orientation,
+    /// Longest side of a match-input sensor in pixels; `None` keeps the input's size.
+    ///
+    /// The sensor takes the input's aspect with its long side at most this long; an
+    /// input within the limit keeps its own size. It needs `resolution =
+    /// "match-input"` and lies in [`MIN_LONG_EDGE`](Self::MIN_LONG_EDGE) to
+    /// [`MAX_LONG_EDGE`](Self::MAX_LONG_EDGE).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub long_edge: Option<u32>,
+}
+
+impl Readout {
+    /// Shortest accepted `long_edge` in pixels.
+    ///
+    /// Eight Bayer quads along the long side, and at 4:3 still a row pair in a movie
+    /// readout that reads one pair in four; a smaller sensor has no room to show a bend.
+    pub const MIN_LONG_EDGE: u32 = 16;
+
+    /// Longest accepted `long_edge` in pixels.
+    ///
+    /// Twice a 4K frame's long side; the limit never enlarges the input, so a larger
+    /// value changes nothing and is taken for a typo.
+    pub const MAX_LONG_EDGE: u32 = 8192;
+
+    /// Checks the section on its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error naming `readout.long_edge` if it is set with the
+    /// native resolution or lies outside its range.
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        let Some(long_edge) = self.long_edge else {
+            return Ok(());
+        };
+        if self.resolution != Resolution::MatchInput {
+            return Err(Error::config(format!(
+                "readout.long_edge needs resolution = \"match-input\"; the {} sensor has \
+                 the camera's own size",
+                self.resolution
+            )));
+        }
+        crate::validate::count_within(
+            "readout.long_edge",
+            long_edge,
+            Self::MIN_LONG_EDGE,
+            Self::MAX_LONG_EDGE,
+        )
+    }
 }
 
 /// The `[scene]` section: how bright the photographed scene was beyond the input's white.

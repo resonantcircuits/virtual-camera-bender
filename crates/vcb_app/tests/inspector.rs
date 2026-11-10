@@ -1,14 +1,16 @@
 //! The inspector draws the panels of the four bends of milestone 3, the sensor and
 //! reset blocks of milestone 4, the light leak, serial link, data pins and retention
 //! of stage 19 and the compressed buffer's switch of stage 20 in a headless ui pass, a click on a lit stage of the strip scrolls their
-//! panel into view, the wheel scrolls on to the rest, and a wrapped strip breaks
-//! before an arrow, never after one.
+//! panel into view, the wheel scrolls on to the rest, the readout panel and the status
+//! line show the sensor a long edge leaves, and a wrapped strip breaks before an arrow,
+//! never after one.
 //!
 //! The passes run the app's real `ui` on an `egui::Context` without a renderer; the
 //! painted text shapes tell what is on screen and where.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use eframe::App as _;
 use eframe::egui::{
@@ -23,7 +25,7 @@ use vcb_app::panels::rail::RailPanel;
 use vcb_app::panels::reclock::ReclockPanel;
 use vcb_app::panels::strip::{self, Stage};
 use vcb_app::{presets, theme};
-use vcb_core::preset::{Edge, FaultKind, RailBend};
+use vcb_core::preset::{Edge, FaultKind, RailBend, Resolution};
 use vcb_core::{Frame, Preset};
 
 fn root() -> &'static Path {
@@ -499,6 +501,52 @@ fn the_stage19_blocks_draw_and_every_new_control_is_reachable() {
             "the wheel scrolls the data pins into view with \"{text}\": {:?}",
             on_screen(&painted)
         );
+    }
+}
+
+/// The clean camera at match-input resolution limited to 32 px, saved as `long-edge.toml`.
+fn long_edge() -> PathBuf {
+    let mut preset =
+        presets::load_preset(&root().join("presets/a520-clean.toml")).expect("shipped");
+    preset.readout.resolution = Resolution::MatchInput;
+    preset.readout.long_edge = Some(32);
+    let path = scratch().join("long-edge.toml");
+    std::fs::write(&path, presets::to_toml(&preset).expect("serialises")).expect("written");
+    path
+}
+
+#[test]
+fn the_readout_panel_and_the_status_line_show_the_size_the_long_edge_leaves() {
+    let mut window = Window::new();
+    window.pass(Vec::new(), vec![long_edge()]);
+    let before = window.settle();
+    window.click(&before, "Readout");
+    let painted = window.settle();
+    for text in [
+        "Long edge",
+        "32 px",
+        "Sensor 32 × 24 photosites (long edge at most 32 px), 24 rows read; output 32 × 24 px",
+    ] {
+        assert!(
+            shows(&painted, text),
+            "the readout panel shows \"{text}\" for the 64 × 48 photo: {:?}",
+            on_screen(&painted)
+        );
+    }
+
+    // The status line names the full render at that size once it lands.
+    let deadline = Instant::now() + Duration::from_mins(1);
+    loop {
+        let (painted, _) = window.pass(Vec::new(), Vec::new());
+        if shows(&painted, "sensor 32 × 24") && shows(&painted, "full") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the full render at 32 × 24 never reached the status line: {:?}",
+            on_screen(&painted)
+        );
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 

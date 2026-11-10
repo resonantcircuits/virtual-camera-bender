@@ -13,6 +13,7 @@ use vcb_app::panels::isp::{self, Field};
 use vcb_app::panels::memory::MemoryPanel;
 use vcb_app::panels::optics::OpticsPanel;
 use vcb_app::panels::rail::RailPanel;
+use vcb_app::panels::readout::{self, ReadoutPanel};
 use vcb_app::panels::reclock::ReclockPanel;
 use vcb_app::panels::sensor::{LeakPanel, SensorBendPanel};
 use vcb_app::panels::strip::Stage;
@@ -199,9 +200,10 @@ fn every_shipped_preset_survives_the_panels() {
         ResetPanel::from_preset(&preset).apply(&mut alone);
         LeakPanel::from_preset(&preset).apply(&mut alone);
         SerialPanel::from_preset(&preset).apply(&mut alone);
+        ReadoutPanel::from_preset(&preset).apply(&mut alone);
         assert_eq!(
             alone, preset,
-            "{name} survives the optics, master clock, memory and power panels and the sensor, reset, leak and serial blocks"
+            "{name} survives the optics, master clock, memory and power panels, the sensor, reset, leak and serial blocks and the long edge"
         );
         through_toml(&rebuilt);
     }
@@ -730,6 +732,110 @@ fn every_bend_panel_is_reachable_from_the_strip() {
             "{panel:?} is reachable from the strip"
         );
     }
+}
+
+#[test]
+fn the_long_edge_loads_applies_and_round_trips() {
+    let mut preset = Preset::new("a520");
+    preset.readout.resolution = Resolution::MatchInput;
+    let mut panels = Panels::from_preset(&preset);
+    assert_eq!(panels.readout, ReadoutPanel::default(), "no limit: off");
+    panels.readout.long_edge_px = 400.0;
+    panels.apply(&mut preset);
+    assert_eq!(preset.readout.long_edge, Some(400));
+    let text = presets::to_toml(&preset).expect("serialises");
+    assert!(text.contains("long_edge = 400"), "{text}");
+    let parsed = through_toml(&preset);
+    assert_eq!(
+        Panels::from_preset(&parsed),
+        panels,
+        "the panels read back their own long edge"
+    );
+
+    preset.readout.resolution = Resolution::Native;
+    panels.apply(&mut preset);
+    assert_eq!(
+        preset.readout.long_edge, None,
+        "a native preset holds no long edge"
+    );
+    through_toml(&preset);
+    assert!(
+        (panels.readout.long_edge_px - 400.0).abs() < f64::EPSILON,
+        "the knob keeps its setting at native resolution"
+    );
+    preset.readout.resolution = Resolution::MatchInput;
+    panels.apply(&mut preset);
+    assert_eq!(
+        preset.readout.long_edge,
+        Some(400),
+        "and gives it back at match input"
+    );
+
+    panels.readout.long_edge_px = 0.0;
+    panels.apply(&mut preset);
+    assert_eq!(preset.readout.long_edge, None, "off writes no limit");
+    assert!(
+        !presets::to_toml(&preset)
+            .expect("serialises")
+            .contains("long_edge")
+    );
+    let mut reloaded = ReadoutPanel {
+        long_edge_px: 900.0,
+    };
+    reloaded.load(&preset);
+    assert_eq!(
+        reloaded,
+        ReadoutPanel::default(),
+        "a preset without one loads off"
+    );
+
+    for (typed, stored) in [(10.0, 16), (159.6, 160), (4096.0, 4096)] {
+        let panel = ReadoutPanel {
+            long_edge_px: typed,
+        };
+        assert_eq!(
+            panel.long_edge(Resolution::MatchInput),
+            Some(stored),
+            "{typed} px is written as {stored}"
+        );
+        let mut preset = Preset::new("a520");
+        preset.readout.resolution = Resolution::MatchInput;
+        panel.apply(&mut preset);
+        preset
+            .validate()
+            .expect("the panel writes a valid long edge");
+    }
+}
+
+#[test]
+fn the_long_edge_knob_reads_off_at_zero_and_spans_the_previews() {
+    let knob = readout::LONG_EDGE;
+    assert!(knob.log, "a size knob is logarithmic");
+    assert_eq!(knob.format(0.0), "off");
+    assert_eq!(knob.parse("off"), Some(0.0));
+    assert_eq!(knob.format(720.0), "720 px");
+    assert_eq!(knob.parse("400 px"), Some(400.0));
+    for edge in [
+        vcb_app::render::GALLERY_LONG_EDGE,
+        vcb_app::render::PREVIEW_LONG_EDGE,
+        camera().sensor.native_width,
+    ] {
+        assert!(
+            knob.range.contains(&f64::from(edge)),
+            "{edge} px lies on the knob"
+        );
+    }
+    assert!((knob.smallest - 160.0).abs() < f64::EPSILON);
+    assert!((knob.range.end() - 4096.0).abs() < f64::EPSILON);
+
+    let mut preset = Preset::new("a520");
+    preset.readout.resolution = Resolution::MatchInput;
+    preset.readout.long_edge = Some(400);
+    let timing = Timing::derive(&camera(), &preset, 4000, 3000).expect("derives");
+    assert_eq!(
+        readout::sensor_readout(&timing),
+        "Sensor 400 × 300 photosites (long edge at most 400 px), 300 rows read; output 400 × 300 px"
+    );
 }
 
 #[test]

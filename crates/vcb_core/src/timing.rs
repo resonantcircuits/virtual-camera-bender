@@ -3,7 +3,7 @@
 use std::fmt::{self, Display, Formatter};
 
 use crate::camera::Clocking;
-use crate::preset::{Mode, Orientation, Resolution};
+use crate::preset::{Mode, Orientation, Readout, Resolution};
 use crate::validate::{at_least, positive};
 use crate::{Camera, Error, Preset};
 
@@ -72,7 +72,9 @@ const MIN_HBLANK_PX: u32 = 8;
 /// # Resolution
 ///
 /// At [`Resolution::Native`] the sensor has the camera's size and the pixel clock is
-/// the camera's. At [`Resolution::MatchInput`] the sensor takes the input's size,
+/// the camera's. At [`Resolution::MatchInput`] the sensor takes the input's size, or
+/// with a [`long_edge`](crate::preset::Readout::long_edge) the input's aspect fitted
+/// into that many pixels on its long side (an input within the limit keeps its size),
 /// rounded down to even, and two native durations are kept fixed:
 ///
 /// - the **active-line time**, `cols * dsp_pixel_period_s`, so a horizontal time constant
@@ -114,6 +116,8 @@ pub struct Timing {
     pub mode: Mode,
     /// How the sensor size was chosen.
     pub resolution: Resolution,
+    /// The longest side a match-input sensor may have, in pixels, if limited.
+    pub long_edge: Option<u32>,
     /// Whether the camera is held in portrait and the scene rotated onto the sensor.
     pub rotated: bool,
     /// Active photosite columns of the virtual sensor.
@@ -169,9 +173,9 @@ impl Timing {
     ///
     /// # Errors
     ///
-    /// Returns a configuration error if the camera's clocking or the preset's
-    /// `[bend.clock] osc_mhz` is invalid, and an input error if the input is empty or too
-    /// small to hold one Bayer quad per output pixel.
+    /// Returns a configuration error if the camera's clocking, the preset's `[readout]
+    /// long_edge` or its `[bend.clock] osc_mhz` is invalid, and an input error if the
+    /// input is empty or too small to hold one Bayer quad per output pixel.
     ///
     /// # Examples
     ///
@@ -199,6 +203,7 @@ impl Timing {
                 "input is empty ({input_width} x {input_height})"
             )));
         }
+        preset.readout.validate()?;
         let mode = preset.readout.mode;
         let resolution = preset.readout.resolution;
         let rotated = held_in_portrait(preset.readout.orientation, input_width, input_height);
@@ -224,10 +229,8 @@ impl Timing {
             * f64::from(native_ob + native_w + clock.hblank_px)
             * f64::from(native_rows + clock.vblank_lines);
 
-        let (sensor_width, sensor_height) = match resolution {
-            Resolution::Native => (native_w, native_h),
-            Resolution::MatchInput => (scene_width & !1, scene_height & !1),
-        };
+        let (sensor_width, sensor_height) =
+            sensor_size(camera, &preset.readout, scene_width, scene_height);
         let rows = rows_read(sensor_height, clock.line_skip);
         if sensor_width < 2 || rows < 2 || sensor_width / h_bin < 1 {
             return Err(Error::input(format!(
@@ -282,6 +285,7 @@ impl Timing {
         Ok(Self {
             mode,
             resolution,
+            long_edge: preset.readout.long_edge,
             rotated,
             sensor_width,
             sensor_height,
@@ -373,6 +377,45 @@ fn sensor_clock(
     Ok((ratio, dsp_pixel_period_s / ratio))
 }
 
+/// Returns the virtual sensor's active size for a scene of the oriented size given.
+///
+/// The camera's own at native resolution; at match-input the scene's, fitted into the
+/// readout's long edge if it has one, rounded down to even.
+fn sensor_size(
+    camera: &Camera,
+    readout: &Readout,
+    scene_width: u32,
+    scene_height: u32,
+) -> (u32, u32) {
+    match readout.resolution {
+        Resolution::Native => (camera.sensor.native_width, camera.sensor.native_height),
+        Resolution::MatchInput => {
+            let (width, height) = fit_long_edge(scene_width, scene_height, readout.long_edge);
+            (width & !1, height & !1)
+        }
+    }
+}
+
+/// Fits a `width` by `height` scene into `long_edge` pixels on its long side.
+///
+/// The short side keeps the aspect, rounded to the nearest pixel and at least one; a
+/// scene whose long side is within the limit, or without a limit, keeps its size.
+fn fit_long_edge(width: u32, height: u32, long_edge: Option<u32>) -> (u32, u32) {
+    let long = width.max(height);
+    match long_edge {
+        Some(edge) if long > edge => {
+            let fit = |side: u32| {
+                let scaled =
+                    (u64::from(side) * u64::from(edge) + u64::from(long) / 2) / u64::from(long);
+                // At most `edge`, since `side <= long`.
+                (scaled as u32).max(1)
+            };
+            (fit(width), fit(height))
+        }
+        _ => (width, height),
+    }
+}
+
 /// Returns whether the camera is held in portrait for an input of the given size.
 fn held_in_portrait(orientation: Orientation, width: u32, height: u32) -> bool {
     match orientation {
@@ -423,7 +466,14 @@ fn rows_read(height: u32, line_skip: u32) -> u32 {
 impl Display for Timing {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         writeln!(f, "mode          {}", self.mode)?;
-        writeln!(f, "resolution    {}", self.resolution)?;
+        match self.long_edge {
+            Some(edge) => writeln!(
+                f,
+                "resolution    {}, long edge at most {edge} px",
+                self.resolution
+            )?,
+            None => writeln!(f, "resolution    {}", self.resolution)?,
+        }
         writeln!(
             f,
             "orientation   {}",

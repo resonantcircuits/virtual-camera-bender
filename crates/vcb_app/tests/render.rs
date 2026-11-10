@@ -170,6 +170,86 @@ fn previews_are_needed_unless_they_would_equal_the_full_render() {
 }
 
 #[test]
+fn a_long_edge_within_the_preview_makes_the_full_render_the_preview() {
+    let large = Scene::new(1600, 1200);
+    let small = Scene::new(640, 480);
+    let mut matched = Preset::new("a520");
+    matched.readout.resolution = Resolution::MatchInput;
+    for (edge, needed) in [
+        (400, false),
+        (PREVIEW_LONG_EDGE, false),
+        (PREVIEW_LONG_EDGE + 2, true),
+        (1600, true),
+    ] {
+        matched.readout.long_edge = Some(edge);
+        assert_eq!(
+            render::needs_preview(&matched, &large),
+            needed,
+            "a {edge} px long edge on a 1600 px scene"
+        );
+        assert!(
+            !render::needs_preview(&matched, &small),
+            "a small scene needs none at {edge} px"
+        );
+        assert_eq!(
+            render::preview_preset(&matched).readout.long_edge,
+            Some(edge),
+            "the preview keeps the limit"
+        );
+    }
+}
+
+#[test]
+fn the_renderer_sizes_full_renders_and_previews_by_the_long_edge() {
+    let mut renderer = Renderer::default();
+    let mut job = hpf_job(false);
+    job.preset.readout.long_edge = Some(400);
+    let full = render_ok(&mut renderer, &job);
+    assert_eq!((full.frame.width(), full.frame.height()), (400, 300));
+    assert_eq!(full.sensor, [400, 300]);
+    assert_eq!(full.image.size, [400, 300]);
+
+    // A preview that runs anyway, as in a video's play-through, renders at the preset's size.
+    let mut preview = job.clone();
+    preview.preview = true;
+    let played = render_ok(&mut renderer, &preview);
+    assert_eq!(played.sensor, [400, 300]);
+
+    // A limit beyond the preview leaves the preview at its own size.
+    job.preset.readout.long_edge = Some(1600);
+    preview.preset.readout.long_edge = Some(1600);
+    let reduced = render_ok(&mut renderer, &preview);
+    assert_eq!(reduced.sensor, [PREVIEW_LONG_EDGE, 540]);
+    let unreached = render_ok(&mut renderer, &job);
+    assert_eq!(
+        unreached.sensor,
+        [800, 600],
+        "an 800 px scene does not reach a 1600 px limit"
+    );
+    assert_eq!(
+        unreached.reconfigured,
+        Reconfigured::Rebuilt,
+        "the sensor grew back from 400 px"
+    );
+
+    job.preset.readout.long_edge = Some(1200);
+    let same = render_ok(&mut renderer, &job);
+    assert!(
+        same.reconfigured.state_kept(),
+        "a limit the scene does not reach keeps the camera running: {}",
+        same.reconfigured
+    );
+    job.preset.readout.long_edge = Some(320);
+    let smaller = render_ok(&mut renderer, &job);
+    assert_eq!(smaller.sensor, [320, 240]);
+    assert_eq!(
+        (smaller.reconfigured, smaller.index),
+        (Reconfigured::Rebuilt, 0),
+        "a smaller sensor powers the camera on afresh"
+    );
+}
+
+#[test]
 fn reduction_crops_to_the_aspect_and_limits_the_long_edge() {
     let scene = Scene::new(3000, 1500);
     let reduced = render::reduce(&scene, 4.0 / 3.0, PREVIEW_LONG_EDGE);

@@ -57,6 +57,17 @@ pub(crate) fn fraction(field: &str, value: f64) -> Result<(), Error> {
     }
 }
 
+/// Requires an integer count with `low <= value <= high`.
+pub(crate) fn count_within(field: &str, value: u32, low: u32, high: u32) -> Result<(), Error> {
+    if (low..=high).contains(&value) {
+        Ok(())
+    } else {
+        Err(Error::config(format!(
+            "{field} must lie in [{low}, {high}], got {value}"
+        )))
+    }
+}
+
 /// Requires an integer count of at least `min`.
 pub(crate) fn at_least(field: &str, value: u32, min: u32) -> Result<(), Error> {
     if value >= min {
