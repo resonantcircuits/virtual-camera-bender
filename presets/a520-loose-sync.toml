@@ -8,6 +8,7 @@
 # Nothing corrects the Bayer phase, so the sheared stretches develop colour-phase static.
 # Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
 camera = "a520"
+description = "The master oscillator replaced, the LTC1799 mod: a held picture that shears and snaps back."
 seed = 1                            # also seeds the wander's phases, which place the snaps
 
 [readout]

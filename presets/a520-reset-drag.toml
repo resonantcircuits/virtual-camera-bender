@@ -11,6 +11,7 @@
 # still), coloured by the row of the mosaic they black out.
 # Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
+description = "A weak, flaky reset gate: bright runs ending in black, a solarised sky."
 seed = 1                            # also seeds the contact's open runs
 
 [readout]

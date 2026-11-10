@@ -10,6 +10,7 @@
 # glow rising from the grass. Under the daylight balance the whole frame turns magenta-pink.
 # Tuned by eye on samples/sample-01.jpg: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
+description = "The body opened and the IR-cut filter pulled: full spectrum through red plastic, a peach glow."
 seed = 1
 
 [readout]

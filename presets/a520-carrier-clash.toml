@@ -1,0 +1,27 @@
+# Canon PowerShot A520 with a square carrier at the AFE beating against the pixel clock: tilted moire.
+# A square-wave oscillator 121 kHz above half the 27 MHz pixel clock couples 20 mV into the AFE's
+# input. The ADC samples it once a pixel period, so it flips sign from one sample to the next,
+# lifting one colour of each mosaic row while it lowers the other, under an envelope that beats
+# at the 121 kHz offset: about ten bands across each line, orange and blue in turn, a colour
+# moire where a carrier near the pixel clock would draw grey stripes. The carrier makes a whole
+# 1798 cycles per still line, so the bands would stand level from line to line; phase_skew steps
+# it a hundredth of a cycle per line and tilts them into a diagonal moire. A second oscillator, a
+# 30 Hz square, swings the programmable gain by a quarter either way: the exposure pumps in
+# blocks along the readout lines, about seven across a still, two per movie frame. The movie
+# readout's longer line is not a whole number of carrier cycles, so there the bands step a sixth
+# of their period per line and the moire turns into a finer hatch; previews and the gallery,
+# whose pixel clock is slower, alias the carrier into another hatch of their own.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone5-tuning-notes.md.
+camera = "a520"
+description = "A square carrier beating against the pixel clock: tilted colour moire and pumping gain."
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.afe]
+inject = { wave = "square", freq_hz = 13_621_212.12, amplitude_v = 0.02, phase_skew = 0.01 }  # PROVISIONAL, by eye: 50 mV clips the troughs to black stripes; 0.18 cycles a line, the legacy skew, hatches the frame grey
+gain_mod = { wave = "square", freq_hz = 30.0, depth = 0.25 }  # PROVISIONAL, by eye: the gain's own slow oscillator; at the carrier's frequency it lays level bands across the tilted ones instead
+cds_lag_px = 0.0
+cds_mix = 0.0

@@ -30,6 +30,22 @@ the loaded image and picked by eye.
 - An optional one-line `description` at the top of a preset, at most 200
   characters, kept by the app's writer and printed by `vcb presets` after the bends
   as `description="…"`.
+- A description on every shipped preset, taken from its header: what the bender did
+  and what it looks like.
+- Seven presets after the JavaScript gallery's physics presets, made with the bends
+  the chain already has, each with a golden frame and tuned by eye
+  (`docs/research/milestone5-tuning-notes.md`): `a520-cloud-solarizer` (the bus bend
+  from D11 alone into D10 through a 10 nF capacitor: pastel lavender skies, an orange
+  horizon, clean midtones), `a520-dc42-solarize` (D11 to D8 on one common bus through
+  62 Ω patch resistors: solarised rainbow skies and speckle), `a520-ground-loop` (50 mV
+  of 50 Hz hum at the AFE input: bands along the readout lines, rolling in a movie),
+  `a520-carrier-clash` (a square carrier near half the pixel clock, tilted by
+  `phase_skew`, and a 30 Hz square on the gain: tilted colour moiré and pumping
+  gain), `a520-reset-ghost` (the CDS reset sample ten pixels late, 85 %: a dark
+  embossed relief with negative trails), `a520-a540-melt` (a transfer efficiency of
+  0.99 with vertical clock stalls: magenta drips and stalled stretches) and
+  `a520-a530-warp` (horizontal register glitches: sheared bands, the odd ones in false
+  magenta).
 
 ### Milestone 4: the rest of the bender's reach
 

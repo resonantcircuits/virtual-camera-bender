@@ -17,6 +17,7 @@
 # there; at seed 2 it does not, and the golden shows the scan's damage alone.
 # Tuned by eye on samples/sample-01.jpg: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
+description = "A marginal SDRAM address contact under the JPEG: the picture holds, then breaks into bars or repeats."
 seed = 2                            # also seeds the contact's telegraph process
 
 [readout]

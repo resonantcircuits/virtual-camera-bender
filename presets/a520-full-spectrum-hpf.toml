@@ -6,6 +6,7 @@
 # grey world, metered on the bent raw, turns the HPF's red sky green and cream.
 # Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
 camera = "a520"
+description = "The IR-cut filter removed and the ADC-bus bend: high-pass contours on a full-spectrum camera."
 seed = 1
 
 [readout]

@@ -3,6 +3,7 @@
 # on the source bus, function "divide", target D9.
 # Tuned against the reference DIV quadrant: docs/research/a520-tuning-log.md.
 camera = "a520"
+description = "The ADC-bus bend through the divide-by-two flip-flop: horizontal streaks and ringed clouds."
 seed = 1
 
 [readout]

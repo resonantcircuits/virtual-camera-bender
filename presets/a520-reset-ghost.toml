@@ -1,0 +1,24 @@
+# Canon PowerShot A520 with the CDS reset sample taken late: an embossed derivative with negative trails.
+# The AFE's clamp (reset) sampling pulse delayed by ten pixel periods, 370 ns, as a capacitor on
+# its timing line would: correlated double sampling subtracts 85 % of the level ten samples back
+# from every sample, so flat areas keep 15 % of their signal, and along each readout line a step
+# up leaves a bright rim ten samples wide and a step down a black one, the negative echo of what
+# came before: the frame collapses into a dark relief, the sky navy, the hill crest and the tree
+# outlined in white with black trails beside them, along the readout lines (vertically in a
+# portrait still). An even lag subtracts the same colour of the mosaic, which keeps the relief
+# grey; an odd lag subtracts the neighbouring colour and floods the frame green. At 100 % nothing
+# is left but the edges; at 50 % the scene keeps its colours under the relief. The lag is
+# counted in the processor's pixel periods, so previews and the gallery, with fewer pixels a
+# line, show a wider echo.
+# Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone5-tuning-notes.md.
+camera = "a520"
+description = "The CDS reset sample landing ten pixels late: an embossed derivative with negative trails."
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.afe]
+cds_lag_px = 10.0                   # PROVISIONAL, by eye: 6 a fine relief, 16 a broad one; even, so each sample subtracts its own colour
+cds_mix = 0.85                      # PROVISIONAL: the legacy preset's 0.85

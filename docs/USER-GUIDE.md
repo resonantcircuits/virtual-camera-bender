@@ -438,3 +438,11 @@ The other bends start from the clean camera (`a520-clean`):
     and the rest of the frame goes grey at the break. A marginal a11, low, reaches the
     compressed buffer alone too: a still breaks into bars, and as the camera keeps
     running, strips of the last frame repeat (`a520-strip-repeat`).
+15. **The legacy gallery's physics presets.** Open the gallery (G) and type `afe`,
+    `bus` or `clocks`: one MSB leaking into the bit below through a small capacitor
+    (`a520-cloud-solarizer`), four bus lines fighting on one common wire
+    (`a520-dc42-solarize`), mains hum through a ground loop (`a520-ground-loop`), a
+    square carrier beating against the pixel clock (`a520-carrier-clash`), the CDS
+    reset sample landing ten pixels late (`a520-reset-ghost`), starved vertical clocks
+    (`a520-a540-melt`) and a glitching horizontal register (`a520-a530-warp`). Open a
+    video to see the hum roll and the clock faults move from frame to frame.

@@ -1,0 +1,28 @@
+# Canon PowerShot A520 with the ADC-bus bend from one MSB into the bit below: pastel solarised skies.
+# Source bank D11 alone through a 10 nF capacitor, the 1 kOhm pot at 0.2 kOhm returning node F
+# to ground, function "bypass", target D10. D11 is set only in the upper half of the ADC's
+# range, so the bend reaches only the bright parts of the frame: the sky turns to a fine
+# lavender checker of the mosaic, the haze and clouds over the horizon fold to orange, the
+# white tree and the water's glints turn pink, and the hills, the water and the grass keep
+# their colours. With the schematic's 1 uF capacitor the sky flips as a whole: clean with
+# the pot above 0.36 kOhm, red below 0.33 kOhm, bistable blocks between. 10 nF shortens the
+# time constant to a few microseconds, so the capacitor's charge follows the sky's brightness
+# along each line and the fold grades with it.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone5-tuning-notes.md.
+camera = "a520"
+description = "One MSB leaking into the bit below it: pastel lavender skies, an orange horizon, clean midtones."
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.bus]
+source_pins = [11]
+target = "pin:10"
+function = "bypass"
+cap_uf = 0.01                       # PROVISIONAL, by eye: a 10 nF ceramic in the capacitor's place; 22 nF thins the lavender to a band over the horizon
+pot_kohm = 0.2                      # PROVISIONAL, by eye: 0.25 kOhm leaves the upper sky clean, 0.15 kOhm turns it red
+pot_node = "f"                      # the pot returns F to ground: a high-pass filter
+series_ohm = 0.0
+common_bus = false

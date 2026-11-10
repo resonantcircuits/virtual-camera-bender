@@ -5,6 +5,7 @@
 # auto-exposure takes the extra light back: deep sky and water, foliage glowing pink-white.
 # Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
 camera = "a520"
+description = "The IR-cut filter removed and a low red gain: aerochrome-ish, foliage glowing pink-white."
 seed = 1
 
 [readout]

@@ -14,6 +14,7 @@
 # scene.
 # Tuned by eye on samples/sample-01.jpg and the pan clip: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
+description = "A heat gun on the board: the CCD's grain and the SDRAM's dead bits."
 seed = 1
 
 [readout]

@@ -316,3 +316,38 @@ fn the_card_rot_renders_its_golden_frame() {
 fn the_strip_repeat_renders_its_golden_frame() {
     check("a520-strip-repeat");
 }
+
+#[test]
+fn the_cloud_solarizer_bend_renders_its_golden_frame() {
+    check("a520-cloud-solarizer");
+}
+
+#[test]
+fn the_dc42_common_bus_renders_its_golden_frame() {
+    check("a520-dc42-solarize");
+}
+
+#[test]
+fn the_ground_loop_hum_renders_its_golden_frame() {
+    check("a520-ground-loop");
+}
+
+#[test]
+fn the_carrier_clash_renders_its_golden_frame() {
+    check("a520-carrier-clash");
+}
+
+#[test]
+fn the_reset_ghost_renders_its_golden_frame() {
+    check("a520-reset-ghost");
+}
+
+#[test]
+fn the_a540_melt_clocks_render_their_golden_frame() {
+    check("a520-a540-melt");
+}
+
+#[test]
+fn the_a530_warp_clocks_render_their_golden_frame() {
+    check("a520-a530-warp");
+}

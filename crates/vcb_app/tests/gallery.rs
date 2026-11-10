@@ -791,7 +791,11 @@ fn the_cache_keeps_thumbnails_per_file_and_scene() {
 fn the_description_round_trips_through_the_app_writer_and_is_checked() {
     let dir = scratch("description");
     let mut preset = presets::load_preset(&root().join("presets/a520-hpf.toml")).expect("shipped");
-    assert_eq!(preset.description, None, "a preset may have none");
+    assert!(
+        preset.description.is_some(),
+        "every shipped preset has a description"
+    );
+    preset.description = None;
     let text = presets::to_toml(&preset).expect("serialises");
     assert!(!text.contains("description"), "none is not written: {text}");
 

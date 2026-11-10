@@ -1,0 +1,29 @@
+# Canon PowerShot A520 with the ADC-bus bend on one common bus: the DC42's night solarise.
+# The Praktica DC42 bend's common-bus DIP array on the A520: source bank D11, D9, D8 and target
+# D10 jumpered into one node (common_bus), each pin through a 62 ohm patch resistor, function
+# "bypass", the 1 kOhm pot at 0.75 kOhm loading the node to ground. The four high lines fight
+# on the shared wire and each pin reads its own driver against the bus through its resistor,
+# so the top four bits resolve together into a few levels: the sky breaks into arcs of red,
+# green and cyan, the water into red and violet bands, the hills into magenta patches, and
+# speckle crawls over the flat sky and the hills wherever noise tips the contest one way or
+# the other. Below about 50 ohm the frame turns wholly to rainbow posterisation;
+# from 68 ohm the sky's arcs give way to cyan; from 100 ohm the drivers win and the frame is
+# nearly clean.
+# Tuned by eye on samples/sample-01.jpg: docs/research/milestone5-tuning-notes.md.
+camera = "a520"
+description = "Every tapped pin colliding on one common bus: speckled luminance and solarised rainbow skies."
+seed = 1
+
+[readout]
+mode = "still"
+resolution = "native"
+
+[bend.bus]
+source_pins = [11, 9, 8]            # with the target, D11 to D8 all on the one bus
+target = "pin:10"
+function = "bypass"
+cap_uf = 1.0                        # shorted by the common bus: S and F are one node
+pot_kohm = 0.75                     # PROVISIONAL: the legacy preset's three-quarter travel of the 1 kOhm pot; 1.0 looks alike, 0.5 is wilder
+pot_node = "f"
+series_ohm = 62.0                   # PROVISIONAL, by eye: the benders' 20 to 100 ohm protection resistors; 60 to 65 ohm look alike
+common_bus = true

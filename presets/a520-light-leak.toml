@@ -11,6 +11,7 @@
 # which smears down its columns by about 1 % of their mean, too little to see here.
 # Tuned by eye on samples/sample-01.jpg: docs/research/milestone4-tuning-notes.md.
 camera = "a520"
+description = "A light leak in the body: a pink glow from one edge over a stopped-down scene."
 seed = 1
 
 [readout]

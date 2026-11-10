@@ -5,6 +5,7 @@
 # bloom up to a fifth brighter: about three bands across a still, drifting through a video.
 # Tuned by eye on samples/sample-01.jpg: docs/research/milestone3-tuning-notes.md.
 camera = "a520"
+description = "A sagging supply rail: breathing bright bands, no failures."
 seed = 1
 
 [readout]

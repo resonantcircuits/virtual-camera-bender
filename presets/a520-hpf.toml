@@ -3,6 +3,7 @@
 # the source bus as the schematic draws it, function "bypass", target D11.
 # Tuned against the reference HPF quadrant: docs/research/a520-tuning-log.md.
 camera = "a520"
+description = "The ADC-bus bend through its coupling capacitor: high-pass contours, a dark red sky and ringed clouds."
 seed = 1
 
 [readout]

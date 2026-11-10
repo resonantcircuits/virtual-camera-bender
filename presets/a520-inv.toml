@@ -3,6 +3,7 @@
 # pot on the source bus, function "invert", target D7.
 # Tuned against the reference INV quadrant: docs/research/a520-tuning-log.md.
 camera = "a520"
+description = "The ADC-bus bend through the inverter: posterised negatives with glowing clouds."
 seed = 1
 
 [readout]
